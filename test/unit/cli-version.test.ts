@@ -16,6 +16,7 @@ const autoContextDirectory = join(process.cwd(), ".umactually-auto-ctx");
 let writeFileBuffer = "";
 
 let mainFn: typeof import("../../src/cli.js")["main"];
+let readPackageVersionFn: typeof import("../../src/cli.js")["readPackageVersion"];
 
 beforeEach(async () => {
   writeFileBuffer = "";
@@ -42,7 +43,7 @@ beforeEach(async () => {
     };
   });
   vi.resetModules();
-  ({ main: mainFn } = await import("../../src/cli.js"));
+  ({ main: mainFn, readPackageVersion: readPackageVersionFn } = await import("../../src/cli.js"));
 });
 
 afterEach(async () => {
@@ -90,6 +91,10 @@ describe("CLI version handler (M2)", () => {
     const { stdout } = await captureMain(["--version"]);
 
     expect(String(stdout.trim())).toBe(String(packageJson.version));
+  });
+
+  it("CLI-VERSION-004: npm/dev runtime version source equals package.json exactly", () => {
+    expect(readPackageVersionFn()).toBe(packageVersion);
   });
 
   it("writes nothing to stderr for --version", async () => {

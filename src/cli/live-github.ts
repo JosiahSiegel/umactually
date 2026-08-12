@@ -3,7 +3,11 @@ import { commentBodyHasMarker } from "../util/marker.js";
 import { githubHeaders } from "../util/http.js";
 import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
-import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
+import {
+  buildGithubApiBaseFromEnv,
+  buildGithubRestUrl,
+  type GithubApiBase,
+} from "../platform/github/api-base.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { fetchSonarPrIssues } from "../sonar/fetch-sonar-pr-issues.js";
 import {
@@ -20,8 +24,6 @@ import {
   type LiveReviewComment,
   type LiveRunResult,
 } from "./live-shared.js";
-
-const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 
 export async function runGithubLive(input: {
   readonly context: GithubContext;
@@ -222,7 +224,7 @@ type CreateGithubReviewRequest = {
 };
 
 async function findExistingMarkerReview(context: GithubContext, fetchImpl: FetchImpl): Promise<ExistingGithubReview | null> {
-  const response = await fetchImpl(githubReviewsUrl(context), {
+  const response = await fetchImpl(githubReviewsUrl(context, buildGithubApiBaseFromEnv()), {
     method: "GET",
     headers: githubHeaders(context.token),
   });
@@ -252,7 +254,7 @@ async function updateExistingReview(input: {
   readonly body: string;
 }): Promise<number | null> {
   try {
-    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+    const response = await input.fetchImpl(`${githubReviewsUrl(input.context, buildGithubApiBaseFromEnv())}/${input.review.id}`, {
       method: "PUT",
       headers: githubHeaders(input.context.token),
       body: JSON.stringify({ body: input.body }),
@@ -281,7 +283,7 @@ async function deleteExistingReview(input: {
   readonly fetchImpl: FetchImpl;
   readonly review: ExistingGithubReview;
 }): Promise<void> {
-  const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+  const response = await input.fetchImpl(`${githubReviewsUrl(input.context, buildGithubApiBaseFromEnv())}/${input.review.id}`, {
     method: "DELETE",
     headers: githubHeaders(input.context.token),
   });
@@ -307,7 +309,7 @@ async function createGithubReview(input: {
     event: input.event,
     comments: input.comments,
   };
-  const response = await input.fetchImpl(githubReviewsUrl(input.context), {
+  const response = await input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
     method: "POST",
     headers: githubHeaders(input.context.token),
     body: JSON.stringify(request),
@@ -338,8 +340,9 @@ function parseExistingReview(value: unknown): ExistingGithubReview | null {
   return null;
 }
 
-function githubReviewsUrl(context: GithubContext): string {
-  const owner = encodeURIComponent(context.repo.owner);
-  const repo = encodeURIComponent(context.repo.name);
-  return `${GITHUB_API_BASE_URL}/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
+function githubReviewsUrl(context: GithubContext, base: GithubApiBase): string {
+  return buildGithubRestUrl(
+    base,
+    `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}/reviews`,
+  );
 }

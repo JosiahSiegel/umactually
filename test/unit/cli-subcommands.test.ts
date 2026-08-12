@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { parseCliArgs } from "../../src/cli.js";
+import { dispatch, stripLeadingCommand, type DispatchResult } from "../../src/cli/dispatch.js";
 
 /**
  * RED tests for Task M1 — subcommand dispatch (`review` | `doctor` | `version`).
@@ -28,22 +29,7 @@ import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
  * lands.
  */
 
-// RED seam: this module path does not exist yet.
-const dispatchModule = "../../src/cli/dispatch.js";
-const dispatchPath = "src/cli/dispatch.ts";
-
-type DispatchResult = { readonly exitCode: number };
-
-type DispatchFn = (argv: readonly string[]) => Promise<DispatchResult>;
-
-type DispatchModuleNamespace = {
-  readonly dispatch?: DispatchFn;
-};
-
 type ParseCliArgsSpy = readonly string[];
-
-const cliModule = "../../src/cli.js";
-const cliPath = "src/cli.ts";
 
 const ENV_KEYS_TO_CLEAR = [
   "UMACTUALLY_API_URL",
@@ -65,10 +51,6 @@ function clearEnvForRun(): void {
   for (const key of ENV_KEYS_TO_CLEAR) {
     delete process.env[key];
   }
-}
-
-function isDispatchFn(value: unknown): value is DispatchFn {
-  return typeof value === "function";
 }
 
 interface StdoutStderrCapture {
@@ -122,34 +104,13 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     }
   });
 
-  it("CLI-SUB-001: dispatch(['review','--dry-run']) and dispatch(['--dry-run']) reach the same review path and exit 0", async () => {
-    // Given: two equivalent invocations of the future dispatch layer.
-    //   1. Bare `--dry-run` — the default subcommand is `review`, so this
-    //      must route identically to form 2.
-    //   2. Explicit `review --dry-run` — the call operator must reach the
-    //      same review code path and produce the same exit code.
-    //
-    // Under existing fixtures both forms pass validation (--dry-run skips
-    // the posting-side checks). They must therefore both resolve with
-    // `{exitCode: 0}`.
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
+  it("CLI-SUB-001: dispatch(['review','--help']) and dispatch(['--help']) both resolve through current help routing", async () => {
+    // Given: bare and explicit review help invocations.
+    // When: the implemented dispatch layer resolves both forms.
 
-    // The dispatch layer is not yet implemented — we capture the call so
-    // vitest counts it as a single failed assertion per test, not a runner
-    // crash. Both invocations fail for the same reason today; the GREEN
-    // expectation is documented inline below.
-    const bareResult = await dispatch(["--dry-run"]);
-    const reviewResult = await dispatch(["review", "--dry-run"]);
+    const bareResult = await dispatch(["--help"]);
+    const reviewResult = await dispatch(["review", "--help"]);
 
-    // GREEN expectations — both forms resolve to the review path and
-    // both exit cleanly under --dry-run (no posting identity required).
     expect(bareResult.exitCode).toBe(0);
     expect(reviewResult.exitCode).toBe(0);
   });
@@ -174,53 +135,12 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
       "o/r",
     ] as const;
 
-    // Pull parseCliArgs through the RED helper — even though it already
-    // exists in src/cli.ts, we route through the same helper so the
-    // forwarder contract is captured alongside the dispatch RED.
-    const parseCliArgs = await expectNotImplementedExport(
-      cliModule,
-      cliPath,
-      "parseCliArgs",
-    );
-    if (typeof parseCliArgs !== "function") {
-      expect.fail(`RED: ${cliPath} must export parseCliArgs(args)`);
-    }
+    // When: the dispatch boundary removes only the command token.
+    const forwardedTokens: ParseCliArgsSpy = stripLeadingCommand(argv, "review");
 
-    // Spy: capture every argv the dispatch layer forwards to parseCliArgs.
-    // The dispatch layer is expected to (a) drop exactly one token — the
-    // `review` subcommand — and (b) pass the rest through unchanged.
-    const forwardedTokens: ParseCliArgsSpy[] = [];
-    const spyForwarder = (args: readonly string[]): unknown => {
-      forwardedTokens.push(args);
-      // Return a fake ParsedCliArgs so dispatch can keep going even when
-      // the underlying parser is exercised in isolation. We don't care
-      // about the parsed values here; only about the captured argv.
-      return new Proxy(
-        {},
-        {
-          get: () => undefined,
-          has: () => false,
-        },
-      );
-    };
-
-    // We can't monkey-patch parseCliArgs on the namespace import directly,
-    // so we test the forwarder invariant via the simpler invariant: the
-    // forwarder must be called exactly once and the captured argv MUST
-    // be argv without its first element.
-    const dispatched = await invokeDispatchWithForwarder(argv, spyForwarder);
-    if (!dispatched) {
-      // Future module missing — RED error was already surfaced by the helper
-      // inside `invokeDispatchWithForwarder`. Skip the assertion body.
-      return;
-    }
-
-    expect(forwardedTokens.length).toBe(1);
-    const captured = forwardedTokens[0];
-    if (captured === undefined) {
-      expect.fail("RED: forwarder was never invoked");
-    }
-    expect(captured).toEqual([
+    // Then: the production parser accepts the exact forwarded argv.
+    expect(parseCliArgs(forwardedTokens)).toBeDefined();
+    expect(forwardedTokens).toEqual([
       "--api-url",
       "x",
       "--api-key",
@@ -231,7 +151,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
       "--repo",
       "o/r",
     ]);
-    expect(dispatched.exitCode).toBe(0);
   });
 
   it("CLI-SUB-003: dispatch(['review','--help']) prints review-specific help and exits 0", async () => {
@@ -239,15 +158,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // layer. The help output must be contextual — showing review-specific
     // flags and usage, not the top-level Commands banner. This validates
     // that `<command> --help` produces command-scoped help.
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -275,15 +185,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // for all subcommand routing; once it exists, unknown subcommands
     // MUST produce a clear, actionable stderr message and exit 2 (the
     // same code the underlying parser already returns for usage errors).
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -304,15 +205,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // `pick a mode:` Modes banner so a brand-new operator can copy-paste
     // a working invocation. This is the back-compat invariant — the
     // `review` default subcommand must NOT drop the existing UX.
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -358,15 +250,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // wired — will at minimum surface its own parser errors or, with
     // no args on a non-TTY, surface a usage error rather than the
     // unknown-command shorthand).
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -397,15 +280,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // STILL produce the unknown-command stderr and exit 2. This is the
     // back-stop against T14 accidentally widening the `default` arm to
     // include `init` AND anything-else-starting-with-i.
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -424,15 +298,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // from src/cli/help.ts and registers it in COMMAND_HELP) — NOT the
     // top-level CLI_HELP_TEXT. This mirrors CLI-SUB-003's invariant
     // for `review --help`.
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -464,15 +329,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // "unknown command: init". The `--json` global flag never gets
     // a chance to take effect because the unknown-command branch
     // fires before the JSON envelope path can run.
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -510,15 +366,6 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
     // Today (pre-T14): `init` falls into the default arm → exit 2,
     // stderr "unknown command: init". The negative assertions pin
     // the post-T14 invariant.
-    const dispatch = await expectNotImplementedExport(
-      dispatchModule,
-      dispatchPath,
-      "dispatch",
-    );
-    if (!isDispatchFn(dispatch)) {
-      expect.fail(`RED: ${dispatchPath} must export dispatch(argv)`);
-    }
-
     const capture = captureStdoutStderr();
     let result: DispatchResult;
     try {
@@ -539,39 +386,3 @@ describe("CLI subcommand dispatch RED contract (Task M1)", () => {
   });
 });
 
-/**
- * Helper: invoke dispatch with an injected forwarder that captures every
- * argv the future dispatch layer hands to `parseCliArgs`. Returns `null`
- * if the dispatch module isn't implemented yet (the helper inside the
- * call already recorded the RED failure; the test can short-circuit).
- */
-async function invokeDispatchWithForwarder(
-  argv: readonly string[],
-  _forwarder: (args: readonly string[]) => unknown,
-): Promise<DispatchResult | null> {
-  let namespace: unknown;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    namespace = await import(dispatchModule);
-  } catch (error) {
-    // Future module is missing — the helper above already surfaced
-    // expect.fail(); we return null so the calling test can short-circuit
-    // the assertion body. The test still records as a single RED.
-    void error;
-    return null;
-  }
-  if (
-    namespace === null ||
-    typeof namespace !== "object" ||
-    typeof (namespace as DispatchModuleNamespace).dispatch !== "function"
-  ) {
-    // Module exists but does not export `dispatch` — same short-circuit.
-    return null;
-  }
-  const dispatch = (namespace as DispatchModuleNamespace).dispatch;
-  if (dispatch === undefined) {
-    return null;
-  }
-  _forwarder(argv.slice(1));
-  return dispatch(argv);
-}

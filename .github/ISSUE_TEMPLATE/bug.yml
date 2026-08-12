@@ -1,0 +1,38 @@
+name: Bug report
+description: Report a reproducible non-security defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Security issue? Stop and use the private advisory link in the issue chooser."
+  - type: input
+    id: version
+    attributes:
+      label: UmActually version
+      description: Output of `umactually --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Execution surface
+      options:
+        - Local CLI
+        - GitHub Actions
+        - GitHub Enterprise Server
+        - Azure DevOps
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include commands, sanitized inputs, expected result, and actual result.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Sanitized doctor output
+      description: Run `umactually doctor`; remove repository names, URLs, tokens, and personal data.

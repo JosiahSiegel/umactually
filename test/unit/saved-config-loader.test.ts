@@ -167,12 +167,11 @@ describe("saved-config precedence chain (P-1..P-7)", () => {
     // source name is `"savedConfig"` (bundle §1.2 conflict-resolution
     // rule) and that `configPath` is populated for the provenance entry.
     expect(serializeSavedConfig(fixture)).toMatch(/provider/);
-    // The slot ordering itself is verified by config-extended.test.ts;
-    // here we pin the textual ordering of the chain.
     const chain = "flag > canonical env > legacy REVIEW_* env > saved config > default";
-    expect(chain).toBe(
-      "flag > canonical env > legacy REVIEW_* env > saved config > default",
-    );
+    const tiers = chain.split(" > ");
+    expect(tiers).toHaveLength(5);
+    expect(tiers[0]).toBe("flag");
+    expect(tiers[4]).toBe("default");
   });
 
   it("P-2 pin: empty canonical env wins over saved value (loader concern, not saved-config)", async () => {
@@ -321,8 +320,12 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
     expect(result.message).toMatch(/symlink/);
   });
 
-  it("writes with mode 0o600 on POSIX (skipIf win32)", async () => {
-    if (process.platform === "win32") return; // POSIX-only assertion
+  it("writes with mode 0o600 on POSIX (skipIf win32)", async (ctx) => {
+    if (process.platform === "win32") {
+      // POSIX-only assertion
+      ctx.skip();
+      return;
+    }
     const { homeDir, cwd } = sandbox();
     const result = await writeSavedConfig(fixture, { homeDir, cwd, scope: "global" });
     expect(result.ok).toBe(true);
@@ -331,8 +334,11 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
     expect(mode).toBe(0o600);
   });
 
-  it("creates ~/.umactually with mode 0o700 on POSIX (skipIf win32)", async () => {
-    if (process.platform === "win32") return;
+  it("creates ~/.umactually with mode 0o700 on POSIX (skipIf win32)", async (ctx) => {
+    if (process.platform === "win32") {
+      ctx.skip();
+      return;
+    }
     const { homeDir, cwd } = sandbox();
     const result = await writeSavedConfig(fixture, { homeDir, cwd, scope: "global" });
     expect(result.ok).toBe(true);
@@ -419,6 +425,36 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
     expect(bytes.startsWith('{\n  "schemaVersion"')).toBe(true);
     // schemaVersion must come before provider.
     expect(bytes.indexOf('"schemaVersion"')).toBeLessThan(bytes.indexOf('"provider"'));
+  });
+
+  it("Task 6 boundary: provider config serialization is byte-identical and rejects policy keys", () => {
+    // The SavedConfig type excludes every policy field. Even if a future
+    // change tries to inject policy keys via a cast, the serializer MUST
+    // NOT emit them (security boundary: provider config is separate from
+    // the committed review policy). Byte-identical means two consecutive
+    // serializeSavedConfig calls produce the exact same string.
+    const baseConfig = {
+      schemaVersion: 1 as const,
+      provider: "openai-compatible" as const,
+      apiUrl: "https://api.example.com/v1",
+      model: "review-model",
+    };
+    const a = serializeSavedConfig(baseConfig);
+    const b = serializeSavedConfig(baseConfig);
+    expect(a).toBe(b);
+
+    // Belt-and-suspenders: assert no policy key ever leaks through the
+    // serialization even via a cast.
+    const evil = baseConfig as unknown as Record<string, unknown>;
+    evil["effort"] = "high";
+    evil["pathRules"] = [{ pattern: "src/**/*.ts" }];
+    evil["gateMode"] = "block";
+    evil["minimumSeverity"] = "warning";
+    const serialized = serializeSavedConfig(baseConfig);
+    expect(serialized).not.toContain("effort");
+    expect(serialized).not.toContain("pathRules");
+    expect(serialized).not.toContain("gateMode");
+    expect(serialized).not.toContain("minimumSeverity");
   });
 
   it("write-path prefix stays beneath <homeDir>/.umactually", async () => {

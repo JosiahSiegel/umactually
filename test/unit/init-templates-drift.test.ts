@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { renderCiTemplate } from "../../src/cli/init-templates.js";
 
 const versionPin = /npm install -g umactually@[^\s]+/gu;
 const canonicalFiles = {
@@ -11,36 +11,21 @@ const canonicalFiles = {
   azure: "examples/azure/azure-pipelines.yml",
 } as const;
 
-type RenderedTemplate = {
-  readonly body: string;
-  readonly relativePath: string;
-};
+const packageVersion = String(JSON.parse(
+  readFileSync(resolve("package.json"), "utf8"),
+).version);
 
-type RenderCiTemplate = (input: {
-  readonly target: "github" | "azure";
-  readonly packageVersion: string;
-}) => RenderedTemplate;
-
-function isRenderCiTemplate(value: unknown): value is RenderCiTemplate {
-  return typeof value === "function";
-}
-
-describe("init CI templates RED drift contract", () => {
+describe("init CI templates drift contract", () => {
   for (const [target, relativePath] of Object.entries(canonicalFiles)) {
     it(`${target} bytes equal the canonical file modulo the one version pin`, async () => {
       // Given: the checked-in canonical workflow, independent from generated output.
       const canonical = readFileSync(resolve(relativePath), "utf8").replace(versionPin, "npm install -g umactually@9.8.7");
 
       // When: the future inline template is rendered at the same version.
-      const candidate = await expectNotImplementedExport(
-        "../../src/cli/init-templates.js",
-        "src/cli/init-templates.ts",
-        "renderCiTemplate",
-      );
-      if (!isRenderCiTemplate(candidate)) {
-        expect.fail("init-templates module not implemented yet");
-      }
-      const rendered = candidate({ target: target === "github" ? "github" : "azure", packageVersion: "9.8.7" });
+      const rendered = renderCiTemplate({
+        target: target === "github" ? "github" : "azure",
+        packageVersion: "9.8.7",
+      });
 
       // Then: only the canonical version-pin line may vary.
       expect(rendered.body).toBe(canonical);
@@ -85,6 +70,20 @@ describe("init CI templates RED drift contract", () => {
     expect(body).toMatch(/umactually review --platform azure/u);
   });
 
+  for (const target of ["github", "azure"] as const) {
+    it(`${target}: generated workflow pins exactly the current package.json version`, () => {
+      // Given: the package version used by both npm/dev and bundled CLI paths.
+      // When: init renders the platform workflow using that running version.
+      const rendered = renderCiTemplate({ target, packageVersion });
+      const pins = [...rendered.body.matchAll(/umactually@(\d+\.\d+\.\d+)/gu)];
+
+      // Then: the generated workflow contains one immutable, exact npm pin.
+      expect(pins.map((match) => match[1])).toEqual([packageVersion]);
+      expect(rendered.body).not.toContain("umactually@latest");
+      expect(rendered.body).not.toContain("umactually@main");
+    });
+  }
+
   it("github + azure: every literal `umactually@<x.y.z>` pin equals the current package.json version", () => {
     // The plan ships both canonical example files with the same version
     // pin the release workflow publishes (`umactually@0.8.0`). If a
@@ -93,9 +92,6 @@ describe("init CI templates RED drift contract", () => {
     // both sides) — this guard catches the live drift directly.
     const githubBody = readFileSync(resolve(canonicalFiles.github), "utf8");
     const azureBody = readFileSync(resolve(canonicalFiles.azure), "utf8");
-    const packageVersion = JSON.parse(
-      readFileSync(resolve("package.json"), "utf8"),
-    ).version as string;
     const literalPin = new RegExp(`umactually@${packageVersion.replace(/\./gu, "\\.")}`, "u");
     expect(githubBody).toMatch(literalPin);
     expect(azureBody).toMatch(literalPin);

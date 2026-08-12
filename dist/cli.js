@@ -1,3 +1,4 @@
+import * as __WEBPACK_EXTERNAL_MODULE_typescript__ from "typescript";
 import { createRequire as __WEBPACK_EXTERNAL_createRequire } from "module";
 /******/ var __webpack_modules__ = ({
 
@@ -66,17 +67,1886 @@ module.exports = { cursor, scroll, erase, beep };
 
 /***/ }),
 
-/***/ 28:
-/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+/***/ 245:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "7f5bc0b4ff7db750334f.ts";
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   renderContextBlock: () => (/* binding */ renderContextBlock),
+/* harmony export */   td: () => (/* binding */ BUDGET_DEFAULTS)
+/* harmony export */ });
+/* unused harmony exports BUDGET_HARD_CAPS, collectContextProvenance */
+/* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(598);
+/* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(node_crypto__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */ var node_fs__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(24);
+/* harmony import */ var node_fs__WEBPACK_IMPORTED_MODULE_1___default = /*#__PURE__*/__nccwpck_require__.n(node_fs__WEBPACK_IMPORTED_MODULE_1__);
+/* harmony import */ var node_path__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(760);
+/* harmony import */ var node_path__WEBPACK_IMPORTED_MODULE_2___default = /*#__PURE__*/__nccwpck_require__.n(node_path__WEBPACK_IMPORTED_MODULE_2__);
+/* harmony import */ var _config_saved_config_js__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(711);
+// SPDX-License-Identifier: MIT
+//
+// Task 5 — Bounded repository context as auditable structured provenance.
+//
+// Replaces the previously-flattened instruction/context strings with a
+// typed `ContextItem` interface that carries source kind, base/head ref,
+// repository-relative path, path scope, trust level, byte count, SHA-256
+// content hash, and the rendered text. Selection is budget-bounded,
+// selection-order is deterministic, and every excluded candidate carries
+// an explicit reason. The content-free redacted context manifest is the
+// auditable surface the artifact layer persists.
+//
+// Supported languages: TypeScript / JavaScript (.ts/.tsx/.mts/.cts/.js/
+// .jsx/.mjs/.cjs) — using the already-installed TypeScript compiler API.
+// Unsupported languages and TS parse/resolution failures deterministically
+// fall back to changed diff hunks + applicable instruction files and
+// record `semanticContextStatus: unsupported|parse-failed|budget-exhausted`.
+// Reviews NEVER fail because of context collection.
+
+
+
+
+
+const BUDGET_DEFAULTS = Object.freeze({
+    totalBytes: 64 * 1024,
+    perFileBytes: 16 * 1024,
+    maxItems: 20,
+    maxFilesParsed: 200,
+    wallTimeMs: 750,
+});
+const BUDGET_HARD_CAPS = Object.freeze({
+    totalBytes: 256 * 1024,
+    perFileBytes: 32 * 1024,
+    maxItems: 80,
+    maxFilesParsed: 1000,
+    wallTimeMs: 3000,
+});
+// ---------------------------------------------------------------------------
+// Budget enforcement
+// ---------------------------------------------------------------------------
+function clampBudgets(input) {
+    const merged = {
+        totalBytes: input?.totalBytes ?? BUDGET_DEFAULTS.totalBytes,
+        perFileBytes: input?.perFileBytes ?? BUDGET_DEFAULTS.perFileBytes,
+        maxItems: input?.maxItems ?? BUDGET_DEFAULTS.maxItems,
+        maxFilesParsed: input?.maxFilesParsed ?? BUDGET_DEFAULTS.maxFilesParsed,
+        wallTimeMs: input?.wallTimeMs ?? BUDGET_DEFAULTS.wallTimeMs,
+    };
+    if (merged.totalBytes > BUDGET_HARD_CAPS.totalBytes) {
+        throw new Error(`context budget totalBytes=${merged.totalBytes} exceeds hard cap ${BUDGET_HARD_CAPS.totalBytes}`);
+    }
+    if (merged.perFileBytes > BUDGET_HARD_CAPS.perFileBytes) {
+        throw new Error(`context budget perFileBytes=${merged.perFileBytes} exceeds hard cap ${BUDGET_HARD_CAPS.perFileBytes}`);
+    }
+    if (merged.maxItems > BUDGET_HARD_CAPS.maxItems) {
+        throw new Error(`context budget maxItems=${merged.maxItems} exceeds hard cap ${BUDGET_HARD_CAPS.maxItems}`);
+    }
+    if (merged.maxFilesParsed > BUDGET_HARD_CAPS.maxFilesParsed) {
+        throw new Error(`context budget maxFilesParsed=${merged.maxFilesParsed} exceeds hard cap ${BUDGET_HARD_CAPS.maxFilesParsed}`);
+    }
+    if (merged.wallTimeMs > BUDGET_HARD_CAPS.wallTimeMs) {
+        throw new Error(`context budget wallTimeMs=${merged.wallTimeMs} exceeds hard cap ${BUDGET_HARD_CAPS.wallTimeMs}`);
+    }
+    return merged;
+}
+// ---------------------------------------------------------------------------
+// Path normalization / unsafe-path detection
+// ---------------------------------------------------------------------------
+function toPosix(p) {
+    return p.replaceAll(/\\/gu, "/");
+}
+function isUnsafeRepoPath(p) {
+    if (p.startsWith("/"))
+        return true;
+    if (/^[a-zA-Z]:[\\/]/.test(p))
+        return true;
+    const segments = p.split(/[\\/]/);
+    return segments.some((s) => s === ".." || s === ".");
+}
+function normalizeRepoPath(p) {
+    const t = toPosix(p);
+    if (t.startsWith("a/") || t.startsWith("b/")) {
+        return t.slice(2);
+    }
+    return t;
+}
+function isWithinCwdReal(real, cwdReal) {
+    return real === cwdReal || real.startsWith(`${cwdReal}${pathSep}`);
+}
+// ---------------------------------------------------------------------------
+// Glob → RegExp (small, predictable — mirrors prompt-files.ts scope)
+// ---------------------------------------------------------------------------
+const REGEX_ESCAPE_CHARS = new Set([
+    ".", "+", "(", ")", "|", "^", "$", "{", "}", "[", "]", "\\",
+]);
+function appendStarSequence(body, pattern, i) {
+    if (pattern[i + 1] !== "*") {
+        return { body: body + "[^/]*", next: i };
+    }
+    let next = i + 1;
+    if (pattern[next + 1] === "/")
+        next += 1;
+    return { body: body + ".*", next };
+}
+function appendEscapedChar(body, ch) {
+    if (REGEX_ESCAPE_CHARS.has(ch))
+        return body + `\\${ch}`;
+    return body + ch;
+}
+function appendLiteralChar(body, ch) {
+    if (ch === undefined)
+        return body;
+    return appendEscapedChar(body, ch);
+}
+function translateGlobBody(pattern) {
+    let body = "";
+    let i = 0;
+    while (i < pattern.length) {
+        const ch = pattern[i];
+        if (ch === "*") {
+            const r = appendStarSequence(body, pattern, i);
+            body = r.body;
+            // `r.next` advances past `**` or `**/` (skipping the second `*`
+            // and any trailing `/`); each branch ends with `i + 1` so the
+            // next iteration moves on past the consumed fragment.
+            i = r.next + 1;
+        }
+        else if (ch === "?") {
+            body += "[^/]";
+            i += 1;
+        }
+        else {
+            body = appendLiteralChar(body, ch);
+            i += 1;
+        }
+    }
+    return body;
+}
+function globToRegex(pattern) {
+    const body = translateGlobBody(pattern);
+    if (pattern.endsWith("/")) {
+        const dir = body.slice(0, -1);
+        return new RegExp(`(?:^${dir}$|^${dir}/|(?:^|.*/)${dir}(?:/|$))`, "u");
+    }
+    const finalBody = body.startsWith(".*/") ? `(?:.*/)?${body.slice(3)}` : body;
+    return new RegExp(`^${finalBody}$`, "u");
+}
+function matchesGlob(path, pattern) {
+    return globToRegex(pattern).test(toPosix(path));
+}
+// ---------------------------------------------------------------------------
+// TS-language detection
+// ---------------------------------------------------------------------------
+const TS_EXTENSIONS = new Set([
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".cts",
+    ".js",
+    ".jsx",
+    ".mjs",
+    ".cjs",
+]);
+function isTsLike(path) {
+    const lastDot = path.lastIndexOf(".");
+    if (lastDot === -1)
+        return false;
+    return TS_EXTENSIONS.has(path.slice(lastDot).toLowerCase());
+}
+function readWithinCwd(cwdReal, rel, perFileBytes) {
+    if (isUnsafeRepoPath(rel)) {
+        return { ok: false, reason: "outside-cwd" };
+    }
+    if (isAbsolute(rel)) {
+        return { ok: false, reason: "absolute-path" };
+    }
+    const abs = `${cwdReal}${rel.startsWith("/") ? "" : "/"}${rel}`;
+    let real;
+    try {
+        real = realpathSync(abs);
+    }
+    catch {
+        return { ok: false, reason: "not-found" };
+    }
+    if (!isWithinCwdReal(real, cwdReal)) {
+        return { ok: false, reason: "outside-cwd" };
+    }
+    let st;
+    try {
+        st = statSync(real);
+    }
+    catch {
+        return { ok: false, reason: "not-found" };
+    }
+    if (!st.isFile()) {
+        return { ok: false, reason: "not-a-file" };
+    }
+    if (isExcludedPath(rel)) {
+        return { ok: false, reason: "generated-or-build-artifact" };
+    }
+    if (st.size > perFileBytes) {
+        return { ok: false, reason: "byte-cap-exceeded" };
+    }
+    // The exact-byte truncation happens at the text-load site.
+    // We use the file size as a fast guard; trimming is applied at use.
+    let text;
+    try {
+        text = readFileSync(real, "utf8");
+    }
+    catch {
+        return { ok: false, reason: "read-failed" };
+    }
+    // Soft-cap (size <= perFileBytes) means we already are under the hard cap.
+    // If `text.length` > perFileBytes (e.g. multi-byte chars), exact-byte truncate.
+    const textBytes = Buffer.byteLength(text, "utf8");
+    if (textBytes > perFileBytes) {
+        text = truncateUtf8ToBytes(text, perFileBytes);
+    }
+    if (SECRET_REGEX.test(text)) {
+        SECRET_REGEX.lastIndex = 0;
+        return { ok: false, reason: "secret-detected" };
+    }
+    SECRET_REGEX.lastIndex = 0;
+    const truncatedBytes = Buffer.byteLength(text, "utf8");
+    return { ok: true, text, bytes: truncatedBytes };
+}
+function truncateUtf8ToBytes(s, maxBytes) {
+    if (Buffer.byteLength(s, "utf8") <= maxBytes)
+        return s;
+    // Binary-search the longest prefix whose UTF-8 byte-length <= maxBytes.
+    let lo = 0;
+    let hi = s.length;
+    while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (Buffer.byteLength(s.slice(0, mid), "utf8") <= maxBytes) {
+            lo = mid;
+        }
+        else {
+            hi = mid - 1;
+        }
+    }
+    return `${s.slice(0, lo)}\n[… truncated at ${maxBytes}-byte cap …]`;
+}
+// ---------------------------------------------------------------------------
+// SHA-256 helper
+// ---------------------------------------------------------------------------
+function sha256Hex(content) {
+    return createHash("sha256").update(content, "utf8").digest("hex");
+}
+function createSourceFileSafely(ts, filePath, text) {
+    try {
+        return ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, /* setParentNodes */ true);
+    }
+    catch {
+        return null;
+    }
+}
+function extractImportBindings(ts, node, imports) {
+    const importNode = node;
+    const moduleText = importNode.moduleSpecifier && ts.isStringLiteral(importNode.moduleSpecifier) ? importNode.moduleSpecifier.text : "";
+    const clause = importNode.importClause;
+    const bindings = clause?.namedBindings;
+    if (bindings && ts.isNamedImports(bindings)) {
+        for (const stmt of bindings.elements) {
+            if (stmt && stmt.name && stmt.name.escapedText) {
+                imports.push({ module: moduleText, name: String(stmt.name.escapedText) });
+            }
+        }
+    }
+    if (clause && clause.name) {
+        imports.push({ module: moduleText, name: String(clause.name.escapedText) });
+    }
+    if (!clause) {
+        imports.push({ module: moduleText, name: "" });
+    }
+}
+function recordDeclaration(declarations, name, kind, sf, positionNode) {
+    declarations.push({
+        name,
+        kind,
+        line: sf.getLineAndCharacterOfPosition(positionNode.getStart(sf)).line + 1,
+    });
+}
+function extractDeclarationsFromNode(ts, node, sf, declarations) {
+    if (node.kind === ts.SyntaxKind.VariableStatement) {
+        const declList = node.declarationList;
+        if (!declList)
+            return;
+        for (const decl of declList.declarations ?? []) {
+            const nm = decl.name;
+            if (nm && nm.kind === ts.SyntaxKind.Identifier && typeof nm.escapedText === "string") {
+                recordDeclaration(declarations, nm.escapedText, "const", sf, decl);
+            }
+        }
+        return;
+    }
+    const nameIdent = node.name;
+    if (!nameIdent || typeof nameIdent.escapedText !== "string")
+        return;
+    const name = nameIdent.escapedText;
+    switch (node.kind) {
+        case ts.SyntaxKind.FunctionDeclaration:
+            recordDeclaration(declarations, name, "function", sf, node);
+            return;
+        case ts.SyntaxKind.ClassDeclaration:
+            recordDeclaration(declarations, name, "class", sf, node);
+            return;
+        case ts.SyntaxKind.InterfaceDeclaration:
+            recordDeclaration(declarations, name, "interface", sf, node);
+            return;
+        case ts.SyntaxKind.TypeAliasDeclaration:
+            recordDeclaration(declarations, name, "type", sf, node);
+            return;
+        default:
+            return;
+    }
+}
+async function parseTsFile(filePath, text) {
+    // Dynamic import — the typescript compiler module references CJS-only
+    // `__filename` at module-init. Loading it lazily keeps the SEA blob's
+    // startup path (--version, --help, doctor, init) free of that crash.
+    const ts = await Promise.resolve(/* import() */).then(__nccwpck_require__.bind(__nccwpck_require__, 93));
+    const sf = createSourceFileSafely(ts, filePath, text);
+    if (sf === null) {
+        return { ok: false, reason: "parse-failed" };
+    }
+    // TS compiler reports parse errors via parseDiagnostics even when it
+    // produces a (partial) AST. Treat any error-category diagnostic as a
+    // hard parse-failure so we degrade to the diff_hunk fallback.
+    const parseDiagnostics = sf.parseDiagnostics ?? [];
+    const hasFatalDiagnostic = parseDiagnostics.some((d) => d.category === 1);
+    if (hasFatalDiagnostic) {
+        return { ok: false, reason: "parse-failed" };
+    }
+    const declarations = [];
+    const imports = [];
+    const sourceFile = sf;
+    function walk(node) {
+        node.forEachChild(walk);
+        if (ts.isImportDeclaration(node)) {
+            extractImportBindings(ts, node, imports);
+        }
+        if (ts.isExportDeclaration(node)) {
+            // expose named exports so the model can resolve re-exports
+            // (we don't pull the actual declaration; we just record the name).
+        }
+        extractDeclarationsFromNode(ts, node, sourceFile, declarations);
+    }
+    walk(sourceFile);
+    return { ok: true, declarations, imports };
+}
+function parseDiffBlocks(diffText) {
+    return diffText.split(/^diff --git /um).slice(1).map((block) => `diff --git ${block}`);
+}
+function extractTargetPath(block) {
+    for (const line of block.split(/\r?\n/u)) {
+        if (!line.startsWith("+++ "))
+            continue;
+        const raw = line.slice(4).split("\t")[0]?.trim() ?? "";
+        if (raw === "" || raw === "/dev/null")
+            return null;
+        return normalizeRepoPath(raw.startsWith("b/") ? raw.slice(2) : raw);
+    }
+    return null;
+}
+function extractHunkText(block, target) {
+    const hunks = [];
+    let startedAt = null;
+    let added = null;
+    for (const line of block.split(/\r?\n/u)) {
+        const hunkHeader = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@/u.exec(line);
+        if (hunkHeader !== null) {
+            if (startedAt !== null)
+                hunks.push(`@@ line ${startedAt}+`);
+            startedAt = Number(hunkHeader[1]);
+            added = 0;
+        }
+        if (line.startsWith("+") && !line.startsWith("+++") && startedAt !== null && added !== null) {
+            hunks.push(line);
+            added += 1;
+            if (added >= 30)
+                hunks.push("[… hunk truncated …]");
+        }
+    }
+    if (startedAt !== null)
+        hunks.push(`@@ line ${startedAt}+`);
+    return hunks.length > 0 ? { path: target, text: hunks.join("\n") } : null;
+}
+function extractHunks(diffText) {
+    const result = [];
+    for (const block of parseDiffBlocks(diffText)) {
+        const target = extractTargetPath(block);
+        if (target === null)
+            continue;
+        const hunk = extractHunkText(block, target);
+        if (hunk !== null)
+            result.push(hunk);
+    }
+    return result;
+}
+// ---------------------------------------------------------------------------
+// Helpers — diff path extraction
+// ---------------------------------------------------------------------------
+function diffPaths(diffText) {
+    return listDiffPaths(diffText).map((p) => normalizeRepoPath(p));
+}
+async function collectContextProvenance(input) {
+    const init = await clampAndInitBudgets(input);
+    const state = {
+        selected: [],
+        excluded: [],
+        counters: { filesParsed: 0, budgetBytes: 0 },
+        status: "ready",
+        budgetByteTotal: 0,
+    };
+    await collectFromChangedDeclarations(input, init, state);
+    await collectFromCallers(input, init, state);
+    await collectFromTestReferences(init, state);
+    collectExcludedItems(input, init, state);
+    return finalizeContextResult(init, state.selected, state.excluded, state.budgetByteTotal, state.status);
+}
+async function clampAndInitBudgets(input) {
+    const start = performance.now();
+    const budgets = clampBudgets(input.budgets);
+    const cwdReal = resolveCwdReal(input.cwd);
+    const diffPathsList = diffPaths(input.diffText);
+    const changedPaths = input.changedPaths !== undefined
+        ? input.changedPaths.map(normalizeRepoPath).filter((p) => diffPathsList.includes(p) || true)
+        : diffPathsList;
+    const instructionsByPath = new Map();
+    for (const p of input.applicableInstructions) {
+        const norm = normalizeRepoPath(p);
+        if (instructionsByPath.has(norm))
+            continue;
+        instructionsByPath.set(norm, await readInstructionText(cwdReal, norm));
+    }
+    const pathScopes = new Map();
+    for (const rule of input.pathScopedInstructionRules ?? []) {
+        pathScopes.set(normalizeRepoPath(rule.path), rule.scope);
+    }
+    return {
+        start,
+        budgets,
+        cwdReal,
+        baseRef: input.baseRef,
+        headRef: input.headRef,
+        changedPaths,
+        tsLikeChanged: changedPaths.filter(isTsLike),
+        instructionsByPath,
+        pathScopes,
+    };
+}
+function resolveCwdReal(cwd) {
+    try {
+        return realpathSync(cwd);
+    }
+    catch {
+        return cwd;
+    }
+}
+function maybeAddCandidate(init, state, candidate) {
+    if (state.selected.length >= init.budgets.maxItems)
+        return false;
+    if (performance.now() - init.start > init.budgets.wallTimeMs) {
+        state.status = "budget-exhausted";
+        return false;
+    }
+    const bytes = Buffer.byteLength(candidate.text, "utf8");
+    if (state.budgetByteTotal + bytes > init.budgets.totalBytes) {
+        state.status = "budget-exhausted";
+        return false;
+    }
+    state.selected.push({
+        sourceKind: candidate.kind,
+        baseRef: init.baseRef,
+        headRef: init.headRef,
+        path: candidate.path,
+        pathScope: candidate.pathScope,
+        trust: candidate.trust,
+        bytes,
+        contentHash: sha256Hex(candidate.text),
+        text: candidate.text,
+    });
+    state.budgetByteTotal += bytes;
+    return true;
+}
+function recordExclusion(state, path, reason) {
+    state.excluded.push({ path, reason });
+    // Mirror the user-facing exclusion list with a fast-lookup set so
+    // we can scrub items whose underlying file is unsafe (escapes
+    // cwd, oversized, secret-bearing, parse-failed). Step 2's
+    // readWithinCwd call always records a reason; if the file later
+    // appeared as a `diff_hunk` from Step 1, the hunk has to be
+    // scrubbed from `selected` AND its bytes refunded from the budget
+    // total. This is what keeps malicious/oversized content out of
+    // the provider prompt even though the diff text was already
+    // accepted in Step 1.
+    const i = state.selected.findIndex((it) => it.path === path);
+    if (i !== -1) {
+        state.budgetByteTotal = Math.max(0, state.budgetByteTotal - state.selected[i].bytes);
+        state.selected.splice(i, 1);
+    }
+}
+function isBudgetOrWallTimeExhausted(init, state) {
+    if (state.counters.filesParsed >= init.budgets.maxFilesParsed) {
+        state.status = "budget-exhausted";
+        return true;
+    }
+    if (performance.now() - init.start > init.budgets.wallTimeMs) {
+        state.status = "budget-exhausted";
+        return true;
+    }
+    return false;
+}
+async function emitDiffHunkCandidates(init, state, hunks) {
+    for (const hunk of hunks) {
+        if (state.selected.length >= init.budgets.maxItems)
+            break;
+        if (isExcludedPath(hunk.path)) {
+            recordExclusion(state, hunk.path, "generated-or-build-artifact");
+            continue;
+        }
+        const added = maybeAddCandidate(init, state, {
+            kind: "diff_hunk",
+            path: hunk.path,
+            pathScope: "<diff>",
+            text: hunk.text,
+            trust: "base",
+        });
+        if (!added)
+            break;
+    }
+}
+async function emitChangedDeclarationsForPath(init, state, path) {
+    const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
+    if (!r.ok) {
+        recordExclusion(state, path, r.reason);
+        return;
+    }
+    state.counters.filesParsed += 1;
+    const parsed = await parseTsFile(path, r.text);
+    if (!parsed.ok) {
+        state.status = "parse-failed";
+        // Fallback is the diff_hunk item already added; no further action.
+        return;
+    }
+    // Emit one `changed_declaration` per declared function/class/etc.
+    for (const decl of parsed.declarations) {
+        if (!maybeAddCandidate(init, state, {
+            kind: "changed_declaration",
+            path,
+            pathScope: path,
+            text: `${decl.kind} ${decl.name} (line ${decl.line})`,
+            trust: "base",
+        }))
+            break;
+    }
+}
+async function collectFromChangedDeclarations(input, init, state) {
+    // Step 1 — diff hunks for every changed path (always present as fallback).
+    const hunks = extractHunks(input.diffText);
+    if (init.tsLikeChanged.length === 0 && init.changedPaths.length > 0) {
+        state.status = "unsupported";
+    }
+    await emitDiffHunkCandidates(init, state, hunks);
+    // Step 2 — TS declarations for changed TS files.
+    for (const path of init.tsLikeChanged) {
+        if (isBudgetOrWallTimeExhausted(init, state))
+            break;
+        await emitChangedDeclarationsForPath(init, state, path);
+    }
+}
+async function collectFromCallers(input, init, state) {
+    // Same-project imports + reverse-import scan over standard test/source
+    // directories. Both write caller/callee items.
+    await collectResolvedImportTargets(input, init, state);
+    await collectReverseImporters(input, init, state);
+}
+async function collectResolvedImportTargets(input, init, state) {
+    for (const path of init.tsLikeChanged) {
+        if (markBudgetOrWallTimeExhausted(init, state))
+            break;
+        const parsed = await readAndParseBudgetedFile(init, state, path);
+        if (parsed === null || !parsed.ok)
+            continue;
+        for (const imp of parsed.imports) {
+            if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+                break;
+            await emitCalleeForImport(input, init, state, path, imp);
+        }
+    }
+}
+function markBudgetOrWallTimeExhausted(init, state) {
+    if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+        return true;
+    if (performance.now() - init.start <= init.budgets.wallTimeMs)
+        return false;
+    state.status = "budget-exhausted";
+    return true;
+}
+async function readAndParseBudgetedFile(init, state, path) {
+    const r = readWithinCwd(init.cwdReal, path, init.budgets.perFileBytes);
+    if (!r.ok)
+        return null;
+    state.counters.filesParsed += 1;
+    return await parseTsFile(path, r.text);
+}
+async function emitCalleeForImport(input, init, state, path, imp) {
+    const target = resolveSameProjectImport(input.cwd, path, imp.module);
+    if (target === null)
+        return;
+    if (isExcludedPath(target)) {
+        recordExclusion(state, target, "generated-or-build-artifact");
+        return;
+    }
+    const targetRead = readWithinCwd(init.cwdReal, target, init.budgets.perFileBytes);
+    if (!targetRead.ok) {
+        recordExclusion(state, target, targetRead.reason);
+        return;
+    }
+    state.counters.filesParsed += 1;
+    const listed = imp.name.length > 0 ? imp.name : "*";
+    const header = `// callee: imports { ${listed} } from "${target}"`;
+    maybeAddCandidate(init, state, {
+        kind: "direct_caller_or_callee",
+        path: target,
+        pathScope: path,
+        text: `${header}\n${targetRead.text}`,
+        trust: "base",
+    });
+}
+async function collectReverseImporters(input, init, state) {
+    const changedBaseNames = new Set(init.tsLikeChanged.map((p) => basenameOf(p).replace(/\.[jt]sx?$/u, "")));
+    const callerSeeds = [
+        "src",
+        "lib",
+        "tests",
+        "test",
+        "__tests__",
+    ];
+    const seenCallerFiles = new Set();
+    for (const seed of callerSeeds) {
+        if (isBudgetOrWallTimeExhausted(init, state))
+            break;
+        await scanCallerSeed(input, init, state, seed, changedBaseNames, seenCallerFiles);
+    }
+}
+async function scanCallerSeed(input, init, state, seed, changedBaseNames, seenCallerFiles) {
+    const entries = readdirSafe(init.cwdReal, seed);
+    if (entries === null)
+        return;
+    for (const rel of entries) {
+        if (isBudgetOrWallTimeExhausted(init, state))
+            break;
+        if (!isTsLike(rel))
+            continue;
+        if (init.tsLikeChanged.includes(rel))
+            continue;
+        if (seenCallerFiles.has(rel))
+            continue;
+        seenCallerFiles.add(rel);
+        await tryImportCallerFile(input, init, state, rel, changedBaseNames);
+    }
+}
+async function tryImportCallerFile(input, init, state, rel, changedBaseNames) {
+    const readAttempt = readWithinCwd(init.cwdReal, rel, init.budgets.perFileBytes);
+    if (!readAttempt.ok) {
+        recordExclusion(state, rel, readAttempt.reason);
+        return;
+    }
+    state.counters.filesParsed += 1;
+    const parsedCaller = await parseTsFile(rel, readAttempt.text);
+    if (!parsedCaller.ok)
+        return;
+    const hits = filterChangedBaseImports(input, rel, parsedCaller.imports, changedBaseNames);
+    if (hits.length === 0)
+        return;
+    const symbols = [...new Set(hits.map((h) => h.name).filter((n) => n.length > 0))];
+    const header = `// caller: imports { ${symbols.join(", ") || "*"} } from "${rel}"`;
+    maybeAddCandidate(init, state, {
+        kind: "direct_caller_or_callee",
+        path: rel,
+        pathScope: rel,
+        text: `${header}\n${readAttempt.text}`,
+        trust: "base",
+    });
+}
+function filterChangedBaseImports(input, rel, imports, changedBaseNames) {
+    return imports.filter((imp) => {
+        if (imp.module.length === 0)
+            return false;
+        if (!imp.module.startsWith("."))
+            return false;
+        const target = resolveSameProjectImport(input.cwd, rel, imp.module);
+        if (target === null)
+            return false;
+        const bn = basenameOf(target).replace(/\.[jt]sx?$/u, "");
+        return changedBaseNames.has(bn);
+    });
+}
+function readdirSafe(cwdReal, seed) {
+    const seedAbs = `${cwdReal}${seed.startsWith("/") ? "" : "/"}${seed}`;
+    try {
+        return readdirSync(seedAbs, { recursive: true, withFileTypes: true }).map((d) => {
+            // Include both regular files and symlinks so the per-entry
+            // realpath guard in `readWithinCwd` can record an explicit
+            // exclusion for an escape. Without this, a symlink targeting
+            // outside cwd would be silently invisible to the caller scan.
+            const isRegular = d.isFile();
+            const isSymlink = d.isSymbolicLink();
+            if (!isRegular && !isSymlink)
+                return null;
+            const parent = d.parentPath
+                ?? d.path
+                ?? "";
+            const name = d.name;
+            const full = parent ? `${parent}/${name}` : name;
+            return full.startsWith(`${cwdReal}/`) ? full.slice(`${cwdReal}/`.length) : full;
+        }).filter((v) => v !== null);
+    }
+    catch {
+        return null;
+    }
+}
+const TEST_CANDIDATE_BUILDERS = [
+    (base) => `src/${base}.test.ts`,
+    (base) => `src/${base}.spec.ts`,
+    (base) => `src/${base}.test.tsx`,
+    (base) => `src/${base}.spec.tsx`,
+    (base) => `tests/${base}.test.ts`,
+    (base) => `tests/${base}.spec.ts`,
+    (base) => `__tests__/${base}.test.ts`,
+    (base) => `__tests__/${base}.spec.ts`,
+];
+async function collectFromTestReferences(init, state) {
+    for (const path of init.tsLikeChanged) {
+        if (isTestReferenceBudgetExhausted(init, state))
+            break;
+        await tryEmitFirstTestCandidateForPath(init, state, path);
+    }
+}
+function isTestReferenceBudgetExhausted(init, state) {
+    if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+        return true;
+    if (performance.now() - init.start > init.budgets.wallTimeMs)
+        return true;
+    return false;
+}
+async function tryEmitFirstTestCandidateForPath(init, state, path) {
+    const base = basenameOf(path).replace(/\.[jt]sx?$/u, "");
+    if (base.length === 0)
+        return;
+    for (const mkCand of TEST_CANDIDATE_BUILDERS) {
+        if (state.counters.filesParsed >= init.budgets.maxFilesParsed)
+            break;
+        const cand = mkCand(base);
+        if (tryEmitTestCandidate(init, state, path, base, cand))
+            return;
+    }
+}
+function tryEmitTestCandidate(init, state, sourcePath, base, cand) {
+    if (isExcludedPath(cand)) {
+        recordExclusion(state, cand, "generated-or-build-artifact");
+        return false;
+    }
+    const r = readWithinCwd(init.cwdReal, cand, init.budgets.perFileBytes);
+    if (!r.ok)
+        return false;
+    state.counters.filesParsed += 1;
+    maybeAddCandidate(init, state, {
+        kind: "test_reference",
+        path: cand,
+        pathScope: sourcePath,
+        text: `// test for ${base}\n${r.text}`,
+        trust: "base",
+    });
+    return true;
+}
+function emitInstructionCandidates(init, state) {
+    // Step 5 — Applicable instructions, path-scoped rules applied.
+    for (const [path, text] of init.instructionsByPath) {
+        if (text === null)
+            continue;
+        if (state.selected.length >= init.budgets.maxItems)
+            break;
+        if (isExcludedPath(path)) {
+            recordExclusion(state, path, "generated-or-build-artifact");
+            continue;
+        }
+        const scope = init.pathScopes.get(path) ?? "*";
+        if (!init.changedPaths.some((p) => matchesGlob(p, scope))) {
+            recordExclusion(state, path, "outside-path-scope");
+            continue;
+        }
+        maybeAddCandidate(init, state, {
+            kind: "instruction",
+            path,
+            pathScope: scope,
+            text: `// base-branch instruction (applies to ${scope})\n${text}`,
+            trust: "base",
+        });
+    }
+}
+function recordIgnoredHeadBranchInstructions(input, state) {
+    if (input.headBranchInstructionTexts !== undefined) {
+        for (const path of input.headBranchInstructionTexts.keys()) {
+            const norm = normalizeRepoPath(path);
+            if (input.applicableInstructions.includes(norm) || input.applicableInstructions.includes(path)) {
+                if (!state.excluded.some((e) => e.path === norm && e.reason === "head-branch-ignored-trust")) {
+                    state.excluded.push({ path: norm, reason: "head-branch-ignored-trust" });
+                }
+            }
+        }
+    }
+}
+function collectExcludedItems(input, init, state) {
+    emitInstructionCandidates(init, state);
+    recordIgnoredHeadBranchInstructions(input, state);
+}
+function finalizeContextResult(init, selectedRaw, excludedRaw, budgetByteTotal, collectedStatus) {
+    const selected = [...selectedRaw];
+    selected.sort(compareContextItem);
+    // PR-mode trust policy: head-branch instruction content is NEVER trusted.
+    for (let i = 0; i < selected.length; i += 1) {
+        const it = selected[i];
+        selected[i] = { ...it, trust: it.trust === "head" ? "untrusted" : it.trust };
+    }
+    const budgetHash = sha256Hex(JSON.stringify(init.budgets) + `\n${selected.length}\n${budgetByteTotal}`);
+    return {
+        items: Object.freeze(selected),
+        excluded: Object.freeze(excludedRaw),
+        budgets: init.budgets,
+        semanticContextStatus: collectedStatus,
+        budgetHash,
+        bytesUsed: budgetByteTotal,
+    };
+}
+// ---------------------------------------------------------------------------
+// Instruction text helper
+// ---------------------------------------------------------------------------
+async function readInstructionText(cwdReal, rel) {
+    const r = readWithinCwd(cwdReal, rel, BUDGET_DEFAULTS.perFileBytes);
+    if (!r.ok)
+        return "";
+    return r.text;
+}
+// ---------------------------------------------------------------------------
+// Same-project import resolver
+// ---------------------------------------------------------------------------
+function resolveSameProjectImport(cwd, fromFile, spec) {
+    if (spec.length === 0)
+        return null;
+    if (isAbsolute(spec) || spec.startsWith("/"))
+        return null;
+    if (spec.startsWith(".")) {
+        const fromDir = posixDirname(toPosix(fromFile));
+        const joined = posixResolve(fromDir, spec);
+        const slashed = joined.startsWith("/") ? joined : `${cwd}/${joined}`;
+        if (slashed.startsWith(`${cwd}/`) || slashed === `${cwd}`) {
+            const rel = slashed.slice(`${cwd}/`.length);
+            return rel;
+        }
+        return null;
+    }
+    return null;
+}
+function posixDirname(p) {
+    const t = p.replaceAll(/\\/gu, "/");
+    const slash = t.lastIndexOf("/");
+    return slash === -1 ? "" : t.slice(0, slash);
+}
+function posixResolve(fromDir, spec) {
+    const parts = (fromDir + "/" + spec).split("/").filter((s) => s.length > 0 && s !== ".");
+    const out = [];
+    for (const seg of parts) {
+        if (seg === "..") {
+            out.pop();
+        }
+        else {
+            out.push(seg);
+        }
+    }
+    return out.join("/");
+}
+// ---------------------------------------------------------------------------
+// Basename helper
+// ---------------------------------------------------------------------------
+function basenameOf(p) {
+    const t = toPosix(p);
+    const slash = t.lastIndexOf("/");
+    return slash === -1 ? t : t.slice(slash + 1);
+}
+// ---------------------------------------------------------------------------
+// Comparison
+// ---------------------------------------------------------------------------
+function comparePaths(a, b) {
+    if (a < b)
+        return -1;
+    if (a > b)
+        return 1;
+    return 0;
+}
+function compareContextItem(a, b) {
+    const ORDER = {
+        changed_declaration: 0,
+        related_type: 1,
+        direct_caller_or_callee: 2,
+        test_reference: 3,
+        instruction: 4,
+        diff_hunk: 5,
+    };
+    const ord = ORDER[a.sourceKind] - ORDER[b.sourceKind];
+    if (ord !== 0)
+        return ord;
+    return comparePaths(a.path, b.path);
+}
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+/**
+ * Render either the model-facing block (with file text) or the
+ * content-free manifest. The default `kind: "rendered"` is what
+ * `buildProviderPrompts` embeds in the user prompt; pass `asManifest: true`
+ * to get the content-free manifest for the artifact layer.
+ */
+function renderContextBlock(result, opts = {}) {
+    if (opts.asManifest === true) {
+        const lines = [];
+        lines.push(...[
+            "Context manifest (content-free):",
+            `semanticContextStatus: ${result.semanticContextStatus}`,
+            `budgets: ${JSON.stringify(result.budgets)}`,
+            `budgetHash: ${result.budgetHash}`,
+            `bytesUsed: ${result.bytesUsed}`,
+            `items: ${result.items.length} included, ${result.excluded.length} excluded`,
+        ]);
+        for (const it of result.items) {
+            lines.push(`- ${it.sourceKind} ${it.path} (scope=${it.pathScope} trust=${it.trust} bytes=${it.bytes} sha256=${it.contentHash})`);
+        }
+        if (result.excluded.length > 0) {
+            lines.push("exclusions:");
+            for (const ex of result.excluded) {
+                lines.push(`- ${ex.path}: ${ex.reason}`);
+            }
+        }
+        return {
+            kind: "manifest",
+            text: lines.join("\n"),
+            included: result.items.length,
+            excluded: result.excluded.length,
+            status: result.semanticContextStatus,
+        };
+    }
+    const lines = [];
+    lines.push("Repository context (typed provenance, budget-bounded):");
+    lines.push(`status: ${result.semanticContextStatus}`);
+    for (const it of result.items) {
+        lines.push("");
+        lines.push(`--- [${it.sourceKind}] ${it.path} (trust=${it.trust}, scope=${it.pathScope}, bytes=${it.bytes}, sha256=${it.contentHash.slice(0, 12)}…) ---`);
+        lines.push(it.text);
+    }
+    return {
+        kind: "rendered",
+        text: lines.join("\n"),
+        included: result.items.length,
+    };
+}
+// Re-export so callers can import from one place.
+
+
 
 /***/ }),
 
-/***/ 802:
+/***/ 711:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+
+// EXPORTS
+__nccwpck_require__.d(__webpack_exports__, {
+  Tq: () => (/* binding */ DEFAULT_ANTHROPIC_URL),
+  Nx: () => (/* binding */ DEFAULT_OPENAI_URL),
+  xp: () => (/* binding */ SAVED_CONFIG_GLOBAL_PATH),
+  MM: () => (/* binding */ SAVED_CONFIG_REPO_PATH),
+  uy: () => (/* binding */ SAVED_CONFIG_SCHEMA_VERSION),
+  VO: () => (/* binding */ SECRET_REGEX),
+  qj: () => (/* binding */ readSavedConfig),
+  $K: () => (/* binding */ redactSecretsInString),
+  Mw: () => (/* binding */ serializeSavedConfig),
+  rn: () => (/* binding */ writeSavedConfig)
+});
+
+// UNUSED EXPORTS: SAVED_CONFIG_GLOBAL_DIR, SAVED_CONFIG_GLOBAL_LOCK, VALID_PROVIDERS
+
+// EXTERNAL MODULE: external "node:path"
+var external_node_path_ = __nccwpck_require__(760);
+// EXTERNAL MODULE: external "node:fs"
+var external_node_fs_ = __nccwpck_require__(24);
+// EXTERNAL MODULE: ./src/util/fs-atomic.ts
+var fs_atomic = __nccwpck_require__(95);
+// EXTERNAL MODULE: ./src/util/brand.ts
+var brand = __nccwpck_require__(365);
+;// CONCATENATED MODULE: ./src/util/saved-config-flock.ts
+// SPDX-License-Identifier: MIT
+// Internal POSIX `flock(2)` wrapper used by `saved-config.ts` to serialize
+// concurrent `umactually init` invocations.
+//
+// node:fs does not expose `flock(2)` directly and we don't want to add a
+// native dependency. We shell out to the coreutils `flock(1)` CLI with the
+// `-n` flag (non-blocking try-lock) and pass the LOCK FILE PATH (not the
+// fd number) — passing an fd number to flock(1) only works when the child
+// process inherits the parent's fd table, which is not portable across
+// CI sandboxes, vite-node workers, or any setup that uses
+// `stdio: "ignore"`. The path form uses the same inode and is portable.
+//
+// On hosts without `flock(1)` (macOS without coreutils, alpine without
+// busybox flock) we fall through to a lenient path — the atomic-rename
+// write in `saved-config.ts` still protects against corruption; we lose
+// only the "second init wins cleanly" guarantee. v1 of the wizard
+// documents this as single-machine-only and the parent writeSavedConfig()
+// guards with a no-op on win32.
+class FlockUnavailableError extends Error {
+    constructor() {
+        super("flock(1) is unavailable");
+        this.name = "FlockUnavailableError";
+    }
+}
+function tryFlockNonBlocking(lockPath) {
+    try {
+        const { spawnSync } = __nccwpck_require__(421);
+        const r = spawnSync("flock", ["-n", lockPath, "true"], { stdio: "ignore", timeout: 1000 });
+        return r.status === 0;
+    }
+    catch {
+        throw new FlockUnavailableError();
+    }
+}
+
+;// CONCATENATED MODULE: ./src/config/saved-config.ts
+// SPDX-License-Identifier: MIT
+// `umactually init` saved-config persistence.
+//
+// Stores typed, NON-SECRET provider settings at `<homeDir>/.umactually/config.json`
+// (or `<cwd>/umactually.config.json` when the user opts into repo scope). The shape
+// is intentionally small:
+//
+//   { schemaVersion: 1, provider, [apiUrl], [model] }
+//
+// `apiKey` is NEVER read from or written to this file. The wizard prompts for it
+// at runtime (flag/env) and uses it for the live provider HEAD probe, but the
+// secret stays in the operator's env / CI secret store. The bundle §1.6 contract
+// is enforced at three layers:
+//
+//   1. The `SavedConfig` type excludes `apiKey`.
+//   2. `redactSecretsInString` is the canonical scrubber for any field that
+//      happens to be populated with a secret-shaped value by mistake.
+//   3. `writeSavedConfig` runs a defensive secret-regex scan over the FINAL
+//      serialized bytes before releasing the lock — if the regex matches, the
+//      write is refused with exit-1 hint ("writer produced an unintended
+//      secret literal").
+//
+// Layer 3 is paranoia: layers 1+2 already prevent the leak. The scan exists so
+// a future change that adds a new string field cannot silently regress the
+// no-secrets-at-rest guarantee.
+
+
+
+
+
+/**
+ * Module-level mutable holder for the flock-availability signal. The
+ * lock acquisition block writes to it; the success-return path reads
+ * it. Avoids threading the flag through every early-return in the
+ * writer. Reset to `false` on every writer entry (see writeSavedConfig).
+ */
+const writeSavedConfigFlockUnavailable = { flag: false };
+const SAVED_CONFIG_SCHEMA_VERSION = 1;
+const SAVED_CONFIG_GLOBAL_PATH = (homeDir) => (0,external_node_path_.join)(homeDir, ".umactually", "config.json");
+const SAVED_CONFIG_REPO_PATH = (cwd) => (0,external_node_path_.join)(cwd, "umactually.config.json");
+const SAVED_CONFIG_GLOBAL_DIR = (homeDir) => (0,external_node_path_.join)(homeDir, ".umactually");
+const SAVED_CONFIG_GLOBAL_LOCK = (homeDir) => (0,external_node_path_.join)(homeDir, ".umactually", "init.lock");
+const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
+const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
+/**
+ * The canonical regex for any string-shaped secret the runtime or scanner
+ * recognizes. Exported so callers (tests, log filters) can use the exact same
+ * pattern.
+ */
+const SECRET_REGEX = /gh[pousr]_\w+|glpat-\w+|s\.r\w+|sk-\w+|eyJ[\w-]+\.[\w-]+/gu;
+const VALID_PROVIDERS = new Set([
+    "openai-compatible",
+    "anthropic",
+    "copilot",
+]);
+// ---------------------------------------------------------------------------
+// Read path
+// ---------------------------------------------------------------------------
+/**
+ * Resolve the effective saved config by checking the repo path first
+ * (`<cwd>/umactually.config.json`) and falling back to the global path
+ * (`<homeDir>/.umactually/config.json`). Returns `config: null` if neither
+ * file exists.
+ *
+ * Refuses:
+ *   - symlinks at either candidate path (exit 1, hint to remove the symlink)
+ *   - non-regular files (exit 1)
+ *   - malformed JSON (exit 2, "corrupt saved config at <path>" with repair hint)
+ *   - missing/wrong `schemaVersion` (exit 2)
+ *   - unknown `provider` (exit 2)
+ *
+ * Empty string in any optional field is coerced to absent (mirrors the
+ * `pickString` empty-string-as-missing rule in `loader.ts`).
+ */
+function readSavedConfig(deps) {
+    const fs = deps.fs ?? fs_atomic/* defaultFsAdapter */.aO;
+    for (const candidate of [SAVED_CONFIG_REPO_PATH(deps.cwd), SAVED_CONFIG_GLOBAL_PATH(deps.homeDir)]) {
+        if (!fs.exists(candidate))
+            continue;
+        const result = readCandidate(candidate, fs);
+        if (result !== null)
+            return result;
+    }
+    return { ok: true, config: null, path: SAVED_CONFIG_GLOBAL_PATH(deps.homeDir) };
+}
+/**
+ * Try to read and validate one candidate saved-config path. Returns
+ * `null` when the candidate is missing (the caller advances to the
+ * next candidate) and a fully-formed `ReadSavedConfigResult`
+ * otherwise (success OR hard failure).
+ */
+function readCandidate(candidate, fs) {
+    if (!fs.exists(candidate))
+        return null;
+    if (fs.isSymlink(candidate))
+        return readSymlinkFail(candidate);
+    if (!fs.isFile(candidate))
+        return readNotFileFail(candidate);
+    const raw = readCandidateRaw(candidate, fs);
+    if ("ok" in raw)
+        return raw;
+    const parsed = parseCandidateJson(candidate, raw.value);
+    if ("ok" in parsed)
+        return parsed;
+    const validated = validateSavedConfig(parsed.value, candidate);
+    if (!validated.ok)
+        return validated;
+    return { ok: true, config: validated.config, path: candidate };
+}
+/**
+ * Read the raw bytes of one candidate file; wraps the IO failure
+ * in the canonical `corrupt saved config` envelope.
+ */
+function readCandidateRaw(candidate, fs) {
+    try {
+        return { value: fs.readFile(candidate) };
+    }
+    catch (err) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+        };
+    }
+}
+/**
+ * Parse one candidate file's raw bytes as JSON; wraps the parse
+ * failure in the canonical `corrupt saved config` envelope.
+ */
+function parseCandidateJson(candidate, raw) {
+    try {
+        return { value: JSON.parse(raw) };
+    }
+    catch (err) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+        };
+    }
+}
+/**
+ * Build the "refusing to read saved config: symlink" envelope.
+ */
+function readSymlinkFail(candidate) {
+    return {
+        ok: false,
+        path: candidate,
+        exitCode: 1,
+        message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
+    };
+}
+/**
+ * Build the "refusing to read saved config: not a regular file" envelope.
+ */
+function readNotFileFail(candidate) {
+    return {
+        ok: false,
+        path: candidate,
+        exitCode: 1,
+        message: `refusing to read saved config: ${candidate} is not a regular file`,
+    };
+}
+function validateSavedConfig(parsed, candidate) {
+    if (parsed === null || typeof parsed !== "object") {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `corrupt saved config at ${candidate}: expected object, received ${parsed === null ? "null" : typeof parsed}`,
+        };
+    }
+    const obj = parsed;
+    if (obj["schemaVersion"] !== SAVED_CONFIG_SCHEMA_VERSION) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `unsupported schemaVersion in ${candidate}: expected ${SAVED_CONFIG_SCHEMA_VERSION}, received ${JSON.stringify(obj["schemaVersion"])}`,
+        };
+    }
+    if (typeof obj["provider"] !== "string" || !VALID_PROVIDERS.has(obj["provider"])) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `invalid provider in ${candidate}: ${JSON.stringify(obj["provider"])} (expected one of ${[...VALID_PROVIDERS].join(", ")})`,
+        };
+    }
+    const apiUrlRaw = obj["apiUrl"];
+    const modelRaw = obj["model"];
+    // Type guard: optional fields must be a string when present. Anything
+    // else (number, array, null) is rejected — empty string is treated as
+    // absent (mirrors pickString's empty-string-as-missing rule in
+    // loader.ts:286-299). The wizard's default-acceptance path (press
+    // Enter) leaves the field at "" which the writer used to serialize
+    // verbatim — we coerce to undefined here so the next read round-trips
+    // cleanly without losing type information.
+    if (apiUrlRaw !== undefined && (typeof apiUrlRaw !== "string")) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `invalid apiUrl in ${candidate}: expected string when present`,
+        };
+    }
+    if (modelRaw !== undefined && (typeof modelRaw !== "string")) {
+        return {
+            ok: false,
+            path: candidate,
+            exitCode: 2,
+            message: `invalid model in ${candidate}: expected string when present`,
+        };
+    }
+    const apiUrl = typeof apiUrlRaw === "string" && apiUrlRaw.length > 0 ? apiUrlRaw : undefined;
+    const model = typeof modelRaw === "string" && modelRaw.length > 0 ? modelRaw : undefined;
+    const config = {
+        schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
+        provider: obj["provider"],
+        ...(apiUrl !== undefined ? { apiUrl } : {}),
+        ...(model !== undefined ? { model } : {}),
+    };
+    return { ok: true, config };
+}
+// ---------------------------------------------------------------------------
+// Write path
+// ---------------------------------------------------------------------------
+/**
+ * Persist `config` atomically. Honors the no-secrets-at-rest contract:
+ *   - The `SavedConfig` type excludes `apiKey`; this function never reads one.
+ *   - A defensive secret-regex scan over the FINAL bytes catches any
+ *     accidental leak (e.g. a future field that accepts free-form input).
+ *
+ * Safety rails:
+ *   - Acquires an advisory flock on `<homeDir>/.umactually/init.lock` (POSIX
+ *     `flock(2)` via the `flock(1)` CLI; Windows is a no-op, see note below).
+ *   - Creates `<homeDir>/.umactually/` with mode 0o700 on POSIX.
+ *   - Refuses symlinks at the target path (exit 1).
+ *   - Prompts before overwriting an existing regular file; `--force`
+ *     bypasses the prompt.
+ *   - On malformed JSON in the existing file, moves it aside to
+ *     `<path>.bak-<mtime>` and proceeds.
+ *   - Uses `writeFileAtomic` (sibling-tempfile + rename) and `chmod 0o600`
+ *     on POSIX. Windows inherits the parent directory ACL.
+ *
+ * Windows flock note: `flock(2)` is POSIX-only. On Windows we open the lock
+ * file (creating it if missing) and rely on the OS's default sharing mode
+ * to serialize concurrent init invocations; this is best-effort and
+ * matches the wizard's documented v1 single-OS-at-a-time expectation.
+ * The lock fd is released in `finally`.
+ */
+async function writeSavedConfig(config, deps) {
+    writeSavedConfigFlockUnavailable.flag = false;
+    const fs = deps.fs ?? fs_atomic/* defaultFsAdapter */.aO;
+    const platform = deps.platform ?? process.platform;
+    const isPosix = platform !== "win32";
+    const targetPath = deps.scope === "repo"
+        ? SAVED_CONFIG_REPO_PATH(deps.cwd)
+        : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
+    const targetDir = deps.scope === "repo" ? deps.cwd : SAVED_CONFIG_GLOBAL_DIR(deps.homeDir);
+    const lockPath = SAVED_CONFIG_GLOBAL_LOCK(deps.homeDir);
+    let lockFd = null;
+    try {
+        const lock = acquireInitLock({
+            isPosix,
+            homeDir: deps.homeDir,
+            lockPath,
+        });
+        if ("error" in lock)
+            return lock.error;
+        lockFd = lock.fd;
+        writeSavedConfigFlockUnavailable.flag = lock.lockUnavailable;
+        const dirErr = ensureTargetDir(targetDir, isPosix, deps.scope);
+        if (dirErr !== null)
+            return dirErr;
+        if (fs.isSymlink(targetPath)) {
+            return targetSymlinkFail(targetPath);
+        }
+        const existingErr = await handleExistingTarget(targetPath, fs, deps);
+        if (existingErr !== null)
+            return existingErr;
+        const serialized = serializeSavedConfig(config);
+        const secretErr = scanForSecretLiteral(serialized);
+        if (secretErr !== null)
+            return secretErr;
+        const writeErr = writeAndChmod(targetPath, serialized, isPosix);
+        if (writeErr !== null)
+            return writeErr;
+        const verifyErr = verifyFileMode(targetPath, isPosix);
+        if (verifyErr !== null)
+            return verifyErr;
+        return {
+            ok: true,
+            path: targetPath,
+            bytes: Buffer.byteLength(serialized, "utf8"),
+            lockUnavailable: writeSavedConfigFlockUnavailable.flag,
+        };
+    }
+    finally {
+        releaseInitLock(lockFd, isPosix);
+    }
+}
+/**
+ * POSIX-only advisory flock acquisition. On Windows the writer
+ * relies on the atomic-rename primitive + the lock file's existence
+ * for best-effort serialization, so this stage is a no-op there.
+ *
+ * On success returns `{ fd, lockUnavailable }` so the caller can
+ * release the fd in `finally` and surface the
+ * `flock(1)-unavailable` hint when relevant. On failure returns
+ * `{ error }` carrying the canonical lock-acquisition envelope.
+ */
+function acquireInitLock(input) {
+    if (!input.isPosix) {
+        // Windows: best-effort serialization via shared-lock semantics on
+        // the lock file's existence + the atomic-rename primitive.
+        return { fd: null, lockUnavailable: false };
+    }
+    // Ensure the lock dir exists so we can open the lock file even on a
+    // first-run machine. mkdirSync is a no-op if the dir already exists.
+    try {
+        (0,external_node_fs_.mkdirSync)(SAVED_CONFIG_GLOBAL_DIR(input.homeDir), { recursive: true, mode: 0o700 });
+    }
+    catch {
+        // mkdir failure here will resurface at the target-dir ensure below.
+    }
+    // Open the lock file (creates it if missing) so flock(1) has a real
+    // inode to lock against — the file itself carries no payload, only
+    // the inode carries the lock.
+    let fd;
+    try {
+        fd = (0,external_node_fs_.openSync)(input.lockPath, "w");
+    }
+    catch {
+        return {
+            error: {
+                ok: false,
+                exitCode: 1,
+                message: `cannot acquire init lock at ${input.lockPath}; another init may be in progress; rm ${input.lockPath} if stale`,
+            },
+        };
+    }
+    // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
+    // the PATH (not the fd number — see saved-config-flock.ts for why
+    // the fd-number form silently no-ops in vite-node / CI sandboxes).
+    //
+    // Flock availability:
+    //   - flock(1) is in coreutils on every Linux and macOS (via brew
+    //     install coreutils). When it is present, status=0 means lock
+    //     acquired; status≠0 means another init holds it (contention).
+    //   - On hosts without flock(1) (macOS without coreutils, alpine
+    //     without busybox flock, restricted CI sandboxes), the wrapper
+    //     throws `FlockUnavailableError`. We MUST surface this so the
+    //     operator knows the init-time concurrency lock is NOT
+    //     enforced: writes can still race. The atomic-rename primitive
+    //     keeps the file corruption-safe (last-writer-wins on a per-
+    //     inode basis), but a parallel `umactually init` could clobber
+    //     a half-written sibling temp file if the lock is genuinely
+    //     missing. The check below records the unavailability; the
+    //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
+    //     so the wizard can emit a hint to the user.
+    let flockResult = true;
+    let lockUnavailable = false;
+    try {
+        flockResult = tryFlockNonBlocking(input.lockPath);
+    }
+    catch (err) {
+        if (err instanceof FlockUnavailableError) {
+            // flock(1) is missing on this host. Atomic-rename still prevents
+            // file corruption; we lose only the "second init declines"
+            // guarantee. Surface a hint to the operator so they understand
+            // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
+            lockUnavailable = true;
+        }
+        else {
+            throw err;
+        }
+    }
+    if (!flockResult) {
+        try {
+            (0,external_node_fs_.closeSync)(fd);
+        }
+        catch {
+            // ignore
+        }
+        return {
+            error: {
+                ok: false,
+                exitCode: 1,
+                message: `another init is in progress; rm ${input.lockPath} if stale`,
+                lockUnavailable: false,
+            },
+        };
+    }
+    return { fd, lockUnavailable };
+}
+/**
+ * flock(1) is a wrapper around flock(2); closing the fd releases
+ * the lock. Best-effort — a stuck release on process exit does
+ * not break the file write.
+ */
+function releaseInitLock(lockFd, isPosix) {
+    if (!isPosix || lockFd === null)
+        return;
+    try {
+        (0,external_node_fs_.closeSync)(lockFd);
+    }
+    catch {
+        // ignore — the lock is advisory
+    }
+}
+/**
+ * Ensure the target directory exists with mode 0o700 on POSIX. On
+ * POSIX + global scope, re-stat and chmod to mask off any umask
+ * effects (root + restrictive umask can mask the mode arg).
+ * Returns `null` on success or a `WriteSavedConfigResult` error.
+ */
+function ensureTargetDir(targetDir, isPosix, scope) {
+    try {
+        (0,external_node_fs_.mkdirSync)(targetDir, { recursive: true, mode: 0o700 });
+        if (isPosix && scope === "global") {
+            try {
+                const st = (0,external_node_fs_.statSync)(targetDir);
+                if ((st.mode & 0o777) !== 0o700) {
+                    (0,fs_atomic/* setMode */.iY)(targetDir, 0o700);
+                }
+            }
+            catch {
+                // ignore — chmod failure on a dir the user can already write to
+                // is non-fatal; we still chmod the FILE to 0o600 below.
+            }
+        }
+        return null;
+    }
+    catch (err) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `cannot create saved-config directory ${targetDir}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+    }
+}
+/**
+ * Build the "refusing to overwrite symlink at target" envelope.
+ */
+function targetSymlinkFail(targetPath) {
+    return {
+        ok: false,
+        exitCode: 1,
+        message: `refusing to overwrite: ${targetPath} is a symlink; remove it and re-run init`,
+    };
+}
+/**
+ * Existing-file handling: when a regular file already lives at the
+ * target path, either (a) back it up if the existing JSON is
+ * corrupt, or (b) prompt the operator before overwriting (unless
+ * `--force` bypassed the prompt). Symlinks are rejected by the
+ * caller (see `targetSymlinkFail`). Returns `null` when it's safe
+ * to proceed, or a `WriteSavedConfigResult` error otherwise.
+ */
+async function handleExistingTarget(targetPath, fs, deps) {
+    if (!fs.exists(targetPath))
+        return null;
+    let existingIsCorrupt = false;
+    try {
+        const existingRaw = fs.readFile(targetPath);
+        JSON.parse(existingRaw); // throws on malformed JSON
+    }
+    catch {
+        existingIsCorrupt = true;
+    }
+    if (existingIsCorrupt) {
+        // Corrupt JSON: move aside instead of clobbering. The backup
+        // preserves operator history for forensics; the wizard surfaces
+        // the backup path in its C-7 envelope.
+        const mtime = (deps.now ?? Date.now)();
+        const backupPath = `${targetPath}.bak-${Math.floor(mtime)}`;
+        try {
+            (0,external_node_fs_.renameSync)(targetPath, backupPath);
+        }
+        catch (err) {
+            return {
+                ok: false,
+                exitCode: 1,
+                message: `refusing to clobber corrupt saved config at ${targetPath} and could not move it aside: ${err instanceof Error ? err.message : String(err)}; rm ${targetPath} manually`,
+            };
+        }
+        return null;
+    }
+    if (deps.force)
+        return null;
+    // Valid JSON existing file: prompt for overwrite (unless --force).
+    if (deps.overwriteReader === undefined) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `refusing to overwrite existing saved config at ${targetPath}; pass --force to bypass or answer 'y' to the overwrite prompt`,
+        };
+    }
+    const answer = await deps.overwriteReader();
+    if (answer !== true) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `refusing to overwrite existing saved config at ${targetPath}; nothing was written`,
+        };
+    }
+    return null;
+}
+/**
+ * Defensive secret-regex scan over the FINAL serialized bytes. If
+ * the canonical SECRET_REGEX matches anywhere in the payload the
+ * write is refused — the SavedConfig type excludes `apiKey`, so
+ * this only catches a future field that silently regresses the
+ * no-secrets-at-rest guarantee.
+ */
+function scanForSecretLiteral(serialized) {
+    if (SECRET_REGEX.test(serialized)) {
+        SECRET_REGEX.lastIndex = 0;
+        return {
+            ok: false,
+            exitCode: 1,
+            message: "internal: writer produced an unintended secret literal; refusing to persist",
+        };
+    }
+    SECRET_REGEX.lastIndex = 0;
+    return null;
+}
+/**
+ * Atomic write + chmod 0o600 on POSIX. The chmod is best-effort
+ * (non-fatal) — the file is on disk; chmod may fail under
+ * restrictive mount options. Returns `null` on success or a
+ * `WriteSavedConfigResult` error.
+ */
+function writeAndChmod(targetPath, serialized, isPosix) {
+    try {
+        (0,fs_atomic/* writeFileAtomic */.Zf)(targetPath, serialized);
+    }
+    catch (err) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `cannot write saved config at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+    }
+    if (isPosix) {
+        try {
+            (0,fs_atomic/* setMode */.iY)(targetPath, 0o600);
+        }
+        catch {
+            // Non-fatal: the file is on disk; chmod may fail under restrictive
+            // mount options. The wizard surfaces a warn check in T12 but does
+            // not abort the write (E-⚠8).
+        }
+    }
+    return null;
+}
+/**
+ * Verify the written file's mode round-tripped to 0o600 on POSIX.
+ * Returns `null` on success or a `WriteSavedConfigResult` error
+ * when the mode didn't stick.
+ */
+function verifyFileMode(targetPath, isPosix) {
+    if (!isPosix)
+        return null;
+    const mode = (0,fs_atomic/* getMode */.Wi)(targetPath);
+    if (mode !== null && (mode & 0o777) !== 0o600) {
+        return {
+            ok: false,
+            exitCode: 1,
+            message: `saved config written but mode is ${(mode & 0o777).toString(8)} (expected 0o600); check filesystem mount options`,
+        };
+    }
+    return null;
+}
+// ---------------------------------------------------------------------------
+// Serialization (deterministic key order)
+// ---------------------------------------------------------------------------
+/**
+ * JSON.stringify with 2-space indent and key order: schemaVersion, provider,
+ * apiUrl, model. Any additional key is rejected at the type level; this is
+ * the single serialization site so the byte layout is fixed across versions.
+ */
+function serializeSavedConfig(config) {
+    const ordered = {
+        schemaVersion: config.schemaVersion,
+        provider: config.provider,
+    };
+    if (config.apiUrl !== undefined)
+        ordered["apiUrl"] = config.apiUrl;
+    if (config.model !== undefined)
+        ordered["model"] = config.model;
+    return JSON.stringify(ordered, null, 2) + "\n";
+}
+// ---------------------------------------------------------------------------
+// Secret redaction
+// ---------------------------------------------------------------------------
+/**
+ * Replace every secret-shaped substring in `input` with `REDACTED_SECRET_TOKEN`.
+ * Used by `--debug-raw` diagnostics and any other site that has to log a
+ * blob the user supplied (prompts, env echoes) — it is the last line of
+ * defense against accidental secret leakage. Callers MUST treat the return
+ * value as still-tainted for display purposes; the token is itself a hint
+ * to the reader, not a security boundary.
+ */
+function redactSecretsInString(input) {
+    return input.replace(SECRET_REGEX, brand/* REDACTED_SECRET_TOKEN */.uq);
+}
+
+
+/***/ }),
+
+/***/ 365:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   PS: () => (/* binding */ AZURE_STATUS_CONTEXT_GENRE),
+/* harmony export */   Vj: () => (/* binding */ REDACTED_PLACEHOLDER),
+/* harmony export */   Z7: () => (/* binding */ AZURE_STATUS_CONTEXT_NAME),
+/* harmony export */   _O: () => (/* binding */ USER_AGENT),
+/* harmony export */   h8: () => (/* binding */ REDACTED_BEARER_TOKEN),
+/* harmony export */   qt: () => (/* binding */ BRAND),
+/* harmony export */   rc: () => (/* binding */ BRAND_PREFIX),
+/* harmony export */   tK: () => (/* binding */ REDACTED_AUTHORIZATION_HEADER),
+/* harmony export */   uq: () => (/* binding */ REDACTED_SECRET_TOKEN)
+/* harmony export */ });
+/**
+ * Canonical brand string used across CLI, platform, and provider code.
+ *
+ * NOT a generic brand concept: this is the specific string "umactually"
+ * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
+ * agents) match on. Renamed from "umactually" in v0.1.0 because
+ * the project ships under the bare name `umactually` and never launched
+ * with the longer string — no installed copies depend on the old value.
+ */
+/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
+const BRAND = "umactually";
+/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
+const BRAND_PREFIX = `${BRAND}: `;
+/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
+const USER_AGENT = BRAND;
+/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
+const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
+/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
+const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
+/**
+ * Redaction token emitted by secret scanners and runtime sanitizers
+ * when a high-confidence secret or per-secret value is replaced. The
+ * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
+ * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
+ * downstream log-filter and dedup heuristics agree on what counts as
+ * "already-redacted". Single source of truth — any future rename must
+ * touch this constant only.
+ */
+const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
+/**
+ * Placeholder string substituted into config-parse error messages instead of
+ * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
+ * preserve the existing import surface in that module (the parser chain in
+ * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
+ */
+const REDACTED_PLACEHOLDER = "[REDACTED]";
+/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
+const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
+/** Replaces a `Bearer <token>` segment inside a logged request body. */
+const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
+
+
+/***/ }),
+
+/***/ 95:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   Wi: () => (/* binding */ getMode),
+/* harmony export */   Zf: () => (/* binding */ writeFileAtomic),
+/* harmony export */   aO: () => (/* binding */ defaultFsAdapter),
+/* harmony export */   iY: () => (/* binding */ setMode)
+/* harmony export */ });
+/* harmony import */ var node_fs__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(24);
+/* harmony import */ var node_fs__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(node_fs__WEBPACK_IMPORTED_MODULE_0__);
+// SPDX-License-Identifier: MIT
+// Filesystem adapter + atomic-write primitive used by the uninstall
+// subcommand to safely rewrite user-owned shell rc files (e.g. .zshrc,
+// .bashrc, .profile) when reverting the installer's PATH entry.
+//
+// This module is intentionally pure (sync node:fs primitives, no I/O
+// other than what the caller asks for) so that the uninstall tests can
+// substitute their own in-memory adapter via `FsAdapter` without
+// pulling in node:fs at all. The adapter shape was lifted verbatim
+// from src/cli/uninstall.ts (T2/T3 of the init-guided-setup plan);
+// behavior must remain byte-identical — the rc-file revert is a
+// safety-critical path and the rename-on-sibling-tempfile primitive
+// is what protects it from the disk-full / read-only-mount TOCTOU
+// class of bug.
+
+/**
+ * Atomically write `content` to `path` by writing to a sibling temp
+ * file and renaming over the target. On POSIX, rename(2) is atomic
+ * on the same filesystem; on Windows, MoveFileEx with
+ * MOVEFILE_REPLACE_EXISTING is similarly atomic. If anything fails
+ * before the rename, the original file is untouched.
+ *
+ * The function name and rename-and-cleanup semantics are part of
+ * the revertPath safety contract; do not relax the cleanup without
+ * auditing the rc-file revert path.
+ */
+function writeFileAtomic(path, content) {
+    // Write to a sibling temp file, then rename atomically over the
+    // target. On POSIX, rename(2) is atomic on the same filesystem
+    // (the target either points to the old content or the new, never
+    // a partial state). On Windows, MoveFileEx with REPLACE_EXISTING
+    // is similarly atomic. If anything fails before the rename, the
+    // original file is untouched.
+    const tmpPath = `${path}.umactually-tmp-${process.pid}-${Date.now()}`;
+    try {
+        (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.writeFileSync)(tmpPath, content, "utf8");
+        (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.renameSync)(tmpPath, path);
+    }
+    catch (err) {
+        // Best-effort cleanup of the orphan temp file.
+        try {
+            (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.unlinkSync)(tmpPath);
+        }
+        catch {
+            // ignore
+        }
+        throw err;
+    }
+}
+/**
+ * Return the file's mode bits (e.g. 0o600) or null if the file
+ * does not exist or the mode cannot be determined. Returns only the
+ * permission bits (masked with 0o7777) so callers don't have to
+ * think about the file-type bits in `Stats.mode`.
+ */
+function getMode(path) {
+    try {
+        return (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.statSync)(path).mode & 0o7777;
+    }
+    catch {
+        return null;
+    }
+}
+/**
+ * Set the file's mode bits. Throws on failure. Callers are expected
+ * to have already checked that the file exists and that the caller
+ * has permission to change it (e.g. they own the file).
+ */
+function setMode(path, mode) {
+    (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.chmodSync)(path, mode);
+}
+const defaultFsAdapter = {
+    exists: (path) => (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.existsSync)(path),
+    isSymlink: (path) => {
+        try {
+            return (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.lstatSync)(path).isSymbolicLink();
+        }
+        catch {
+            return false;
+        }
+    },
+    isFile: (path) => {
+        try {
+            return (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.lstatSync)(path).isFile();
+        }
+        catch {
+            return false;
+        }
+    },
+    isDirectory: (path) => {
+        try {
+            return (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.lstatSync)(path).isDirectory();
+        }
+        catch {
+            return false;
+        }
+    },
+    unlink: (path) => {
+        (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.unlinkSync)(path);
+    },
+    getMode: (path) => getMode(path),
+    setMode: (path, mode) => {
+        setMode(path, mode);
+    },
+    removeDir: (path, options) => {
+        (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.rmSync)(path, { recursive: options.recursive, force: true });
+    },
+    readFile: (path) => (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.readFileSync)(path, "utf8"),
+    writeFile: (path, content) => {
+        (0,node_fs__WEBPACK_IMPORTED_MODULE_0__.writeFileSync)(path, content, "utf8");
+    },
+    writeFileAtomic: (path, content) => {
+        writeFileAtomic(path, content);
+    },
+};
+
+
+/***/ }),
+
+/***/ 28:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+module.exports = __nccwpck_require__.p + "b23252427c484ce0121d.ts";
+
+/***/ }),
+
+/***/ 93:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_MODULE_typescript__;
+
+/***/ }),
+
+/***/ 421:
 /***/ ((module) => {
 
 module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:child_process");
+
+/***/ }),
+
+/***/ 598:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 
 /***/ }),
 
@@ -91,6 +1961,13 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs");
 /***/ ((module) => {
 
 module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/promises");
+
+/***/ }),
+
+/***/ 760:
+/***/ ((module) => {
+
+module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
 
 /***/ })
 
@@ -130,6 +2007,18 @@ module.exports = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:fs/prom
 /******/ __nccwpck_require__.m = __webpack_modules__;
 /******/ 
 /************************************************************************/
+/******/ /* webpack/runtime/compat get default export */
+/******/ (() => {
+/******/ 	// getDefaultExport function for compatibility with non-harmony modules
+/******/ 	__nccwpck_require__.n = (module) => {
+/******/ 		var getter = module && module.__esModule ?
+/******/ 			() => (module['default']) :
+/******/ 			() => (module);
+/******/ 		__nccwpck_require__.d(getter, { a: getter });
+/******/ 		return getter;
+/******/ 	};
+/******/ })();
+/******/ 
 /******/ /* webpack/runtime/create fake namespace object */
 /******/ (() => {
 /******/ 	var getProto = Object.getPrototypeOf ? (obj) => (Object.getPrototypeOf(obj)) : (obj) => (obj.__proto__);
@@ -237,6 +2126,7 @@ __nccwpck_require__.d(__webpack_exports__, {
   bV: () => (/* binding */ isVersionFlag),
   iW: () => (/* binding */ main),
   hT: () => (/* reexport */ parseCliArgs),
+  ts: () => (/* binding */ readPackageVersion),
   ak: () => (/* binding */ runCli),
   yh: () => (/* binding */ runVersion)
 });
@@ -245,8 +2135,8 @@ __nccwpck_require__.d(__webpack_exports__, {
 var external_node_fs_ = __nccwpck_require__(24);
 // EXTERNAL MODULE: external "node:fs/promises"
 var promises_ = __nccwpck_require__(455);
-;// CONCATENATED MODULE: external "node:path"
-const external_node_path_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:path");
+// EXTERNAL MODULE: external "node:path"
+var external_node_path_ = __nccwpck_require__(760);
 ;// CONCATENATED MODULE: ./src/config/field-schema.ts
 const FIELDS = {
     apiUrl: {
@@ -852,48 +2742,8 @@ function levenshtein(a, b) {
     return previous[b.length] ?? 0;
 }
 
-;// CONCATENATED MODULE: ./src/util/brand.ts
-/**
- * Canonical brand string used across CLI, platform, and provider code.
- *
- * NOT a generic brand concept: this is the specific string "umactually"
- * that downstream consumers (PR comments, HTTP User-Agent headers, GitHub
- * agents) match on. Renamed from "umactually" in v0.1.0 because
- * the project ships under the bare name `umactually` and never launched
- * with the longer string — no installed copies depend on the old value.
- */
-/** Canonical review brand string; eliminates the 50+ inline "umactually" literals across CLI, platform, and provider code. */
-const BRAND = "umactually";
-/** Log prefix shared by annotation helpers; eliminates hand-built "umactually: " prefixes in stderr diagnostics. */
-const BRAND_PREFIX = `${BRAND}: `;
-/** HTTP User-Agent token shared by provider and platform clients; eliminates duplicated header literals. */
-const USER_AGENT = BRAND;
-/** Azure DevOps PR status context name; prevents status updates from drifting away from the review brand. */
-const AZURE_STATUS_CONTEXT_NAME = `${BRAND}-status`;
-/** Azure DevOps PR status context genre; the discriminator that keeps our status updates distinct from any other tool's. */
-const AZURE_STATUS_CONTEXT_GENRE = "pr-review";
-/**
- * Redaction token emitted by secret scanners and runtime sanitizers
- * when a high-confidence secret or per-secret value is replaced. The
- * runtime sanitizer (`live-shared.ts:sanitizeForPost`) and the
- * scanner (`scan-review-secrets.ts`) must emit the SAME token so the
- * downstream log-filter and dedup heuristics agree on what counts as
- * "already-redacted". Single source of truth — any future rename must
- * touch this constant only.
- */
-const REDACTED_SECRET_TOKEN = "[REDACTED_SECRET]";
-/**
- * Placeholder string substituted into config-parse error messages instead of
- * leaking values. Re-exported from `src/config/errors.ts` as `REDACTED` to
- * preserve the existing import surface in that module (the parser chain in
- * `src/config/parsers.ts` already imports `REDACTED` from `errors.ts`).
- */
-const REDACTED_PLACEHOLDER = "[REDACTED]";
-/** Replaces an entire `Authorization: ...` header value in logged request bodies. */
-const REDACTED_AUTHORIZATION_HEADER = "[REDACTED_AUTHORIZATION_HEADER]";
-/** Replaces a `Bearer <token>` segment inside a logged request body. */
-const REDACTED_BEARER_TOKEN = "[REDACTED_BEARER_TOKEN]";
-
+// EXTERNAL MODULE: ./src/util/brand.ts
+var brand = __nccwpck_require__(365);
 ;// CONCATENATED MODULE: ./src/config/errors.ts
 class errors_InvalidConfigError extends Error {
     field;
@@ -953,7 +2803,7 @@ function parseBooleanFromUnknown(value, field) {
             return true;
         if (value === 0)
             return false;
-        throw new errors_InvalidConfigError(field, `expected boolean, received number ${REDACTED_PLACEHOLDER}`);
+        throw new errors_InvalidConfigError(field, `expected boolean, received number ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
     }
     if (typeof value === "string") {
         const normalized = normalizeEnumInput(value);
@@ -961,7 +2811,7 @@ function parseBooleanFromUnknown(value, field) {
             return true;
         if (FALSY_STRINGS.has(normalized))
             return false;
-        throw new errors_InvalidConfigError(field, `expected boolean string, received ${REDACTED_PLACEHOLDER}`);
+        throw new errors_InvalidConfigError(field, `expected boolean string, received ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
     }
     throw new errors_InvalidConfigError(field, `expected boolean, received ${typeof value}`);
 }
@@ -972,7 +2822,7 @@ function parseBooleanFromUnknown(value, field) {
 function parseIntegerFromUnknown(value, field) {
     if (typeof value === "number") {
         if (!Number.isInteger(value)) {
-            throw new errors_InvalidConfigError(field, `expected integer, received non-integer number ${REDACTED_PLACEHOLDER}`);
+            throw new errors_InvalidConfigError(field, `expected integer, received non-integer number ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
         }
         return value;
     }
@@ -983,7 +2833,7 @@ function parseIntegerFromUnknown(value, field) {
         }
         const parsed = tryParseStrictInt(trimmed);
         if (parsed === null) {
-            throw new errors_InvalidConfigError(field, `expected integer string, received ${REDACTED_PLACEHOLDER}`);
+            throw new errors_InvalidConfigError(field, `expected integer string, received ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
         }
         // Reject values outside the safe-integer range so callers that
         // rely on exact equality (severity-key lookups, cache keys,
@@ -991,7 +2841,7 @@ function parseIntegerFromUnknown(value, field) {
         // parseStrictInt has the same check; this is the config-loader's
         // equivalent so the two surfaces agree.
         if (!Number.isSafeInteger(parsed)) {
-            throw new errors_InvalidConfigError(field, `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${REDACTED_PLACEHOLDER}`);
+            throw new errors_InvalidConfigError(field, `expected integer in [${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}], received ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
         }
         return parsed;
     }
@@ -1033,7 +2883,7 @@ function parseSeverityFromUnknown(value, field) {
     if (alias !== undefined)
         return alias;
     if (!VALID_SEVERITIES.has(normalized)) {
-        throw new errors_InvalidConfigError(field, `unknown severity ${REDACTED_PLACEHOLDER}`);
+        throw new errors_InvalidConfigError(field, `unknown severity ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
     }
     return normalized;
 }
@@ -1047,7 +2897,7 @@ function parsePlatformFromUnknown(value, field) {
     }
     const normalized = normalizeEnumInput(value);
     if (!VALID_PLATFORMS.has(normalized)) {
-        throw new errors_InvalidConfigError(field, `unknown platform ${REDACTED_PLACEHOLDER}`);
+        throw new errors_InvalidConfigError(field, `unknown platform ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
     }
     return normalized;
 }
@@ -1318,21 +3168,6 @@ function parseCliArgs(args) {
                 }
                 break;
             }
-            case "--include-sonarqube":
-                includeSonarqube = true;
-                break;
-            case "--no-include-sonarqube":
-                includeSonarqube = false;
-                break;
-            case "--include-pr-sonar-findings":
-                includePrSonarFindings = true;
-                break;
-            case "--no-include-pr-sonar-findings":
-                includePrSonarFindings = false;
-                break;
-            case "--no-instruction-files":
-                instructionFiles = false;
-                break;
             case "--sonar-host-url":
                 sonarHostUrl = readValue(args, index, "sonar-host-url");
                 index += 1;
@@ -1364,36 +3199,6 @@ function parseCliArgs(args) {
                 reviewFileLimit = readIntValue(args, index, "review-file-limit");
                 index += 1;
                 break;
-            case "--detect-leaks":
-                detectLeaks = true;
-                break;
-            case "--no-detect-leaks":
-                detectLeaks = false;
-                break;
-            case "--walkthrough":
-                walkthrough = true;
-                break;
-            case "--no-walkthrough":
-                walkthrough = false;
-                break;
-            case "--diagnostic":
-                diagnostic = true;
-                break;
-            case "--no-diagnostic":
-                diagnostic = false;
-                break;
-            case "--debug-raw-response":
-                debugRawResponse = true;
-                break;
-            case "--no-debug-raw-response":
-                debugRawResponse = false;
-                break;
-            case "--simulate-findings":
-                simulateFindings = true;
-                break;
-            case "--no-simulate-findings":
-                simulateFindings = false;
-                break;
             case "--review-timeout-seconds":
                 reviewTimeoutSeconds = readIntValue(args, index, "review-timeout-seconds");
                 index += 1;
@@ -1410,27 +3215,9 @@ function parseCliArgs(args) {
                 maxOutputTokens = readIntValue(args, index, "max-output-tokens");
                 index += 1;
                 break;
-            case "--dry-run":
-                dryRun = true;
-                break;
-            case "--no-dry-run":
-                dryRun = false;
-                break;
             case "--output-artifact":
                 outputArtifact = readValue(args, index, "output-artifact");
                 index += 1;
-                break;
-            case "--strict-schema":
-                strictSchema = true;
-                break;
-            case "--no-strict-schema":
-                strictSchema = false;
-                break;
-            case "--verify-findings":
-                verifyFindings = true;
-                break;
-            case "--no-verify-findings":
-                verifyFindings = false;
                 break;
             case "--help":
             case "-h": {
@@ -1440,8 +3227,38 @@ function parseCliArgs(args) {
                 const commandToken = args.slice(0, index).find((t) => !t.startsWith("-"));
                 throw new CliHelpSignal(commandToken ?? null);
             }
-            default:
+            default: {
+                const boolFlags = {
+                    includeSonarqube,
+                    includePrSonarFindings,
+                    instructionFiles,
+                    detectLeaks,
+                    walkthrough,
+                    diagnostic,
+                    debugRawResponse,
+                    simulateFindings,
+                    dryRun,
+                    strictSchema,
+                    verifyFindings,
+                };
+                if (applyBooleanFlag(token, boolFlags)) {
+                    ({
+                        includeSonarqube,
+                        includePrSonarFindings,
+                        instructionFiles,
+                        detectLeaks,
+                        walkthrough,
+                        diagnostic,
+                        debugRawResponse,
+                        simulateFindings,
+                        dryRun,
+                        strictSchema,
+                        verifyFindings,
+                    } = boolFlags);
+                    break;
+                }
                 throw unknownFlagUsageError(token, args);
+            }
         }
     }
     const parsed = {
@@ -1581,17 +3398,361 @@ function unknownFlagUsageError(token, argv) {
             : `Run \`umactually --help\` for a flag list, or \`umactually review --api-url <url> --api-key <key>\` for the standard standalone invocation.`;
     return new CliUsageError(message, hint);
 }
+/**
+ * Apply a `--name` / `--no-name` boolean flag mutation. Returns
+ * `true` when `token` is recognized and `state` was mutated in
+ * place; returns `false` so the caller can fall through to the
+ * unknown-flag error path.
+ */
+function applyBooleanFlag(token, state) {
+    switch (token) {
+        case "--include-sonarqube":
+            state.includeSonarqube = true;
+            return true;
+        case "--no-include-sonarqube":
+            state.includeSonarqube = false;
+            return true;
+        case "--include-pr-sonar-findings":
+            state.includePrSonarFindings = true;
+            return true;
+        case "--no-include-pr-sonar-findings":
+            state.includePrSonarFindings = false;
+            return true;
+        case "--no-instruction-files":
+            state.instructionFiles = false;
+            return true;
+        case "--detect-leaks":
+            state.detectLeaks = true;
+            return true;
+        case "--no-detect-leaks":
+            state.detectLeaks = false;
+            return true;
+        case "--walkthrough":
+            state.walkthrough = true;
+            return true;
+        case "--no-walkthrough":
+            state.walkthrough = false;
+            return true;
+        case "--diagnostic":
+            state.diagnostic = true;
+            return true;
+        case "--no-diagnostic":
+            state.diagnostic = false;
+            return true;
+        case "--debug-raw-response":
+            state.debugRawResponse = true;
+            return true;
+        case "--no-debug-raw-response":
+            state.debugRawResponse = false;
+            return true;
+        case "--simulate-findings":
+            state.simulateFindings = true;
+            return true;
+        case "--no-simulate-findings":
+            state.simulateFindings = false;
+            return true;
+        case "--dry-run":
+            state.dryRun = true;
+            return true;
+        case "--no-dry-run":
+            state.dryRun = false;
+            return true;
+        case "--strict-schema":
+            state.strictSchema = true;
+            return true;
+        case "--no-strict-schema":
+            state.strictSchema = false;
+            return true;
+        case "--verify-findings":
+            state.verifyFindings = true;
+            return true;
+        case "--no-verify-findings":
+            state.verifyFindings = false;
+            return true;
+        default:
+            return false;
+    }
+}
 
 // EXTERNAL MODULE: external "node:child_process"
-var external_node_child_process_ = __nccwpck_require__(802);
+var external_node_child_process_ = __nccwpck_require__(421);
 ;// CONCATENATED MODULE: external "node:os"
 const external_node_os_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:os");
 ;// CONCATENATED MODULE: external "node:url"
 const external_node_url_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:url");
 ;// CONCATENATED MODULE: external "node:util"
 const external_node_util_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:util");
+;// CONCATENATED MODULE: ./src/review/artifact-schema.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 4 — Schema-versioned review artifact parser.
+//
+// Accepts BOTH the legacy sample format (schemaVersion absent or 0)
+// and the new v1 schema (schemaVersion: 1). Unknown future versions
+// produce a typed error. Malformed JSON, invalid shapes, and missing
+// fingerprint fields all produce typed errors.
+//
+// The parser is the boundary contract shared by provider parsing,
+// filters, renderers, platform adapters, evals, and artifacts.
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const ARTIFACT_SCHEMA_VERSION = 1;
+// ---------------------------------------------------------------------------
+// Parser
+// ---------------------------------------------------------------------------
+/**
+ * Parse a JSON string into a schema-versioned review artifact.
+ *
+ * Accepts:
+ *   - Legacy format (no `schemaVersion` or `schemaVersion: 0`): comments
+ *     do not carry fingerprint fields. Parsed as LegacyReviewArtifact.
+ *   - v1 format (`schemaVersion: 1`): every comment MUST carry the full
+ *     fingerprint identity. Parsed as DurableReviewArtifact.
+ *
+ * Rejects with typed errors:
+ *   - malformed-json: invalid JSON syntax.
+ *   - invalid-shape: top-level value is not an object, or required fields missing.
+ *   - unsupported-schema-version: schemaVersion > ARTIFACT_SCHEMA_VERSION.
+ *   - missing-fingerprint-fields: v1 comment missing fingerprint identity.
+ */
+function parseReviewArtifact(jsonText) {
+    const parsed = tryParseJsonObject(jsonText);
+    if (parsed.kind === "error")
+        return parsed.error;
+    return buildReviewArtifactFromRecord(parsed.value);
+}
+function tryParseJsonObject(jsonText) {
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonText);
+    }
+    catch (error) {
+        return {
+            kind: "error",
+            error: {
+                ok: false,
+                error: {
+                    kind: "malformed-json",
+                    message: error instanceof Error ? error.message : String(error),
+                },
+            },
+        };
+    }
+    if (!isRecord(parsed)) {
+        return {
+            kind: "error",
+            error: {
+                ok: false,
+                error: {
+                    kind: "invalid-shape",
+                    message: "expected a JSON object at the top level",
+                },
+            },
+        };
+    }
+    return { kind: "ok", value: parsed };
+}
+function buildReviewArtifactFromRecord(parsed) {
+    const schemaVersionResult = parseSchemaVersion(parsed);
+    if (!schemaVersionResult.ok) {
+        return {
+            ok: false,
+            error: schemaVersionResult.error,
+        };
+    }
+    const schemaVersion = schemaVersionResult.value;
+    const shapeResult = validateShapeIfV1(parsed, schemaVersion);
+    if (!shapeResult.ok)
+        return shapeResult;
+    const rawComments = readArray(parsed["comments"]);
+    const rawSuppressed = readArray(parsed["suppressedComments"] ?? parsed["suppressed_comments"]);
+    if (schemaVersion === 0) {
+        return buildLegacyArtifact(parsed, rawComments, rawSuppressed);
+    }
+    return buildDurableArtifact(parsed, rawComments, rawSuppressed);
+}
+function parseSchemaVersion(parsed) {
+    const rawSchemaVersion = parsed["schemaVersion"];
+    const schemaVersion = typeof rawSchemaVersion === "number" ? rawSchemaVersion : 0;
+    if (schemaVersion > ARTIFACT_SCHEMA_VERSION) {
+        return {
+            ok: false,
+            error: {
+                kind: "unsupported-schema-version",
+                supportedVersion: ARTIFACT_SCHEMA_VERSION,
+                unsupportedVersion: schemaVersion,
+            },
+        };
+    }
+    return { ok: true, value: schemaVersion };
+}
+function validateShapeIfV1(parsed, schemaVersion) {
+    if (schemaVersion < 1) {
+        return { ok: true, artifact: undefined };
+    }
+    const hasSummary = typeof parsed["summary"] === "string";
+    const hasVerdict = typeof parsed["verdict"] === "string";
+    const hasComments = parsed["comments"] !== undefined && parsed["comments"] !== null;
+    if (hasSummary && hasVerdict && hasComments) {
+        return { ok: true, artifact: undefined };
+    }
+    const missing = describeMissingShapeFields(hasSummary, hasVerdict, hasComments);
+    return {
+        ok: false,
+        error: {
+            kind: "invalid-shape",
+            message: `v1 artifact missing required field(s):${missing}`,
+        },
+    };
+}
+function describeMissingShapeFields(hasSummary, hasVerdict, hasComments) {
+    const parts = [];
+    if (!hasSummary)
+        parts.push(" summary");
+    if (!hasVerdict)
+        parts.push(" verdict");
+    if (!hasComments)
+        parts.push(" comments");
+    return parts.join("");
+}
+function buildLegacyArtifact(parsed, rawComments, rawSuppressed) {
+    const comments = rawComments.map(readLegacyComment);
+    const suppressedComments = rawSuppressed.map(readLegacyComment);
+    return {
+        ok: true,
+        artifact: {
+            schemaVersion: 0,
+            summary: readStringField(parsed, "summary"),
+            verdict: readStringField(parsed, "verdict"),
+            comments,
+            suppressedComments,
+        },
+    };
+}
+function buildDurableArtifact(parsed, rawComments, rawSuppressed) {
+    const commentsResult = rawComments.map((c) => readDurableComment(c));
+    const suppressedResult = rawSuppressed.map((c) => readDurableComment(c));
+    for (const r of [...commentsResult, ...suppressedResult]) {
+        if (!r.ok)
+            return r;
+    }
+    return {
+        ok: true,
+        artifact: {
+            schemaVersion: 1,
+            summary: readStringField(parsed, "summary"),
+            verdict: readStringField(parsed, "verdict"),
+            comments: commentsResult.map((r) => r.comment),
+            suppressedComments: suppressedResult.map((r) => r.comment),
+        },
+    };
+}
+function readStringField(parsed, key) {
+    return typeof parsed[key] === "string" ? parsed[key] : "";
+}
+// ---------------------------------------------------------------------------
+// Serializer
+// ---------------------------------------------------------------------------
+/**
+ * Serialize a DurableReviewArtifact to JSON. The output is parseable
+ * by `parseReviewArtifact` (round-trip).
+ */
+function serializeReviewArtifact(artifact) {
+    return JSON.stringify(artifact, null, 2);
+}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readArray(value) {
+    if (!Array.isArray(value))
+        return [];
+    return value;
+}
+function readString(value, key) {
+    const v = value[key];
+    return typeof v === "string" ? v : "";
+}
+function readDurableComment(raw) {
+    if (!isRecord(raw)) {
+        return {
+            ok: false,
+            error: { kind: "missing-fingerprint-fields", message: "comment is not an object" },
+        };
+    }
+    const required = [
+        "fingerprintVersion",
+        "fingerprintDigest",
+        "identityDigest",
+        "canonicalPath",
+        "anchorKind",
+        "canonicalAnchor",
+        "normalizedCategory",
+        "normalizedRuleKey",
+    ];
+    for (const field of required) {
+        if (raw[field] === undefined || raw[field] === null) {
+            return {
+                ok: false,
+                error: {
+                    kind: "missing-fingerprint-fields",
+                    message: `comment is missing required fingerprint field "${String(field)}"`,
+                },
+            };
+        }
+    }
+    const anchorKind = raw["anchorKind"];
+    if (anchorKind !== "symbol" && anchorKind !== "hunk") {
+        return {
+            ok: false,
+            error: {
+                kind: "missing-fingerprint-fields",
+                message: `anchorKind must be "symbol" or "hunk" (got "${String(anchorKind)}")`,
+            },
+        };
+    }
+    const comment = {
+        path: readString(raw, "path"),
+        line: typeof raw["line"] === "number" ? raw["line"] : 0,
+        body: readString(raw, "body"),
+        severity: readString(raw, "severity"),
+        category: readString(raw, "category"),
+        fingerprintVersion: raw["fingerprintVersion"],
+        fingerprintDigest: raw["fingerprintDigest"],
+        identityDigest: raw["identityDigest"],
+        canonicalPath: raw["canonicalPath"],
+        anchorKind,
+        canonicalAnchor: raw["canonicalAnchor"],
+        normalizedCategory: raw["normalizedCategory"],
+        normalizedRuleKey: raw["normalizedRuleKey"],
+        ...(raw["provenance"] !== undefined
+            ? { provenance: raw["provenance"] }
+            : {}),
+        ...(raw["suggestion"] !== undefined
+            ? { suggestion: raw["suggestion"] }
+            : {}),
+    };
+    return { ok: true, comment };
+}
+function readLegacyComment(raw) {
+    if (!isRecord(raw)) {
+        return { path: "", line: 0, body: "", severity: "", category: "" };
+    }
+    return {
+        path: readString(raw, "path"),
+        line: typeof raw["line"] === "number" ? raw["line"] : 0,
+        body: readString(raw, "body"),
+        severity: readString(raw, "severity"),
+        category: readString(raw, "category"),
+    };
+}
+
 ;// CONCATENATED MODULE: ./src/cli/check-review-artifact.ts
 // SPDX-License-Identifier: MIT
+
 
 const PARSE_FAIL_MARKERS = [
     "Provider response did not contain a valid JSON review payload",
@@ -1649,8 +3810,16 @@ function classifyReviewArtifact(path) {
         }
         throw error;
     }
-    if (!isRecord(parsed)) {
+    if (!check_review_artifact_isRecord(parsed)) {
         return { ok: false, reason: "invalid artifact: expected a JSON object", warnings: [] };
+    }
+    const rawSchemaVersion = parsed["schemaVersion"];
+    if (typeof rawSchemaVersion === "number" && rawSchemaVersion > ARTIFACT_SCHEMA_VERSION) {
+        return {
+            ok: false,
+            reason: `unsupported-schema-version: artifact declares schemaVersion ${rawSchemaVersion}, supported max is ${ARTIFACT_SCHEMA_VERSION}`,
+            warnings: [],
+        };
     }
     const event = stringField(parsed, "event");
     const verdict = stringField(parsed, "verdict");
@@ -1730,7 +3899,7 @@ function detectSuspiciousSignals(input) {
     }
     return warnings;
 }
-function isRecord(value) {
+function check_review_artifact_isRecord(value) {
     return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isNodeError(error) {
@@ -1954,6 +4123,1351 @@ function formatDoctorJson(result) {
     return `${JSON.stringify(envelope)}\n`;
 }
 
+// EXTERNAL MODULE: external "node:crypto"
+var external_node_crypto_ = __nccwpck_require__(598);
+// EXTERNAL MODULE: ./src/util/fs-atomic.ts
+var fs_atomic = __nccwpck_require__(95);
+// EXTERNAL MODULE: ./src/config/saved-config.ts + 1 modules
+var saved_config = __nccwpck_require__(711);
+;// CONCATENATED MODULE: ./src/config/review-policy.ts
+// SPDX-License-Identifier: MIT
+// Committed review-policy as code: `umactually.review.json`.
+//
+// This is the committed team-policy surface — separate from
+// `umactually.config.json` (provider connection defaults) and from the
+// CLI flag / env var surfaces. The provider connection config is a
+// separate security boundary; policy fields MUST NOT mix into the
+// provider config serialization.
+//
+// Resolution order (4-tier precedence):
+//   1. CLI flags                 → source = "flag"
+//   2. Env vars (where public)   → source = "env"
+//   3. Committed review policy   → source = "reviewPolicy"
+//   4. Built-in defaults         → source = "default"
+//
+// Every resolved field carries provenance: source, path (when from a
+// file), hash (the sha256 of the canonical serialized policy bytes),
+// and version (the policy's schemaVersion).
+//
+// Strict validation BEFORE any provider/platform call. Order:
+//   schema-version → schema-shape → glob/path safety → secret scan →
+//   semantic conflicts.
+//
+// Unknown keys, duplicate/conflicting path rules, invalid globs,
+// unsafe paths, secrets, and unsupported versions all fail with typed
+// errors and exit code 2 BEFORE any fetch/post and create NO files.
+
+
+
+
+
+// ---------------------------------------------------------------------------
+// Schema version
+// ---------------------------------------------------------------------------
+const REVIEW_POLICY_SCHEMA_VERSION = 1;
+// ---------------------------------------------------------------------------
+// Allowed keys (for unknown-key rejection)
+// ---------------------------------------------------------------------------
+const ALLOWED_TOP_LEVEL_KEYS = new Set([
+    "schemaVersion",
+    "pathRules",
+    "excludes",
+    "effort",
+    "triggers",
+    "reReviewCap",
+    "budgets",
+    "minimumSeverity",
+    "suggestionMode",
+    "gateMode",
+]);
+const ALLOWED_PATH_RULE_KEYS = new Set([
+    "pattern",
+    "effort",
+]);
+const ALLOWED_BUDGET_KEYS = new Set([
+    "contextTokens",
+    "maxOutputTokens",
+    "latencyMs",
+]);
+const VALID_EFFORTS = new Set(["low", "medium", "high"]);
+const VALID_TRIGGERS = new Set(["opened", "synchronize", "reopened"]);
+const VALID_MINIMUM_SEVERITIES = new Set(["info", "warning", "error"]);
+const VALID_SUGGESTION_MODES = new Set(["off", "validated"]);
+const VALID_GATE_MODES = new Set(["off", "warn", "block"]);
+// ---------------------------------------------------------------------------
+// Path
+// ---------------------------------------------------------------------------
+const REVIEW_POLICY_PATH = (cwd) => (0,external_node_path_.join)(cwd, "umactually.review.json");
+// ---------------------------------------------------------------------------
+// Built-in defaults
+// ---------------------------------------------------------------------------
+const DEFAULT_REVIEW_POLICY = Object.freeze({
+    schemaVersion: REVIEW_POLICY_SCHEMA_VERSION,
+    pathRules: Object.freeze([]),
+    excludes: Object.freeze([]),
+    effort: "medium",
+    triggers: Object.freeze(["opened", "synchronize", "reopened"]),
+    reReviewCap: 0,
+    budgets: Object.freeze({ contextTokens: null, maxOutputTokens: null, latencyMs: null }),
+    minimumSeverity: "warning",
+    suggestionMode: "off",
+    gateMode: "off",
+});
+// ---------------------------------------------------------------------------
+// Glob validation (without compiling — structural check only)
+// ---------------------------------------------------------------------------
+function isValidGlob(pattern) {
+    if (typeof pattern !== "string" || pattern.length === 0)
+        return false;
+    let braces = 0;
+    let brackets = 0;
+    let parens = 0;
+    for (const ch of pattern) {
+        braces = updateBraceCount(ch, braces);
+        brackets = updateBracketCount(ch, brackets);
+        parens = updateParenCount(ch, parens);
+        if (areAnyCountersNegative(braces, brackets, parens))
+            return false;
+    }
+    return braces === 0 && brackets === 0 && parens === 0;
+}
+function updateBraceCount(ch, count) {
+    if (ch === "{")
+        return count + 1;
+    if (ch === "}")
+        return count - 1;
+    return count;
+}
+function updateBracketCount(ch, count) {
+    if (ch === "[")
+        return count + 1;
+    if (ch === "]")
+        return count - 1;
+    return count;
+}
+function updateParenCount(ch, count) {
+    if (ch === "(")
+        return count + 1;
+    if (ch === ")")
+        return count - 1;
+    return count;
+}
+function areAnyCountersNegative(braces, brackets, parens) {
+    return braces < 0 || brackets < 0 || parens < 0;
+}
+function isUnsafePath(pattern) {
+    if (pattern.startsWith("/"))
+        return true;
+    if (/^[A-Za-z]:[\\/]/.test(pattern))
+        return true;
+    const segments = pattern.split(/[\\/]/);
+    if (segments.includes(".."))
+        return true;
+    return false;
+}
+function containsSecret(value) {
+    if (typeof value !== "string")
+        return false;
+    const result = saved_config/* SECRET_REGEX */.VO.test(value);
+    saved_config/* SECRET_REGEX */.VO.lastIndex = 0;
+    return result;
+}
+// ---------------------------------------------------------------------------
+// Validation
+// ---------------------------------------------------------------------------
+function validateReviewPolicy(raw, filePath) {
+    const steps = [
+        validateShape,
+        validateSchemaVersion,
+        validateAllowedKeys,
+        validateSecretScan,
+        validateEnumAndTypeFields,
+        validatePathSafetyAndGlobs,
+        validateSecretScanPatterns,
+    ];
+    for (const step of steps) {
+        const result = step(raw, filePath);
+        if (!result.ok)
+            return result;
+    }
+    const policy = buildPolicy(raw);
+    return { ok: true, policy };
+}
+function receivedKind(raw) {
+    if (raw === null)
+        return "null";
+    if (Array.isArray(raw))
+        return "array";
+    return typeof raw;
+}
+function validateShape(raw, filePath) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        return fail("invalid-type", `policy at ${filePath}: expected object, received ${receivedKind(raw)}`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSchemaVersion(raw, filePath) {
+    const obj = raw;
+    if (obj["schemaVersion"] === undefined) {
+        return fail("missing-schema-version", `policy at ${filePath}: missing required field "schemaVersion"`);
+    }
+    if (typeof obj["schemaVersion"] !== "number" || !Number.isInteger(obj["schemaVersion"])) {
+        return fail("unsupported-schema-version", `policy at ${filePath}: schemaVersion must be an integer, received ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+    }
+    if (obj["schemaVersion"] !== REVIEW_POLICY_SCHEMA_VERSION) {
+        return fail("unsupported-schema-version", `policy at ${filePath}: unsupported schemaVersion ${obj["schemaVersion"]} (expected ${REVIEW_POLICY_SCHEMA_VERSION})`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateAllowedKeys(raw, filePath) {
+    const obj = raw;
+    for (const key of Object.keys(obj)) {
+        if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) {
+            return fail("unknown-key", `policy at ${filePath}: unknown key "${key}"`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSecretScan(raw, filePath) {
+    const obj = raw;
+    for (const [key, value] of Object.entries(obj)) {
+        if (typeof value === "string" && containsSecret(value)) {
+            return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in field "${key}"`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateEnumAndTypeFields(raw, filePath) {
+    const obj = raw;
+    const effortResult = validateEffort(obj, filePath);
+    if (!effortResult.ok)
+        return effortResult;
+    const triggersResult = validateTriggers(obj, filePath);
+    if (!triggersResult.ok)
+        return triggersResult;
+    const severityResult = validateMinimumSeverity(obj, filePath);
+    if (!severityResult.ok)
+        return severityResult;
+    const suggestionResult = validateSuggestionMode(obj, filePath);
+    if (!suggestionResult.ok)
+        return suggestionResult;
+    const gateResult = validateGateMode(obj, filePath);
+    if (!gateResult.ok)
+        return gateResult;
+    const reReviewResult = validateReReviewCap(obj, filePath);
+    if (!reReviewResult.ok)
+        return reReviewResult;
+    const budgetsResult = validateBudgets(obj, filePath);
+    if (!budgetsResult.ok)
+        return budgetsResult;
+    const pathRulesResult = validatePathRules(obj, filePath);
+    if (!pathRulesResult.ok)
+        return pathRulesResult;
+    const excludesResult = validateExcludes(obj, filePath);
+    if (!excludesResult.ok)
+        return excludesResult;
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validatePathSafetyAndGlobs(_raw, _filePath) {
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+/** `extract` returns null for entries that carry no scannable string. */
+function scanForSecrets(value, filePath, fieldLabel, extract) {
+    if (value === undefined || !Array.isArray(value))
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    for (const entry of value) {
+        const candidate = extract(entry);
+        if (candidate !== null && containsSecret(candidate)) {
+            return fail("secret-detected", `policy at ${filePath}: secret-shaped value detected in ${fieldLabel}`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSecretScanPatterns(raw, filePath) {
+    const obj = raw;
+    const pathRules = scanForSecrets(obj["pathRules"], filePath, "pathRule pattern", (rule) => review_policy_isRecord(rule) && typeof rule["pattern"] === "string" ? rule["pattern"] : null);
+    if (!pathRules.ok)
+        return pathRules;
+    return scanForSecrets(obj["excludes"], filePath, "exclude pattern", (ex) => typeof ex === "string" ? ex : null);
+}
+function validateEffort(obj, filePath) {
+    if (obj["effort"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["effort"] !== "string" || !VALID_EFFORTS.has(obj["effort"])) {
+        return fail("invalid-effort", `policy at ${filePath}: invalid effort ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of low, medium, high)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateTriggers(obj, filePath) {
+    if (obj["triggers"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (!Array.isArray(obj["triggers"])) {
+        return fail("invalid-trigger", `policy at ${filePath}: triggers must be an array`);
+    }
+    for (const t of obj["triggers"]) {
+        if (typeof t !== "string" || !VALID_TRIGGERS.has(t)) {
+            return fail("invalid-trigger", `policy at ${filePath}: invalid trigger ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of opened, synchronize, reopened)`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateMinimumSeverity(obj, filePath) {
+    if (obj["minimumSeverity"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["minimumSeverity"] !== "string" || !VALID_MINIMUM_SEVERITIES.has(obj["minimumSeverity"])) {
+        return fail("invalid-minimum-severity", `policy at ${filePath}: invalid minimumSeverity ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of info, warning, error)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateSuggestionMode(obj, filePath) {
+    if (obj["suggestionMode"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["suggestionMode"] !== "string" || !VALID_SUGGESTION_MODES.has(obj["suggestionMode"])) {
+        return fail("invalid-suggestion-mode", `policy at ${filePath}: invalid suggestionMode ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of off, validated)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateGateMode(obj, filePath) {
+    if (obj["gateMode"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["gateMode"] !== "string" || !VALID_GATE_MODES.has(obj["gateMode"])) {
+        return fail("invalid-gate-mode", `policy at ${filePath}: invalid gateMode ${brand/* REDACTED_PLACEHOLDER */.Vj} (expected one of off, warn, block)`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateReReviewCap(obj, filePath) {
+    if (obj["reReviewCap"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof obj["reReviewCap"] !== "number" || !Number.isInteger(obj["reReviewCap"]) || obj["reReviewCap"] < 0) {
+        return fail("invalid-re-review-cap", `policy at ${filePath}: reReviewCap must be a non-negative integer`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateBudgets(obj, filePath) {
+    if (obj["budgets"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (obj["budgets"] === null || typeof obj["budgets"] !== "object" || Array.isArray(obj["budgets"])) {
+        return fail("invalid-budget", `policy at ${filePath}: budgets must be an object`);
+    }
+    const rawBudgets = obj["budgets"];
+    for (const key of Object.keys(rawBudgets)) {
+        if (!ALLOWED_BUDGET_KEYS.has(key)) {
+            return fail("unknown-key", `policy at ${filePath}: unknown budget key "${key}"`);
+        }
+    }
+    const budgetFieldResult = validateBudgetField(rawBudgets, "contextTokens", filePath);
+    if (!budgetFieldResult.ok)
+        return budgetFieldResult;
+    const maxOutputResult = validateBudgetField(rawBudgets, "maxOutputTokens", filePath);
+    if (!maxOutputResult.ok)
+        return maxOutputResult;
+    const latencyResult = validateBudgetField(rawBudgets, "latencyMs", filePath);
+    if (!latencyResult.ok)
+        return latencyResult;
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateBudgetField(rawBudgets, field, filePath) {
+    const value = rawBudgets[field];
+    if (value === undefined || value === null)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+        return fail("invalid-budget", `policy at ${filePath}: ${field} must be a non-negative integer`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateOnePathRule(rule, filePath, seenPatterns) {
+    if (rule === null || typeof rule !== "object" || Array.isArray(rule)) {
+        return fail("invalid-glob", `policy at ${filePath}: pathRule must be an object`);
+    }
+    const r = rule;
+    for (const key of Object.keys(r)) {
+        if (!ALLOWED_PATH_RULE_KEYS.has(key)) {
+            return fail("unknown-key", `policy at ${filePath}: unknown pathRule key "${key}"`);
+        }
+    }
+    if (typeof r["pattern"] !== "string") {
+        return fail("invalid-glob", `policy at ${filePath}: pathRule.pattern must be a string`);
+    }
+    const pattern = r["pattern"];
+    if (!isValidGlob(pattern)) {
+        return fail("invalid-glob", `policy at ${filePath}: invalid glob pattern ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+    }
+    if (isUnsafePath(pattern)) {
+        return fail("unsafe-path", `policy at ${filePath}: pathRule pattern escapes repo root`);
+    }
+    if (seenPatterns.has(pattern)) {
+        return fail("duplicate-path-rule", `policy at ${filePath}: duplicate path rule pattern detected`);
+    }
+    seenPatterns.add(pattern);
+    if (r["effort"] !== undefined && (typeof r["effort"] !== "string" || !VALID_EFFORTS.has(r["effort"]))) {
+        return fail("invalid-effort", `policy at ${filePath}: invalid pathRule effort ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validatePathRules(obj, filePath) {
+    if (obj["pathRules"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (!Array.isArray(obj["pathRules"])) {
+        return fail("invalid-glob", `policy at ${filePath}: pathRules must be an array`);
+    }
+    const seenPatterns = new Set();
+    for (const rule of obj["pathRules"]) {
+        const result = validateOnePathRule(rule, filePath, seenPatterns);
+        if (!result.ok)
+            return result;
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function validateExcludes(obj, filePath) {
+    if (obj["excludes"] === undefined)
+        return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+    if (!Array.isArray(obj["excludes"])) {
+        return fail("invalid-glob", `policy at ${filePath}: excludes must be an array`);
+    }
+    for (const ex of obj["excludes"]) {
+        if (typeof ex !== "string") {
+            return fail("invalid-glob", `policy at ${filePath}: exclude entry must be a string`);
+        }
+        if (!isValidGlob(ex)) {
+            return fail("invalid-glob", `policy at ${filePath}: invalid exclude glob ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+        }
+        if (isUnsafePath(ex)) {
+            return fail("unsafe-path", `policy at ${filePath}: exclude pattern escapes repo root`);
+        }
+    }
+    return { ok: true, policy: DEFAULT_REVIEW_POLICY };
+}
+function buildPolicy(obj) {
+    const policy = { schemaVersion: REVIEW_POLICY_SCHEMA_VERSION };
+    if (obj["effort"] !== undefined)
+        policy.effort = obj["effort"];
+    if (obj["triggers"] !== undefined)
+        policy.triggers = obj["triggers"];
+    if (obj["minimumSeverity"] !== undefined)
+        policy.minimumSeverity = obj["minimumSeverity"];
+    if (obj["suggestionMode"] !== undefined)
+        policy.suggestionMode = obj["suggestionMode"];
+    if (obj["gateMode"] !== undefined)
+        policy.gateMode = obj["gateMode"];
+    if (obj["reReviewCap"] !== undefined)
+        policy.reReviewCap = obj["reReviewCap"];
+    if (obj["budgets"] !== undefined) {
+        const rawBudgets = obj["budgets"];
+        policy.budgets = {
+            contextTokens: rawBudgets["contextTokens"] === undefined || rawBudgets["contextTokens"] === null ? null : rawBudgets["contextTokens"],
+            maxOutputTokens: rawBudgets["maxOutputTokens"] === undefined || rawBudgets["maxOutputTokens"] === null ? null : rawBudgets["maxOutputTokens"],
+            latencyMs: rawBudgets["latencyMs"] === undefined || rawBudgets["latencyMs"] === null ? null : rawBudgets["latencyMs"],
+        };
+    }
+    if (obj["pathRules"] !== undefined) {
+        policy.pathRules = obj["pathRules"].map((r) => {
+            const effort = r["effort"];
+            return { pattern: r["pattern"], ...(effort !== undefined ? { effort } : {}) };
+        });
+    }
+    if (obj["excludes"] !== undefined) {
+        policy.excludes = obj["excludes"];
+    }
+    return policy;
+}
+function review_policy_isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function fail(kind, message) {
+    return { ok: false, error: { kind, message }, exitCode: 2, message };
+}
+function loadReviewPolicy(deps) {
+    const fs = deps.fs ?? fs_atomic/* defaultFsAdapter */.aO;
+    const path = REVIEW_POLICY_PATH(deps.cwd);
+    if (!fs.exists(path)) {
+        return { policy: null, path, hash: null, warning: null, error: null, exitCode: null };
+    }
+    if (fs.isSymlink(path)) {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `refusing to read review policy: ${path} is a symlink; remove it and re-run`,
+            error: { kind: "unsafe-path", message: `refusing to read review policy: ${path} is a symlink` },
+            exitCode: 2,
+        };
+    }
+    if (!fs.isFile(path)) {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `refusing to read review policy: ${path} is not a regular file`,
+            error: { kind: "unsafe-path", message: `refusing to read review policy: ${path} is not a regular file` },
+            exitCode: 2,
+        };
+    }
+    let raw;
+    try {
+        raw = fs.readFile(path);
+    }
+    catch {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `corrupt review policy at ${path}: read failed; rm ${path} to recover`,
+            error: { kind: "corrupt-json", message: `read failed at ${path}` },
+            exitCode: 2,
+        };
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: `corrupt review policy at ${path}: invalid JSON; rm ${path} to recover`,
+            error: { kind: "corrupt-json", message: `invalid JSON at ${path}` },
+            exitCode: 2,
+        };
+    }
+    const result = validateReviewPolicy(parsed, path);
+    if (!result.ok) {
+        return {
+            policy: null,
+            path,
+            hash: null,
+            warning: result.message,
+            error: result.error,
+            exitCode: 2,
+        };
+    }
+    const hash = sha256Bytes(serializeReviewPolicy(result.policy));
+    return {
+        policy: result.policy,
+        path,
+        hash,
+        warning: null,
+        error: null,
+        exitCode: null,
+    };
+}
+// ---------------------------------------------------------------------------
+// Serialization (deterministic key order)
+// ---------------------------------------------------------------------------
+function serializeReviewPolicy(policy) {
+    const ordered = {
+        schemaVersion: policy.schemaVersion,
+    };
+    if (policy.pathRules !== undefined)
+        ordered["pathRules"] = policy.pathRules;
+    if (policy.excludes !== undefined)
+        ordered["excludes"] = policy.excludes;
+    if (policy.effort !== undefined)
+        ordered["effort"] = policy.effort;
+    if (policy.triggers !== undefined)
+        ordered["triggers"] = policy.triggers;
+    if (policy.reReviewCap !== undefined)
+        ordered["reReviewCap"] = policy.reReviewCap;
+    if (policy.budgets !== undefined)
+        ordered["budgets"] = policy.budgets;
+    if (policy.minimumSeverity !== undefined)
+        ordered["minimumSeverity"] = policy.minimumSeverity;
+    if (policy.suggestionMode !== undefined)
+        ordered["suggestionMode"] = policy.suggestionMode;
+    if (policy.gateMode !== undefined)
+        ordered["gateMode"] = policy.gateMode;
+    return JSON.stringify(ordered, null, 2) + "\n";
+}
+function applyReviewPolicy(input) {
+    const { policy, policyPath, policyHash } = input;
+    const version = policy?.schemaVersion ?? null;
+    const FIELDS_TO_RESOLVE = [
+        "effort",
+        "triggers",
+        "reReviewCap",
+        "budgets",
+        "minimumSeverity",
+        "suggestionMode",
+        "gateMode",
+        "pathRules",
+        "excludes",
+    ];
+    const resolved = {};
+    const provenance = {};
+    for (const field of FIELDS_TO_RESOLVE) {
+        const outcome = resolveOneField(field, input);
+        resolved[field] = outcome.value;
+        provenance[field] = outcome.provenance;
+    }
+    const result = {
+        schemaVersion: REVIEW_POLICY_SCHEMA_VERSION,
+        ...(resolved["effort"] !== undefined ? { effort: resolved["effort"] } : {}),
+        ...(resolved["triggers"] !== undefined ? { triggers: resolved["triggers"] } : {}),
+        ...(resolved["reReviewCap"] !== undefined ? { reReviewCap: resolved["reReviewCap"] } : {}),
+        ...(resolved["budgets"] !== undefined ? { budgets: resolved["budgets"] } : {}),
+        ...(resolved["minimumSeverity"] !== undefined ? { minimumSeverity: resolved["minimumSeverity"] } : {}),
+        ...(resolved["suggestionMode"] !== undefined ? { suggestionMode: resolved["suggestionMode"] } : {}),
+        ...(resolved["gateMode"] !== undefined ? { gateMode: resolved["gateMode"] } : {}),
+        ...(resolved["pathRules"] !== undefined ? { pathRules: resolved["pathRules"] } : {}),
+        ...(resolved["excludes"] !== undefined ? { excludes: resolved["excludes"] } : {}),
+    };
+    return {
+        resolved: result,
+        provenance,
+        policyMeta: {
+            path: policy !== null ? policyPath : null,
+            hash: policy !== null ? policyHash : null,
+            version,
+        },
+    };
+}
+function resolveOneField(field, input) {
+    const { policy, policyPath, policyHash, flagValues, envValues, defaults } = input;
+    const flagValue = flagValues[field];
+    if (flagValue !== undefined) {
+        return { value: flagValue, provenance: { source: "flag" } };
+    }
+    const envValue = envValues[field];
+    if (envValue !== undefined) {
+        return { value: envValue, provenance: { source: "env", envName: policyEnvName(field) } };
+    }
+    if (policy !== null) {
+        const policyValue = policy[field];
+        if (policyValue !== undefined) {
+            return {
+                value: policyValue,
+                provenance: {
+                    source: "reviewPolicy",
+                    path: policyPath,
+                    ...(policyHash !== null ? { hash: policyHash } : {}),
+                },
+            };
+        }
+    }
+    return { value: defaults[field], provenance: { source: "default" } };
+}
+function prefixUppercase(c) {
+    return `_${c}`;
+}
+function policyEnvName(field) {
+    return `UMACTUALLY_REVIEW_${field.replace(/[A-Z]/g, prefixUppercase).toUpperCase()}`;
+}
+// ---------------------------------------------------------------------------
+// Policy template (opt-in)
+// ---------------------------------------------------------------------------
+function renderPolicyTemplate() {
+    const template = {
+        schemaVersion: REVIEW_POLICY_SCHEMA_VERSION,
+        effort: "medium",
+        triggers: ["opened", "synchronize", "reopened"],
+        minimumSeverity: "warning",
+        suggestionMode: "off",
+        gateMode: "off",
+        reReviewCap: 0,
+        pathRules: [{ pattern: "src/**/*.ts" }],
+        excludes: ["node_modules/**", "vendor/**"],
+        budgets: {
+            contextTokens: 8000,
+            maxOutputTokens: 16000,
+            latencyMs: 30000,
+        },
+    };
+    return JSON.stringify(template, null, 2) + "\n";
+}
+// ---------------------------------------------------------------------------
+// Hashing
+// ---------------------------------------------------------------------------
+function sha256Bytes(data) {
+    return (0,external_node_crypto_.createHash)("sha256").update(data, "utf8").digest("hex");
+}
+
+;// CONCATENATED MODULE: ./src/cli/load-saved-config.ts
+// SPDX-License-Identifier: MIT
+// Runtime wrapper around the CLI's `umactually init` saved-config reader.
+//
+// `readSavedConfig` in `src/config/saved-config.ts` is shaped for the wizard
+// (exit-code + message) and refuses to proceed on malformed JSON. The
+// `umactually review` and `umactually --files` entry paths, plus the bare
+// `umactually` quickstart gate, need a NON-exit-shaped variant: read the
+// file, return whatever you got, surface the failure as a `warning` the
+// caller decides whether to print. This keeps the resolver sites
+// (`apply-saved-config`, `runLoadedConfigQuickstart`) free of `process.exit`
+// concerns and keeps the wizard's strict contract intact.
+//
+// S6 contract: this function NEVER persists or transmits `apiKey`.
+// The `SavedConfig` type excludes it; `readSavedConfig` rejects attempts
+// to deserialize unknown keys at the type level.
+
+
+/**
+ * Read the runtime-effective saved config (repo path first, global fallback),
+ * without ever exiting on failure. Returns `{config: null, warning: <msg>}`
+ * when the file is missing, malformed, or refused for security reasons —
+ * callers decide whether to surface the warning to the user.
+ *
+ * Defaults `cwd` to `process.cwd()` and `homeDir` to `os.homedir()` so
+ * the common path is a no-arg call. Tests inject explicit values to
+ * avoid touching the real user's `~/.umactually/config.json`.
+ *
+ * Never throws. The wizard's `readSavedConfig` is the throwing/exiting
+ * variant; this one is the runtime-tolerant variant. They share the
+ * underlying validation through the same `SavedConfig` type.
+ */
+function tryReadSavedConfig(deps = {}) {
+    const homeDir = deps.homeDir ?? (0,external_node_os_namespaceObject.homedir)();
+    const result = (0,saved_config/* readSavedConfig */.qj)({
+        homeDir,
+        cwd: deps.cwd ?? process.cwd(),
+    });
+    if (result.ok) {
+        return { config: result.config, path: result.path, warning: null };
+    }
+    // Failure path: synthesize the global path as the canonical
+    // "where the loader looked" pointer. The wizard's failure result
+    // doesn't carry a path field, but an operator running
+    // `umactually --show-config` against a corrupt file wants to know
+    // WHICH file failed to parse; the global-path shape is the closest
+    // meaningful answer we can give without re-implementing the
+    // candidate walk that `readSavedConfig` does. The exact failure
+    // path is also embedded in `warning` text (per the wizard's
+    // "corrupt saved config at <path>" contract) so callers needing
+    // the precise file path can parse the warning.
+    return {
+        config: null,
+        path: result.path,
+        warning: result.message,
+    };
+}
+
+// EXTERNAL MODULE: ./src/cli/context-provenance.ts
+var context_provenance = __nccwpck_require__(245);
+;// CONCATENATED MODULE: ./src/provider/provider-error.ts
+class ProviderError extends Error {
+    code;
+    endpoint;
+    status;
+    requestId;
+    name = "ProviderError";
+    /**
+     * Raw provider response body for diagnostic errors (currently only
+     * `code === "parse"` carries it). Surfaced to the PR-level summary card
+     * so reviewers can see exactly what the model returned. `undefined` for
+     * non-parse errors so the constructor signature stays compatible.
+     */
+    rawText;
+    /**
+     * True when the parse error was caused by a truncated SSE stream —
+     * the provider's response ended before the model emitted a
+     * `response.completed` (or equivalent) event. Distinct from a
+     * completed-but-malformed response (where the stream ended cleanly
+     * but the JSON itself was structurally wrong). Surfaced in the
+     * parse-fail diagnostic so reviewers can tell "raise
+     * --max-output-tokens and retry" apart from "model returned bad JSON".
+     * `undefined` for non-parse errors.
+     */
+    truncated;
+    /**
+     * Token usage reported by the provider in the `response.completed`
+     * event's `usage` block. Surfaced by the headroom-warning check so
+     * operators can see whether the model filled its token budget
+     * (explains the truncated-stream case). `undefined` when the
+     * provider didn't emit usage data or the stream was truncated
+     * before the completed event.
+     */
+    usage;
+    /**
+     * Structured details when `code === "provider_error"`. Carries the
+     * detection signal kind (zero-usage, error-envelope, error-doc-url)
+     * and a human-readable message so downstream layers can surface
+     * actionable remediation advice. `undefined` for all other error
+     * codes.
+     */
+    providerErrorDetails;
+    constructor(code, endpoint, status, requestId, message, options) {
+        super(message, options);
+        this.code = code;
+        this.endpoint = endpoint;
+        this.status = status;
+        this.requestId = requestId;
+        this.rawText = options?.rawText;
+        this.truncated = options?.truncated;
+        this.usage = options?.usage;
+        this.providerErrorDetails = options?.providerErrorDetails;
+    }
+}
+/**
+ * Routing-level failure predicates intentionally diverge by boundary:
+ *
+ * - URL-candidate fallback stays inside one OpenAI-compatible provider
+ *   client. HTTP 404 and 400 can both mean the operator's base URL shape
+ *   missed the provider's route, so the client may advance to the next
+ *   resolved candidate without changing wire protocol.
+ * - Cross-protocol fallback crosses from one provider protocol family to
+ *   another. It fires on 404 only because the wire shape genuinely does
+ *   not have a route for this URL at this provider. We intentionally
+ *   exclude HTTP 400 even though URL-candidate fallback accepts it.
+ *
+ * 400 typically signals a payload-level error (malformed body, missing
+ * required field, unsupported `max_tokens` value, content-policy
+ * rejection). Firing cross-protocol fallback on a payload-400 would silently mask wire-shape bugs:
+ * an Anthropic call that 400s on an
+ * unsupported parameter would retry against OpenAI's wire shape (different
+ * body layout) and possibly succeed, with the operator seeing a successful
+ * review attributed to the OTHER protocol without ever knowing their
+ * original call was malformed.
+ */
+function isRoutableFailureForUrlCandidate(error) {
+    return error.status === 404 || error.status === 400;
+}
+function isRoutableFailureForCrossProtocol(error) {
+    return error.status === 404;
+}
+function sanitizeHttpStatus(endpoint, status) {
+    return `Provider ${endpoint} responded with HTTP ${status}.`;
+}
+function sanitizeMessage(error, fallback) {
+    if (error instanceof Error) {
+        const safe = error.message.replace(/\s+/g, " ").trim();
+        if (safe.length === 0) {
+            return fallback;
+        }
+        if (safe.length > 160) {
+            return `${safe.slice(0, 157)}...`;
+        }
+        return safe;
+    }
+    return fallback;
+}
+function isAbortError(error) {
+    if (error instanceof Error) {
+        if (error.name === "AbortError" || error.name === "TimeoutError") {
+            return true;
+        }
+    }
+    const code = readErrorCode(error);
+    return code === "ABORT_ERR" || code === "23";
+}
+function readErrorCode(error) {
+    if (typeof error !== "object" || error === null) {
+        return null;
+    }
+    const code = error.code;
+    return typeof code === "string" ? code : null;
+}
+
+;// CONCATENATED MODULE: ./src/util/url.ts
+/** Join provider base URLs consistently; eliminates duplicated slash trimming across provider clients. */
+function joinUrl(baseUrl, path) {
+    const trimmedBase = url_stripTrailingSlash(baseUrl);
+    const prefixedPath = path.startsWith("/") ? path : `/${path}`;
+    return `${trimmedBase}${prefixedPath}`;
+}
+/**
+ * Resolve a provider's `baseUrl` down to its origin (scheme + host + port),
+ * then append a default API prefix. This makes the action robust against
+ * any operator-supplied path: no matter what the user puts after the host
+ * (`/v1`, `/openai`, `/anthropic`, `/api/v2`, etc.), the action always
+ * targets the canonical OpenAI-style path on the host root.
+ *
+ * Goal: `${result}/responses` and `${result}/chat/completions` must
+ * reach the provider regardless of what path the operator typed in
+ * `UMACTUALLY_API_URL`. The provider is responsible for serving those
+ * routes at the host root + `/v1/...`.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com`           → `https://api.example.com/v1`
+ *   - `https://api.example.com/`          → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1`        → `https://api.example.com/v1`
+ *   - `https://api.example.com/openai`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/anthropic` → `https://api.example.com/v1`
+ *   - `https://api.example.com/api/v2`    → `https://api.example.com/v1`
+ *   - `https://api.example.com/v1/openai` → `https://api.example.com/v1`
+ *
+ * The path is **always** discarded. This is intentional: the action
+ * calls OpenAI-style routes (`/responses`, `/chat/completions`),
+ * and the operator's path is treated as decorative noise rather than
+ * a routing hint. The fix trades a small amount of flexibility (no
+ * custom namespace support) for a large amount of robustness — the
+ * action works the same regardless of what path the operator typed.
+ *
+ * If an operator genuinely needs a custom namespace, they can use
+ * the `--provider copilot` path (which uses GitHub's API directly)
+ * or the `copilot` provider family which has its own routing.
+ *
+ * Detection uses a minimal URL parse. The fallback substring path
+ * handles unencoded spaces and other URL-parse failures.
+ *
+ * @param baseUrl       Operator-supplied base URL.
+ * @param defaultPrefix Default prefix to append to the origin.
+ *                      Default `/v1`.
+ */
+function resolveProviderBaseUrl(baseUrl, defaultPrefix = "/v1") {
+    const origin = extractOrigin(baseUrl);
+    return `${origin}${defaultPrefix}`;
+}
+/**
+ * Return the origin (scheme + host + port) of a URL, stripping any path,
+ * query, and fragment. Used by `resolveProviderBaseUrl` to normalize
+ * operator-supplied URLs to their canonical host root.
+ *
+ * Returns the input unchanged if it cannot be parsed as a URL — this
+ * preserves the original string for callers that want a best-effort
+ * fallback. Callers that need a strict guarantee should pass a
+ * well-formed URL.
+ */
+function extractOrigin(baseUrl) {
+    try {
+        return new URL(baseUrl).origin;
+    }
+    catch {
+        const schemeSep = baseUrl.indexOf("://");
+        if (schemeSep === -1) {
+            const firstSlash = baseUrl.indexOf("/");
+            return firstSlash === -1 ? baseUrl : baseUrl.slice(0, firstSlash);
+        }
+        const sepLen = 3; // "://" length
+        const afterScheme = baseUrl.slice(schemeSep + sepLen);
+        const firstSlash = afterScheme.indexOf("/");
+        const authority = firstSlash === -1 ? afterScheme : afterScheme.slice(0, firstSlash);
+        return baseUrl.slice(0, schemeSep + sepLen) + authority;
+    }
+}
+/**
+ * Extract the hostname from a URL string. Returns null when the
+ * input is empty, malformed, or a bare string without a scheme
+ * separator. The caller is expected to fall back to a sensible
+ * default when null is returned.
+ *
+ * Why hostname-only: substring matching on the full URL is too
+ * loose. A URL like `https://example.com/provider-router` could
+ * falsely match a provider keyword in the path. The hostname extract
+ * prevents path text from influencing hostname-based decisions.
+ *
+ * The returned hostname is always lowercased so callers can compare
+ * directly against lowercase host keys. `URL.hostname` is already
+ * lowercased per the WHATWG URL spec; the manual fallback path
+ * (for scheme-less URLs) explicitly lowercases to keep the
+ * case-insensitive match consistent regardless of whether the
+ * URL had a parseable scheme.
+ *
+ * Examples:
+ *   - `https://api.example.com/v1`        → `api.example.com`
+ *   - `ROUTER.EXAMPLE.COM`                → `router.example.com`
+ *   - `localhost:8080`                    → null (`new URL("localhost:8080")`
+ *     parses with empty hostname because `localhost` is not a
+ *     special scheme; the function returns null for empty hosts)
+ *   - `` (empty string)                   → null
+ */
+function extractHostname(baseUrl) {
+    const trimmed = baseUrl.trim();
+    if (trimmed.length === 0)
+        return null;
+    let host;
+    try {
+        host = new URL(trimmed).hostname;
+    }
+    catch {
+        // Fallback: scheme-less URLs (`ROUTER.EXAMPLE.COM`, `localhost:8080`)
+        // don't parse with `new URL()`. Strip the scheme manually, then
+        // read up to the first `/` or `:`.
+        const schemeSep = trimmed.indexOf("://");
+        const afterScheme = schemeSep === -1 ? trimmed : trimmed.slice(schemeSep + 3);
+        const firstSlash = afterScheme.indexOf("/");
+        const firstColon = afterScheme.indexOf(":");
+        const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
+        host = firstColon === -1 || firstColon > stop
+            ? afterScheme.slice(0, stop)
+            : afterScheme.slice(0, firstColon);
+    }
+    return host.length > 0 ? host.toLowerCase() : null;
+}
+/**
+ * Return the ORDERED list of base URL candidates to try when calling
+ * the openai-compatible provider. The first candidate is the
+ * operator-supplied URL as-pasted (after trimming trailing slashes) —
+ * we always respect what the operator typed. Subsequent candidates
+ * are progressively more "normalized" forms: first the origin with
+ * the default prefix prepended, then the origin alone (rare —
+ * only useful if the provider serves routes at the root with no
+ * prefix).
+ *
+ * The list is de-duplicated so the caller doesn't try the same URL
+ * twice. The provider tries each candidate in order; if a candidate
+ * 404s on both `/responses` and `/chat/completions`, the next
+ * candidate is tried. The first candidate that returns a non-404
+ * response wins.
+ *
+ * This is the "robust to any URL shape" contract: no matter what
+ * the operator types, we find a working endpoint. The order is
+ * important — the operator's URL comes first so the wire path
+ * matches their intent whenever possible.
+ *
+ * Examples (defaultPrefix = `/v1`):
+ *   - `https://api.example.com` →
+ *       [`https://api.example.com`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/v1` →
+ *       [`https://api.example.com/v1`,
+ *        `https://api.example.com/v1`]  (de-duplicated)
+ *   - `https://api.example.com/anthropic` →
+ *       [`https://api.example.com/anthropic`,
+ *        `https://api.example.com/v1`]
+ *   - `https://api.example.com/api/v2` →
+ *       [`https://api.example.com/api/v2`,
+ *        `https://api.example.com/v1`]
+ *
+ * The fallback candidate (origin + default prefix) is included even
+ * when the operator's URL is a bare host, so a single candidate is
+ * tried twice (de-duplicated to one). This keeps the contract
+ * uniform: callers always iterate a list, no special-casing.
+ */
+function resolveProviderBaseUrlCandidates(baseUrl, defaultPrefix = "/v1") {
+    const pasted = url_stripTrailingSlash(baseUrl);
+    const normalized = resolveProviderBaseUrl(baseUrl, defaultPrefix);
+    if (pasted === normalized) {
+        return [pasted];
+    }
+    return [pasted, normalized];
+}
+/**
+ * Resolve the Anthropic Messages API URL from the operator-supplied base URL.
+ *
+ * Mirrors the OFFICIAL @anthropic-ai/sdk convention (Claude Code's
+ * `ANTHROPIC_BASE_URL=https://api.anthropic.com` becomes
+ * `POST https://api.anthropic.com/v1/messages`) and the documented
+ * fix in https://github.com/xemantic/anthropic-sdk-kotlin/pull/145 —
+ * which notes that previously "client.post('/v1/messages') replaced
+ * any path on a configured baseUrl, breaking Anthropic-compatible
+ * providers whose endpoints live under a path prefix."
+ *
+ * Anthropic-compatible gateways commonly mount the protocol under a
+ * path prefix. For example:
+ *
+ *   `--api-url https://gateway.example.com/llm/anthropic` →
+ *   `POST https://gateway.example.com/llm/anthropic/v1/messages`
+ *
+ * NOT `https://gateway.example.com/v1/messages`. The path on the
+ * operator's URL is real routing, not decorative noise.
+ *
+ * Behavior:
+ *
+ *   - Parse the input as a URL and split out origin / path / query /
+ *     fragment via the WHATWG URL parser. Query string and fragment
+ *     are intentionally dropped — they don't address `/v1/messages`
+ *     at any known Anthropic-protocol gateway, and passing them
+ *     through would smuggle the endpoint into the query segment
+ *     (`.../v1?token=abc/v1/messages`), an invalid URL that fires
+ *     against a different route.
+ *   - Trim trailing slashes from the resulting path.
+ *   - If the path already ends in `/v1/messages`, return as-is
+ *     (operator pre-appended; idempotent).
+ *   - If it ends in `/v1`, append `/messages` (don't double-`/v1` —
+ *     matches the SDK default of `https://api.anthropic.com/v1`).
+ *   - Otherwise, append `/v1/messages` to the existing path (path
+ *     prefix is preserved).
+ *   - On URL-parse failure (operator supplied something that isn't a
+ *     valid URL), fall back to a trailing-slash strip + naive
+ *     concatenation — preserves the original string when the WHATWG
+ *     parser can't decode it but still drops the function rather
+ *     than throwing.
+ *
+ * Examples:
+ *
+ *   - `https://api.anthropic.com`                        → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.anthropic.com/v1`                     → `https://api.anthropic.com/v1/messages`
+ *   - `https://api.anthropic.com/v1/`                    → `https://api.anthropic.com/v1/messages`
+ *   - `https://gateway.example.com/anthropic`            → `https://gateway.example.com/anthropic/v1/messages`
+ *   - `https://gateway.example.com/anthropic/`           → `https://gateway.example.com/anthropic/v1/messages`
+ *   - `https://gateway.example.com/llm/anthropic`        → `https://gateway.example.com/llm/anthropic/v1/messages`
+ *   - `https://api.anthropic.com/v1/messages`            → `https://api.anthropic.com/v1/messages` (idempotent)
+ *   - `https://api.anthropic.com/v1?token=abc`           → `https://api.anthropic.com/v1/messages` (query dropped)
+ *   - `https://api.anthropic.com/v1#section`             → `https://api.anthropic.com/v1/messages` (fragment dropped)
+ *
+ * Note: this helper REPLACES `resolveProviderBaseUrl` for the
+ * Anthropic provider only. The OpenAI-compatible provider still uses
+ * `resolveProviderBaseUrlCandidates` because OpenAI gateways
+ * (`/openai`, `/api/v2`, etc.) live at the host root + `/v1`, so the
+ * try-as-pasted-then-origin-with-`/v1` fallback is the right
+ * contract there. Anthropic path-prefix gateways need their configured
+ * path preserved.
+ */
+function resolveAnthropicMessagesUrl(baseUrl) {
+    // Parse once and split origin / path. Drop query string and fragment
+    // up front — they don't address the canonical /v1/messages route at
+    // any known Anthropic-protocol gateway, and passing them through
+    // would append the path segment into the query (`...?token=abc/v1/
+    // messages`), an invalid URL.
+    let origin;
+    let pathPart;
+    try {
+        const parsed = new URL(baseUrl);
+        origin = parsed.origin;
+        pathPart = parsed.pathname;
+    }
+    catch {
+        // Unparseable input. Fall back to extractOrigin + raw concatenation.
+        //
+        // IMPORTANT: keep `pathPart` in the SAME shape `parsed.pathname`
+        // would have produced — including a leading `/`. The dispatcher
+        // checks below assume the leading-slash form (`/v1`,
+        // `/v1/messages`); stripping the slash would route an unparseable
+        // input through the wrong branch and produce a doubled
+        // `/v1/v1/messages` suffix.
+        origin = extractOrigin(baseUrl);
+        pathPart = url_stripTrailingSlash(baseUrl).slice(origin.length);
+    }
+    // Normalize: WHATWG URL sets pathname to "/" for a bare host; we
+    // want the empty string so concatenation produces `origin + /v1/messages`
+    // without a doubled slash.
+    const cleanedPath = url_stripTrailingSlash(pathPart === "/" ? "" : pathPart);
+    if (cleanedPath.endsWith("/v1/messages")) {
+        // Operator pre-appended the full messages endpoint; idempotent.
+        return joinUrl(origin, cleanedPath);
+    }
+    // Match the LAST path segment being literally `v1`. The previous
+    // `cleanedPath.endsWith("/v1")` was a suffix check that falsely
+    // matched paths whose trailing characters happened to be `v1`
+    // (e.g. `/my-v1` → wrong branch, would append `/messages`
+    // instead of `/v1/messages`). Path-segment comparison is the
+    // Anthropic-SDK intent: only a trailing `/v1` *segment* counts,
+    // not any path that happens to end in those two characters.
+    const lastSegment = cleanedPath === "" ? "" : cleanedPath.slice(cleanedPath.lastIndexOf("/") + 1);
+    if (cleanedPath === "/v1" || lastSegment === "v1") {
+        return joinUrl(origin, `${cleanedPath}/messages`);
+    }
+    return joinUrl(origin, `${cleanedPath}/v1/messages`);
+}
+/**
+ * Heuristic: does the operator's `UMACTUALLY_API_URL` look like it's
+ * pointing at an Anthropic-protocol gateway?
+ *
+ * Used by the live-provider dispatcher to commit to the Anthropic
+ * Messages API client even when `--provider` defaults to
+ * `openai-compatible`. Without this, the openai-compatible client's
+ * URL candidate loop downgrades paths like
+ * `https://gateway.example.com/llm/anthropic` to the origin+`/v1`
+ * fallback, and the action ends up POSTing OpenAI wire-shape requests
+ * to an Anthropic-protocol gateway — silently breaking operator intent.
+ *
+ * Contract: returns `true` when ANY path segment **exactly** equals
+ * `anthropic` (case-insensitive, byte-for-byte match — no prefix or
+ * suffix overlap). Anything else (bare host, `/v1`, `/openai`,
+ * arbitrary custom paths, segments that *contain* `anthropic` but
+ * don't equal it) returns `false`.
+ *
+ * The exact-segment match is intentional: `anthropic-v2` /
+ * `my-anthropic` / `anthropic-fork` etc. are different segments
+ * from `anthropic` and don't trigger the heuristic. This is a
+ * tight, conservative contract — the only paths that commit to
+ * Anthropic protocol are paths that are LITERALLY `/anthropic`
+ * (with optional trailing `/v1`, `/llm/anthropic`, `/v1/anthropic`,
+ * etc. but never `/anthropic-anything`). A false positive here
+ * would silently POST Anthropic wire shape to a server expecting
+ * something else, which is worse than the (recoverable) false
+ * negative of falling through to the cross-protocol fallback chain.
+ *
+ * Examples (see `test/unit/looks-like-anthropic-endpoint.test.ts`):
+ *
+ *   `https://gateway.example.com/anthropic`            → true  (segment "anthropic")
+ *   `https://gateway.example.com/anthropic/v1`         → true  (segment "anthropic")
+ *   `https://gateway.example.com/llm/anthropic`        → true  (segment "anthropic")
+ *   `https://gateway.example.com/v1/anthropic`        → true  (segment "anthropic")
+ *   `https://api.openai.com/v1`                        → false (no "anthropic" segment)
+ *   `https://api.example.com/`                         → false (no path)
+ *   `https://api.example.com/anthropic-v2`            → false (segment "anthropic-v2" ≠ "anthropic")
+ *   `https://api.example.com/my-anthropic`             → false (segment "my-anthropic" ≠ "anthropic")
+ *   `https://api.example.com/anthropic-team/foo`       → false (segment "anthropic-team" ≠ "anthropic")
+ *   `https://api.example.com/anthropic?token=…`        → true  (query dropped, path segment "anthropic" matches)
+ *
+ * Conservative by design: a `false` result means the dispatcher
+ * won't auto-commit to Anthropic protocol, falling back to the
+ * `--provider` choice and the cross-protocol fallback chain.
+ * An unexpected `false` is recoverable (the fallback still fires
+ * on a real 404); an unexpected `true` would silently pick the
+ * Anthropic wire shape on a URL that doesn't speak it.
+ */
+function looksLikeAnthropicEndpoint(baseUrl) {
+    if (baseUrl.length === 0)
+        return false;
+    let pathname;
+    try {
+        pathname = new URL(baseUrl).pathname;
+    }
+    catch {
+        // Substring fallback for unparseable URLs.
+        pathname = url_stripTrailingSlash(baseUrl).replace(/^[a-z]+:\/\/[^/]*/i, "");
+    }
+    // Normalize trailing slashes and split into segments. The leading
+    // slash is preserved; an empty pathname for bare hosts collapses
+    // to zero segments.
+    const segments = pathname.split("/").filter(s => s.length > 0);
+    return segments.some(s => s.toLowerCase() === "anthropic");
+}
+/**
+ * Removes trailing slashes from a URL or path segment. Useful before
+ * joining paths so empty-path joins don't produce double slashes.
+ */
+function url_stripTrailingSlash(value) {
+    return value.replace(/\/+$/u, "");
+}
+/**
+ * Strip the query string and fragment from a URL for safe inclusion
+ * in CI logs and operator-facing diagnostics. The URL may carry
+ * session tokens, tenant identifiers, or other credential-bearing
+ * parameters in the query slot — leaking those into the action's
+ * stderr notices (which are persisted as GitHub Actions annotations)
+ * is a credential-disclosure risk that we explicitly avoid.
+ *
+ * Behavior:
+ *   - Empty input                        → empty output
+ *   - Bare host                          → unchanged
+ *   - With query string                  → origin + path (no `?`)
+ *   - With fragment                      → origin + path (no `#`)
+ *   - Unparseable input                  → substring-stripped; never throws
+ *
+ * Examples:
+ *   - `https://api.example.com`                   → `https://api.example.com`
+ *   - `https://api.example.com/v1`                → `https://api.example.com/v1`
+ *   - `https://api.example.com?token=secret`      → `https://api.example.com`
+ *   - `https://api.example.com/v1#anchor`         → `https://api.example.com/v1`
+ */
+function url_redactUrlForLog(value) {
+    if (value.length === 0)
+        return value;
+    try {
+        const parsed = new URL(value);
+        // WHATWG URL normalizes pathname to start with `/`; for a bare
+        // host it's just `/`, so concatenating origin + `/` would
+        // produce `https://api.example.com/` for an input of
+        // `https://api.example.com`. Strip the trailing slash so the
+        // redacted form matches the input canonicalization the operator
+        // typed.
+        const path = parsed.pathname === "/" ? "" : parsed.pathname;
+        return `${parsed.origin}${path}`;
+    }
+    catch {
+        // Unparseable URL — strip query and fragment manually.
+        const noQuery = value.split("?")[0] ?? value;
+        return noQuery.split("#")[0] ?? noQuery;
+    }
+}
+/** Convert a local filesystem path to a `file://` URL; eliminates duplicated URL-construction logic in the action and CLI entries. */
+function pathToFileUrl(value) {
+    return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
+}
+/** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
+function createRequestId() {
+    const cryptoApi = globalThis.crypto;
+    if (cryptoApi?.randomUUID !== undefined) {
+        return cryptoApi.randomUUID();
+    }
+    const bytes = new Uint8Array(16);
+    if (cryptoApi?.getRandomValues !== undefined) {
+        cryptoApi.getRandomValues(bytes);
+    }
+    else {
+        // Last-resort fallback: non-cryptographic PRNG. Only reached when the
+        // runtime has no `crypto` global AND no Node `crypto` module loaded —
+        // i.e. very old Node (< 19) without `--experimental-global-webcrypto`,
+        // or non-Node embedders. Request IDs are correlation handles, not
+        // security tokens, so the entropy quality is acceptable here.
+        for (let index = 0; index < bytes.length; index += 1) {
+            bytes[index] = Math.floor(Math.random() * 256);
+        }
+    }
+    const hex = [];
+    for (const byte of bytes) {
+        hex.push(byte.toString(16).padStart(2, "0"));
+    }
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+}
+
+;// CONCATENATED MODULE: ./src/cli/auto-model.ts
+
+
+function modelsUrl(apiUrl) {
+    const base = apiUrl.replace(/\/+$/u, "");
+    return base.endsWith("/v1") ? `${base}/models` : `${base}/v1/models`;
+}
+function redactNetworkReason(error) {
+    if (!(error instanceof Error))
+        return "model discovery request failed";
+    return error.message.replace(/https?:\/\/\S+/gu, (url) => url_redactUrlForLog(url));
+}
+function parseModelIds(body) {
+    if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
+        return { ok: false, error: { kind: "malformed", reason: "missing data array" } };
+    }
+    const ids = body.data.flatMap((entry) => {
+        if (typeof entry !== "object" || entry === null || !("id" in entry))
+            return [];
+        const id = entry.id;
+        return typeof id === "string" && id.trim().length > 0 ? [id.trim()] : [];
+    });
+    if (ids.length === 0)
+        return { ok: false, error: { kind: "empty" } };
+    if (ids.length > 1)
+        return { ok: false, error: { kind: "ambiguous", modelIds: ids } };
+    return { ok: true, ids };
+}
+function discoverySignal(dependencies) {
+    const timeoutSignal = dependencies.timeoutMs === undefined
+        ? undefined
+        : AbortSignal.timeout(dependencies.timeoutMs);
+    if (dependencies.signal === undefined)
+        return timeoutSignal;
+    if (timeoutSignal === undefined)
+        return dependencies.signal;
+    return AbortSignal.any([dependencies.signal, timeoutSignal]);
+}
+async function discoverAutoModel(input) {
+    if (input.provider === "copilot")
+        return { ok: true, modelId: "auto" };
+    if (input.apiUrl === null || input.apiUrl.trim().length === 0 || input.apiKey === null || input.apiKey.length === 0) {
+        return { ok: false, error: { kind: "unsupported", provider: input.provider } };
+    }
+    const dependencies = input.dependencies ?? {};
+    const signal = discoverySignal(dependencies);
+    if (signal?.aborted === true)
+        return { ok: false, error: { kind: "aborted" } };
+    const headers = input.provider === "anthropic"
+        ? { accept: "application/json", "anthropic-version": "2023-06-01", "x-api-key": input.apiKey }
+        : { accept: "application/json", authorization: `Bearer ${input.apiKey}` };
+    let response;
+    try {
+        response = await (dependencies.fetchImpl ?? globalThis.fetch)(modelsUrl(input.apiUrl), {
+            method: "GET",
+            headers,
+            ...(signal === undefined ? {} : { signal }),
+        });
+    }
+    catch (error) {
+        return isAbortError(error)
+            ? { ok: false, error: { kind: "aborted" } }
+            : { ok: false, error: { kind: "network", reason: redactNetworkReason(error) } };
+    }
+    if (response.status === 401 || response.status === 403) {
+        return { ok: false, error: { kind: "unauthorized", status: response.status } };
+    }
+    if (!response.ok) {
+        return { ok: false, error: { kind: "network", reason: `model discovery returned HTTP ${response.status}` } };
+    }
+    let body;
+    try {
+        body = await response.json();
+    }
+    catch {
+        return { ok: false, error: { kind: "malformed", reason: "response body is not JSON" } };
+    }
+    const parsed = parseModelIds(body);
+    if (!parsed.ok)
+        return { ok: false, error: parsed.error };
+    const modelId = parsed.ids[0];
+    return modelId === undefined
+        ? { ok: false, error: { kind: "empty" } }
+        : { ok: true, modelId };
+}
+
 ;// CONCATENATED MODULE: ./src/util/provider-defaults.ts
 /** Canonical provider/platform URL defaults. Centralizing prevents drift between the loader, live provider, help text, and platform modules. */
 /** OpenAI default base URL. Used by `config/loader.ts` and the OpenAI-compatible client as the default when `--api-url` is unset and no provider-specific override applies. */
@@ -1962,6 +5476,998 @@ const DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
 const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
 /** GitHub API default base URL. Used by Copilot token exchange (`provider/copilot.ts`) and Copilot routing in `cli/live-provider.ts`. */
 const DEFAULT_GITHUB_API_BASE = "https://api.github.com";
+
+;// CONCATENATED MODULE: ./src/platform/github/api-base.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 13 — GitHub Enterprise Server (GHES) API-base resolution +
+// normalization. Single source of truth for the review-platform API
+// base; provider/Copilot base resolution is intentionally NOT in this
+// module (see `src/provider/copilot.ts` and `src/provider/copilot-token.ts`
+// for the Copilot side).
+//
+// Three responsibilities:
+//
+//   1. `normalizeGithubApiBase(rawUrl)` — shape + validate an
+//      operator-supplied base URL into a `GithubApiBase` record.
+//      Rejects: non-HTTPS, userinfo (credentials), query/fragment
+//      strings, malformed input, empty/whitespace.
+//
+//   2. `buildGithubApiBaseFromEnv(env)` — read `GITHUB_API_URL` at
+//      CALL time (NOT module-load time — that's the whole point of
+//      the Task 13 refactor; the previous module-level constant
+//      captured the env once at import and tests couldn't override
+//      it) and return the normalized base, defaulting to
+//      `https://api.github.com` when unset.
+//
+//   3. `buildGithubRestUrl(base, path)` / `buildGithubGraphqlUrl(base)`
+//      — compose REST and GraphQL endpoints from the resolved base.
+//      github.com uses bare `/graphql` and `/repos/...` paths;
+//      GHES uses `/api/v3` and `/api/graphql`. The composition rules
+//      are pinned by the URL matrix tests in
+//      `test/unit/github-api-base.test.ts`.
+//
+// Separation from the provider/Copilot base:
+//
+//   The Copilot token-exchange path uses its own base URL (driven by
+//   `--github-api-base` / `UMACTUALLY_GITHUB_API_BASE`); that base is
+//   intentionally NEVER read here. This module only resolves the
+//   REVIEW-PLATFORM base (REST + GraphQL endpoints for posting
+//   reviews, reading PR metadata, fetching instruction files, etc.).
+//   When an operator points the review platform at GHES but keeps the
+//   Copilot base on github.com, both stay independent — no silent
+//   token leakage either direction.
+//
+// Why pre-network validation matters:
+//
+//   A malformed `GITHUB_API_URL` would otherwise reach the network
+//   layer where a typo (`http://`, missing scheme, userinfo with a
+//   leaked token, query string with a token) leaks a credential to
+//   the wrong host or surfaces as a confusing 4xx with the token
+//   embedded in the diagnostic. Catching every shape at the
+//   `normalizeGithubApiBase` boundary means the first error the
+//   operator sees is a typed message identifying which input was
+//   wrong, and ZERO network requests cross the wire.
+
+
+/**
+ * Thrown when a `GITHUB_API_URL` value is malformed, non-HTTPS,
+ * carries userinfo/credentials, has a query string or fragment, or
+ * is empty. Carries the typed `code` so callers can surface a precise
+ * remediation hint without a network round-trip.
+ */
+class GithubApiBaseError extends Error {
+    code;
+    name = "GithubApiBaseError";
+    constructor(code, message, options) {
+        super(message, options);
+        this.code = code;
+    }
+}
+const GITHUB_COM_CANONICAL = "https://api.github.com";
+const GITHUB_GRAPHQL_PATH_COM = "/graphql";
+const GITHUB_GRAPHQL_PATH_ENTERPRISE = "/api/graphql";
+/**
+ * Normalize an operator-supplied base URL into a `GithubApiBase`.
+ *
+ * Accepts:
+ *   - `https://api.github.com` (or with trailing slash)
+ *   - `https://<host>/api/v3` (GHES — the canonical pattern)
+ *   - `https://<host>` (GHES — bare host; REST goes to root, GraphQL
+ *     at `/api/graphql`)
+ *   - `https://<host>/<custom-prefix>` (operator-configured namespace)
+ *
+ * Rejects:
+ *   - non-HTTPS schemes for external hosts (`http://`, `ftp://`, …) →
+ *     `GITHUB_API_URL_INSECURE`
+ *   - `http://` for non-local hosts → `GITHUB_API_URL_INSECURE_HOST`
+ *   - URLs with userinfo (`https://user:pass@host/...`) →
+ *     `GITHUB_API_URL_CREDENTIALED`
+ *   - URLs with query strings or fragments →
+ *     `GITHUB_API_URL_HAS_QUERY`
+ *   - Empty/whitespace → `GITHUB_API_URL_EMPTY`
+ *   - Anything that does not parse as a URL → `GITHUB_API_URL_MALFORMED`
+ *
+ * The rejection set is intentionally exhaustive: every failure mode
+ * either leaks a credential, sends data to the wrong host, or
+ * otherwise changes the security posture. A pre-network validation
+ * pass keeps the operator's first error clear and typed.
+ *
+ * @param rawUrl Operator-supplied `GITHUB_API_URL` value.
+ */
+function normalizeGithubApiBase(rawUrl) {
+    const trimmed = rawUrl.trim();
+    if (trimmed.length === 0) {
+        throw new GithubApiBaseError("GITHUB_API_URL_EMPTY", "GITHUB_API_URL is empty; provide an HTTPS URL or unset the variable to use github.com.");
+    }
+    let parsed;
+    try {
+        parsed = new URL(trimmed);
+    }
+    catch (error) {
+        throw new GithubApiBaseError("GITHUB_API_URL_MALFORMED", `GITHUB_API_URL is not a parseable URL: '${rawUrl}'.`, { cause: error });
+    }
+    // WHATWG URL normalizes scheme and hostname to lowercase; `protocol`
+    // ends with ":". For IPv6 literals, `hostname` keeps the brackets
+    // (e.g. `[::1]`); strip them before comparison. Local HTTP is
+    // allowed only for test fixtures.
+    const hostname = parsed.hostname.replace(/^\[|\]$/gu, "");
+    const isLocalhost = hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && isLocalhost)) {
+        throw new GithubApiBaseError(parsed.protocol === "http:" ? "GITHUB_API_URL_INSECURE_HOST" : "GITHUB_API_URL_INSECURE", parsed.protocol === "http:"
+            ? `GITHUB_API_URL must use HTTPS for external hosts (got '${parsed.hostname}'); HTTP is allowed only for localhost, 127.0.0.1, or ::1.`
+            : `GITHUB_API_URL must use HTTPS (got '${parsed.protocol}'); non-HTTPS schemes risk credential and PR-data exposure.`);
+    }
+    // WHATWG URL parses userinfo into `username` / `password` fields.
+    // We reject any URL that carried userinfo, including username-only
+    // forms. The previous module-level `replace(/\/$/u, "")` regex
+    // would have happily passed `https://token@host/api/v3` through
+    // and the resulting fetch would have embedded the token in the
+    // `Authorization` header derivation chain on the server side.
+    if (parsed.username.length > 0 || parsed.password.length > 0) {
+        throw new GithubApiBaseError("GITHUB_API_URL_CREDENTIALED", "GITHUB_API_URL must NOT carry userinfo (https://user:pass@host/...); put credentials in the Authorization header, not the URL.");
+    }
+    if (parsed.search.length > 0 || parsed.hash.length > 0) {
+        throw new GithubApiBaseError("GITHUB_API_URL_HAS_QUERY", `GITHUB_API_URL must NOT carry a query string or fragment (got '${parsed.search}${parsed.hash}'); pass query parameters as request bodies or headers.`);
+    }
+    const origin = parsed.origin;
+    const pathSegment = url_stripTrailingSlash(parsed.pathname);
+    const isEnterprise = !isGithubComOrigin(origin);
+    // REST path prefix: any non-empty path the operator typed becomes
+    // the prefix. Empty path on an enterprise host means REST goes to
+    // the bare origin (GHES supports root + `/api/v3` interchangeably;
+    // many installs mount `/api/v3` only on the v3 subpath).
+    const pathPrefix = pathSegment;
+    return {
+        origin,
+        pathPrefix,
+        graphqlPath: isEnterprise ? GITHUB_GRAPHQL_PATH_ENTERPRISE : GITHUB_GRAPHQL_PATH_COM,
+        isEnterprise,
+    };
+}
+/**
+ * Resolve the review-platform API base from `env` at CALL time. Reads
+ * `process.env["GITHUB_API_URL"]` (when `env` is omitted) or the
+ * supplied `env` snapshot.
+ *
+ * The call-time read is intentional: the previous module-level
+ * `const GITHUB_API_BASE_URL = process.env[...]` captured the env
+ * once at import time, so tests that mutated the env mid-test could
+ * not override the base. Threading the env through `buildGithubApiBaseFromEnv(env)`
+ * lets the live tests in `test/unit/evidence-task-13.test.ts`
+ * exercise the GHES path by mutating the env between calls.
+ *
+ * Defaults to `https://api.github.com` when `GITHUB_API_URL` is
+ * unset or empty (matches the prior behavior).
+ */
+function buildGithubApiBaseFromEnv(env = process.env) {
+    const raw = env["GITHUB_API_URL"];
+    if (raw === undefined || raw.length === 0) {
+        return {
+            origin: DEFAULT_GITHUB_API_BASE,
+            pathPrefix: "",
+            graphqlPath: GITHUB_GRAPHQL_PATH_COM,
+            isEnterprise: false,
+        };
+    }
+    return normalizeGithubApiBase(raw);
+}
+/**
+ * Identity check: returns true when `base` points at the canonical
+ * github.com origin. Used by callers that want to keep the legacy
+ * github.com defaults (`/graphql`, no `/api/v3`) without depending
+ * on the literal URL.
+ */
+function isGithubComBase(base) {
+    return !base.isEnterprise && base.origin === GITHUB_COM_CANONICAL;
+}
+/**
+ * Compose a REST URL from the resolved base. Path segments are
+ * percent-encoded via `URL` to prevent operator input from slipping
+ * unencoded slashes or spaces into the wire path. A leading slash is
+ * always inserted between the prefix and the segments.
+ *
+ * Examples:
+ *   - github.com base + `/repos/foo/bar/pulls/42` →
+ *     `https://api.github.com/repos/foo/bar/pulls/42`
+ *   - GHES `/api/v3` base + `/repos/foo/bar/pulls/42` →
+ *     `https://ghe.example.com/api/v3/repos/foo/bar/pulls/42`
+ *   - GHES bare-host base + `/repos/foo/bar/pulls/42` →
+ *     `https://ghe.example.com/repos/foo/bar/pulls/42`
+ *
+ * @param base  Normalized base returned by `normalizeGithubApiBase`.
+ * @param path  Path segments starting with `/`. URL-encoded per
+ *              segment; trailing `/` collapsed.
+ */
+function buildGithubRestUrl(base, path) {
+    // Re-parse through URL to apply percent-encoding consistently.
+    // `URL` rejects inputs that don't have a host; using the base as
+    // the base of `new URL(relative, base)` enforces absolute path
+    // resolution.
+    const composed = new URL(
+    // Strip the leading slash so `URL` treats the path as relative
+    // to the base, but preserve the path segment shape.
+    path.replace(/^\/+/u, ""), 
+    // Compose against the origin + prefix; trailing slash on the
+    // base keeps `URL` from collapsing the prefix into the hostname.
+    `${base.origin}${base.pathPrefix}/`);
+    return composed.toString();
+}
+/**
+ * Compose the GraphQL endpoint URL from the resolved base.
+ *
+ *   - github.com → `https://api.github.com/graphql`
+ *   - GHES (with or without `/api/v3` prefix) →
+ *     `https://<host>/api/graphql`
+ *
+ * The `/api/graphql` path is the GHES-canonical GraphQL endpoint
+ * regardless of whether the operator mounted `/api/v3` (REST lives
+ * at `/api/v3` while GraphQL lives at `/api/graphql` — these are
+ * independent mounts in GHES).
+ */
+function buildGithubGraphqlUrl(base) {
+    return new URL(base.graphqlPath.replace(/^\/+/u, ""), `${base.origin}/`).toString();
+}
+// Internal helper: test whether the origin is the canonical
+// github.com API host. Case-insensitive comparison via WHATWG URL
+// lowercasing (already done by `URL.origin`).
+function isGithubComOrigin(origin) {
+    return origin === GITHUB_COM_CANONICAL;
+}
+
+;// CONCATENATED MODULE: ./src/util/env-keys.ts
+/** Centralized registry for supported user configuration and runner-owned environment keys. */
+const ENV_KEYS = {
+    // User-controlled credentials and connection settings
+    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
+    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
+    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_PROVIDER: "UMACTUALLY_PROVIDER",
+    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
+    UMACTUALLY_INSTRUCTION_FILES: "UMACTUALLY_INSTRUCTION_FILES",
+    // GitHub runner metadata
+    GITHUB_ACTIONS: "GITHUB_ACTIONS",
+    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
+    GITHUB_TOKEN: "GITHUB_TOKEN",
+    GH_TOKEN: "GH_TOKEN",
+    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
+    GITHUB_REF: "GITHUB_REF",
+    GITHUB_SHA: "GITHUB_SHA",
+    // Azure DevOps runner metadata
+    TF_BUILD: "TF_BUILD",
+    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
+    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
+    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
+    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
+    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
+    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
+    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
+    // GitHub action inputs
+    INPUT_DRY_RUN: "INPUT_DRY_RUN",
+    INPUT_EVENT: "INPUT_EVENT",
+    INPUT_DIFF: "INPUT_DIFF",
+    INPUT_REVIEW: "INPUT_REVIEW",
+    INPUT_THREADS: "INPUT_THREADS",
+    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
+    INPUT_PLATFORM: "INPUT_PLATFORM",
+};
+
+;// CONCATENATED MODULE: ./src/cli/doctor-full.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 8 — `umactually doctor --full` (non-destructive end-to-end readiness probe).
+//
+// This module extends the default `doctor` (see `src/cli/doctor.ts`) with
+// explicit `--full` checks. The default must remain offline and
+// backward-compatible: every full-mode check lives HERE, not in
+// `src/cli/doctor.ts`. The default surface is unchanged.
+//
+// Trust model:
+//   - Full mode runs ONLY read-only probes — `GET` (and `HEAD` if a
+//     future endpoint needs it) are the only HTTP methods allowed.
+//   - Body bytes are forbidden (MAX_BODY_BYTES === 0). Any fetch with a
+//     non-GET method or any body is rejected at the wrapper boundary
+//     before the request leaves the process.
+//   - Secrets are never logged. The redaction helper is the canonical
+//     utility; messages and remediation strings never include the
+//     secret value.
+//   - The module never mutates `umactually.config.json`,
+//     `umactually.review.json`, or any other config. The test
+//     contract at `test/unit/cli-doctor-full.test.ts:DOCTOR-FULL-007`
+//     pins this by declaring the dependency surface as `{ stat, readFile }`.
+//
+// Open the docs/troubleshooting.md section on "Required environment per
+// command surface" for the platform-credential mapping the checks
+// consult.
+
+
+
+// Task 5 owns the canonical context-budget defaults.
+
+
+
+
+
+
+
+// ---------------------------------------------------------------------------
+// Closed enum of DoctorCheckId (full-mode additions + the default IDs)
+// ---------------------------------------------------------------------------
+const DOCTOR_CHECK_IDS = (/* unused pure expression or super */ null && ([
+    "node",
+    "dist-freshness",
+    "env",
+    "git",
+    "saved-config",
+    "review-policy",
+    "credentials",
+    "model-discovery",
+    "provider-latency",
+    "context-budgets",
+    "ci-platform",
+    "github-permissions",
+    "github-ghes",
+    "azure-permissions",
+]));
+// ---------------------------------------------------------------------------
+// HTTP safety knobs (the request-capture tests pin these at runtime)
+// ---------------------------------------------------------------------------
+/**
+ * Closed allowlist of HTTP methods full-mode probes may use. Any
+ * outbound request with a method NOT in this set is rejected by the
+ * fetch wrapper below BEFORE the request leaves the process —
+ * `request-capture` tests prove zero POST/PATCH/PUT/DELETE cross the
+ * wire from any full-mode probe.
+ */
+const DEFAULT_FULL_ALLOWED_METHODS = ["GET", "HEAD"];
+/**
+ * Maximum allowed body bytes for any full-mode probe. Zero means
+ * "body must be absent" — full mode is a read-only surface, requests
+ * MUST NOT carry a payload. The fetch wrapper enforces this BEFORE
+ * the request leaves the process.
+ */
+const MAX_BODY_BYTES = 0;
+/**
+ * Default per-fetch timeout for full-mode probes. Hangs are bounded
+ * and reported via `latencyMs` on the check result.
+ */
+const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
+// ---------------------------------------------------------------------------
+// Status / exit-code helpers
+// ---------------------------------------------------------------------------
+function makeResult(id, status, message, options = {}) {
+    const result = { id, status, message };
+    if (options.remediation !== undefined) {
+        result.remediation = options.remediation;
+    }
+    if (options.latencyMs !== undefined) {
+        result.latencyMs = options.latencyMs;
+    }
+    return result;
+}
+function assertMethodAllowed(method, allowedMethods) {
+    if (!allowedMethods.includes(method)) {
+        throw new Error(`full-mode fetch rejected: method "${method}" is not in allowlist ${JSON.stringify(allowedMethods)}`);
+    }
+}
+function computeBodyBytes(body) {
+    if (typeof body === "string")
+        return body.length;
+    if (Array.isArray(body))
+        return JSON.stringify(body).length;
+    return 0;
+}
+function assertBodySize(body) {
+    if (body === undefined || body === null || body === "" || body === "undefined")
+        return;
+    const bodyBytes = computeBodyBytes(body);
+    if (bodyBytes > MAX_BODY_BYTES) {
+        throw new Error(`full-mode fetch rejected: body of ${bodyBytes} bytes exceeds MAX_BODY_BYTES (${MAX_BODY_BYTES})`);
+    }
+}
+function buildTimeoutController(timeoutMs) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return {
+        signal: controller.signal,
+        cancel: () => clearTimeout(timer),
+    };
+}
+function makeSafeFetch(fetchImpl, allowedMethods, timeoutMs) {
+    return async (input, init = {}) => {
+        const method = (init.method ?? "GET").toUpperCase();
+        assertMethodAllowed(method, allowedMethods);
+        assertBodySize(init.body);
+        const timer = buildTimeoutController(timeoutMs);
+        // Belt-and-suspenders: the race frees the process even if the
+        // underlying fetch impl ignores the abort signal — a real-world
+        // hazard for stub fetchers and misbehaving runtimes.
+        let response;
+        try {
+            response = await Promise.race([
+                fetchImpl(input, {
+                    ...init,
+                    method,
+                    signal: timer.signal,
+                }),
+                new Promise((_, reject) => {
+                    timer.signal.addEventListener("abort", () => {
+                        reject(new Error(`full-mode fetch timed out after ${timeoutMs}ms (method=${method})`));
+                    });
+                }),
+            ]);
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.startsWith("full-mode fetch timed out")) {
+                throw error;
+            }
+            throw new Error(`full-mode fetch rejected (method=${method}): ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+        }
+        timer.cancel();
+        return response;
+    };
+}
+// ---------------------------------------------------------------------------
+// Latency helper
+// ---------------------------------------------------------------------------
+async function timeProbe(work) {
+    const startNs = process.hrtime.bigint();
+    try {
+        const value = await work();
+        const latencyMs = latencyMsFrom(startNs);
+        return { value, error: null, latencyMs };
+    }
+    catch (err) {
+        const latencyMs = latencyMsFrom(startNs);
+        return { value: null, error: err instanceof Error ? err : new Error(String(err)), latencyMs };
+    }
+}
+function latencyMsFrom(startNs) {
+    const deltaNs = process.hrtime.bigint() - startNs;
+    return Math.max(0, Math.trunc(Number(deltaNs / 1000000n)));
+}
+// ---------------------------------------------------------------------------
+// Individual checks (typed, return DoctorCheckResult)
+// ---------------------------------------------------------------------------
+const doctor_full_MIN_NODE_MAJOR = 24;
+function doctor_full_checkNode(nodeVersion) {
+    const nodeMajor = Number.parseInt(nodeVersion.split(".", 1)[0] ?? "", 10);
+    if (!Number.isFinite(nodeMajor) || nodeMajor < doctor_full_MIN_NODE_MAJOR) {
+        return makeResult("node", "fail", `Node ${nodeVersion} detected; ${doctor_full_MIN_NODE_MAJOR}.x or later required`, {
+            remediation: "Install Node 24+ from https://nodejs.org/",
+        });
+    }
+    return makeResult("node", "ok", `Node ${nodeVersion}`);
+}
+async function doctor_full_checkDistFreshness(deps) {
+    const root = deps.packageRoot.replace(/[\\/]$/u, "");
+    const distPath = `${root}/dist/cli.js`;
+    const srcPath = `${root}/src/cli.ts`;
+    const distStat = await doctor_full_statOrNull(deps.fsAdapter, distPath);
+    const srcStat = await doctor_full_statOrNull(deps.fsAdapter, srcPath);
+    if (distStat === null && srcStat === null) {
+        return makeResult("dist-freshness", "skip", "standalone binary — dist/ is embedded, not on disk");
+    }
+    if (distStat === null) {
+        return makeResult("dist-freshness", "fail", `${distPath} is missing`, {
+            remediation: "Run `npm run bundle` to produce dist/cli.js",
+        });
+    }
+    if (srcStat === null) {
+        return makeResult("dist-freshness", "ok", `${distPath} present; src not shipped (using shipped dist)`);
+    }
+    if (distStat.mtimeMs < srcStat.mtimeMs) {
+        return makeResult("dist-freshness", "fail", `${distPath} is older than ${srcPath}`, {
+            remediation: "Run `npm run bundle` to refresh dist/cli.js",
+        });
+    }
+    return makeResult("dist-freshness", "ok", `${distPath} present and fresh`);
+}
+async function doctor_full_statOrNull(fsAdapter, path) {
+    try {
+        return await fsAdapter.stat(path);
+    }
+    catch {
+        return null;
+    }
+}
+function doctor_full_checkEnv(env) {
+    const presence = [...doctor_full_KNOWN_ENV_VAR_NAMES].map((name) => ({
+        name,
+        present: typeof env[name] === "string" && (env[name] ?? "").length > 0,
+    }));
+    const presentCount = presence.filter((entry) => entry.present).length;
+    return makeResult("env", "ok", `${presentCount}/${doctor_full_KNOWN_ENV_VAR_NAMES.size} known env vars present`);
+    // Note: presence is recorded on the default `runDoctor` envelope; full
+    // mode extends the basic env surface with the credential probe
+    // below. The presence list is intentionally NOT re-emitted here to
+    // keep the JSON envelope compact.
+}
+const doctor_full_KNOWN_ENV_VAR_NAMES = new Set(Object.values(FIELDS).flatMap((def) => def.env));
+async function doctor_full_checkGit(deps) {
+    try {
+        const result = await deps.execFile("git", ["rev-parse", "--is-inside-work-tree"], {
+            cwd: deps.cwd,
+        });
+        return result.stdout.trim() === "true"
+            ? makeResult("git", "ok", "cwd is inside a git work tree")
+            : makeResult("git", "warn", "cwd is not inside a git work tree");
+    }
+    catch {
+        return makeResult("git", "warn", "git is not on PATH or cwd is not inside a work tree");
+    }
+}
+// Saved config (read-only; not mutated)
+function checkSavedConfig(cwd) {
+    const saved = tryReadSavedConfig({ cwd });
+    if (saved.config !== null) {
+        return makeResult("saved-config", "ok", `saved config parsed at ${saved.path} (provider=${saved.config.provider})`);
+    }
+    if (saved.warning !== null) {
+        return makeResult("saved-config", "warn", `saved config could not be loaded: ${saved.warning}`, {
+            remediation: "Re-run `umactually init --force` to overwrite the saved config, or delete the corrupt file and re-run.",
+        });
+    }
+    return makeResult("saved-config", "warn", "no saved config found; run `umactually init` to create one", {
+        remediation: "Run `umactually init` to generate ~/" + ".umactually/config.json (or umactually.config.json in repo scope).",
+    });
+}
+// Review policy (committed; read-only; never mutated)
+function checkReviewPolicy(cwd, fsAdapterSync) {
+    const result = loadReviewPolicy({ cwd, fs: fsAdapterSync });
+    if (result.policy !== null) {
+        return makeResult("review-policy", "ok", `review policy parsed at ${result.path} (schemaVersion=${result.policy.schemaVersion})`);
+    }
+    if (result.error !== null) {
+        const remediation = reviewPolicyRemediation(result.error.kind);
+        return makeResult("review-policy", "fail", `review policy at ${result.path}: ${result.error.message}`, { remediation });
+    }
+    // No policy file at all — warn, but it's not a failure.
+    const path = REVIEW_POLICY_PATH(cwd);
+    return makeResult("review-policy", "warn", `no committed review policy at ${path}; using built-in defaults`, {
+        remediation: "Run `umactually init --policy-template` to bootstrap a committed umactually.review.json.",
+    });
+}
+function reviewPolicyRemediation(kind) {
+    switch (kind) {
+        case "corrupt-json":
+            return "The committed umactually.review.json is corrupt; remove or rewrite it (no secrets) and re-run.";
+        case "secret-detected":
+            return "The committed umactually.review.json contains a secret-shaped value; remove the secret and re-run.";
+        case "unknown-key":
+            return "The committed umactually.review.json contains an unknown key; consult docs/configuration.md for the canonical schema.";
+        case "invalid-glob":
+            return "The committed umactually.review.json contains an invalid glob pattern; revise the pathRules / excludes entry.";
+        case "unsafe-path":
+            return "The committed umactually.review.json contains a path that escapes the repo root; revise the path or exclude.";
+        case "duplicate-path-rule":
+            return "The committed umactually.review.json contains duplicate path rules; deduplicate the pathRules array.";
+        case "unsupported-schema-version":
+            return "Bump or remove the schemaVersion in umactually.review.json; the runtime only understands schemaVersion 1.";
+        case "missing-schema-version":
+            return "Add a numeric schemaVersion field to umactually.review.json.";
+        default:
+            return "Inspect the committed umactually.review.json and verify it parses as JSON with the canonical schema.";
+    }
+}
+function checkCredentials(env) {
+    const apiKey = env["UMACTUALLY_API_KEY"];
+    const apiKeyPresent = typeof apiKey === "string" && apiKey.length > 0;
+    const provider = env["UMACTUALLY_PROVIDER"] ?? FIELDS.provider.defaultValue;
+    const requiresApiKey = provider !== "copilot";
+    if (requiresApiKey && !apiKeyPresent) {
+        return makeResult("credentials", "fail", `provider "${provider}" requires UMACTUALLY_API_KEY; ${brand/* REDACTED_SECRET_TOKEN */.uq} not detected in env`, {
+            remediation: "Export UMACTUALLY_API_KEY in the shell (or set the secret in the CI secret store); never pass the secret on the command line or commit it to disk.",
+        });
+    }
+    if (!requiresApiKey && !apiKeyPresent) {
+        return makeResult("credentials", "ok", `provider "${provider}" does not require UMACTUALLY_API_KEY; GITHUB_TOKEN is the credential`);
+    }
+    // apiKey present — disclose presence only.
+    return makeResult("credentials", "ok", `UMACTUALLY_API_KEY present (${brand/* REDACTED_SECRET_TOKEN */.uq}, value redacted)`);
+}
+async function checkModelDiscovery(env, fetchImpl, timeoutMs) {
+    const provider = parseProvider(env["UMACTUALLY_PROVIDER"]);
+    const apiUrl = env["UMACTUALLY_API_URL"] ?? DEFAULT_OPENAI_URL;
+    const apiKey = env["UMACTUALLY_API_KEY"] ?? null;
+    const probe = await timeProbe(async () => {
+        return discoverAutoModel({
+            provider,
+            apiUrl,
+            apiKey,
+            dependencies: {
+                fetchImpl,
+                timeoutMs,
+            },
+        });
+    });
+    if (probe.error !== null) {
+        return makeResult("model-discovery", "fail", `model discovery failed: ${redactNetworkError(probe.error)}`, {
+            remediation: "Confirm the provider URL is reachable and the API key is valid; secrets are never logged.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    const result = probe.value;
+    if (result === null) {
+        return makeResult("model-discovery", "skip", "no provider configured", {
+            latencyMs: probe.latencyMs,
+        });
+    }
+    if (result.ok) {
+        return makeResult("model-discovery", "ok", `model discovery succeeded for provider "${provider}" (model redacted)`, { latencyMs: probe.latencyMs });
+    }
+    const remediation = modelDiscoveryRemediation(result.error);
+    return makeResult("model-discovery", "fail", `model discovery failed: ${modelDiscoveryMessage(result.error)}`, { remediation, latencyMs: probe.latencyMs });
+}
+function modelDiscoveryMessage(err) {
+    switch (err.kind) {
+        case "unauthorized":
+            return `HTTP ${err.status} from provider (authorization rejected)`;
+        case "empty":
+            return "provider returned an empty model catalog";
+        case "ambiguous":
+            return "provider returned multiple models; doctor --full cannot pick one (use --model explicitly)";
+        case "malformed":
+            return "provider returned a malformed model catalog";
+        case "unsupported":
+            return `provider "${err.provider}" requires --model explicitly`;
+        case "aborted":
+            return "model discovery timed out";
+        case "network":
+            return "network error reaching the provider";
+        default:
+            return "model discovery failed";
+    }
+}
+function modelDiscoveryRemediation(err) {
+    switch (err.kind) {
+        case "unauthorized":
+            return `The provider returned HTTP ${err.status}. Rotate the API key in the secret store and re-run.`;
+        case "empty":
+            return "The provider returned an empty model catalog; verify the provider is reachable and the key is valid.";
+        case "ambiguous":
+            return "Pass --model explicitly on every review invocation; the runtime refuses to rank multiple models.";
+        case "malformed":
+            return "The provider returned a non-conformant model catalog; verify the api-url is correct.";
+        case "unsupported":
+            return "Pass --model explicitly; the runtime does not auto-discover for this provider family.";
+        case "aborted":
+            return "Model discovery timed out within the bounded window; check the network or provider latency.";
+        case "network":
+            return "Verify the provider URL and network reachability; the runtime refused to retry.";
+        default:
+            return "Inspect the provider URL and credentials.";
+    }
+}
+function redactNetworkError(err) {
+    return err.message.replace(/https?:\/\/\S+/gu, (url) => url_redactUrlForLog(url));
+}
+async function checkProviderLatency(env, fetchImpl, timeoutMs) {
+    const provider = parseProvider(env["UMACTUALLY_PROVIDER"]);
+    if (provider === "copilot") {
+        return makeResult("provider-latency", "skip", "copilot routing required github-token check; see github-permissions");
+    }
+    const apiUrl = env["UMACTUALLY_API_URL"] ?? DEFAULT_OPENAI_URL;
+    const normalizedApiUrl = apiUrl.replace(/\/+$/u, "");
+    const url = normalizedApiUrl.endsWith("/v1")
+        ? `${normalizedApiUrl}/models`
+        : `${normalizedApiUrl}/v1/models`;
+    const probe = await timeProbe(async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetchImpl(url, {
+                method: "GET",
+                headers: { accept: "application/json" },
+                signal: controller.signal,
+            });
+            const ok = response.status >= 200 && response.status < 400;
+            return { status: response.status, ok };
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    });
+    if (probe.error !== null) {
+        return makeResult("provider-latency", "fail", `provider latency probe failed: ${redactNetworkError(probe.error)}`, {
+            remediation: "Verify the provider URL; the probe is GET-only and never sends credentials.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    const result = probe.value;
+    if (result === null) {
+        return makeResult("provider-latency", "skip", "no provider configured", {
+            latencyMs: probe.latencyMs,
+        });
+    }
+    if (!result.ok) {
+        return makeResult("provider-latency", "warn", `provider responded with HTTP ${result.status} (sanitized read-only probe)`, {
+            remediation: "If the status is 401/403, rotate the API key; otherwise verify the URL.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    return makeResult("provider-latency", "ok", `provider reachable (HTTP ${result.status})`, { latencyMs: probe.latencyMs });
+}
+function checkContextBudgets() {
+    const totalKiB = `${context_provenance/* BUDGET_DEFAULTS */.td.totalBytes / 1024} KiB`;
+    const perFileKiB = `${context_provenance/* BUDGET_DEFAULTS */.td.perFileBytes / 1024} KiB`;
+    return makeResult("context-budgets", "ok", `default context budgets: aggregate=${totalKiB}, per-file=${perFileKiB}, items=${context_provenance/* BUDGET_DEFAULTS */.td.maxItems}, files=${context_provenance/* BUDGET_DEFAULTS */.td.maxFilesParsed}, latencyMs=${context_provenance/* BUDGET_DEFAULTS */.td.wallTimeMs}`, {
+        remediation: "Adjust `umactually.review.json` budgets or pass explicit overrides on the review CLI to widen the budgets.",
+    });
+}
+function checkCiPlatform(deps) {
+    const env = deps.env;
+    const presence = {
+        github: typeof env[ENV_KEYS.GITHUB_ACTIONS] === "string",
+        azure: typeof env[ENV_KEYS.TF_BUILD] === "string",
+        buildkite: typeof env["BUILDKITE"] === "string",
+        circle: typeof env["CIRCLECI"] === "string",
+        jenkins: typeof env["JENKINS_URL"] === "string",
+    };
+    const detected = Object.entries(presence)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+    if (detected.length === 0) {
+        return makeResult("ci-platform", "ok", "no CI platform detected (local shell)");
+    }
+    return makeResult("ci-platform", "ok", `CI platform(s) detected: ${detected.join(", ")}`);
+}
+async function checkGithubPermissions(env, fetchImpl, timeoutMs) {
+    const token = env["GITHUB_TOKEN"] ?? env["GH_TOKEN"];
+    if (token === undefined || token.length === 0) {
+        return makeResult("github-permissions", "skip", "no GITHUB_TOKEN detected; cannot probe platform permissions", {
+            remediation: "Set GITHUB_TOKEN in the CI environment to prove the read-only endpoint permission; never embed the token in commit history.",
+        });
+    }
+    let apiBase;
+    try {
+        apiBase = buildGithubApiBaseFromEnv(env);
+    }
+    catch (error) {
+        return makeResult("github-permissions", "fail", `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`, {
+            remediation: "Fix GITHUB_API_URL (must be an HTTPS URL with no userinfo or query string) or unset it to use github.com.",
+        });
+    }
+    const url = buildGithubRestUrl(apiBase, "/octocat");
+    const probe = await timeProbe(async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetchImpl(url, {
+                method: "GET",
+                headers: { accept: "application/vnd.github+json", authorization: `Bearer ${brand/* REDACTED_SECRET_TOKEN */.uq}` },
+                signal: controller.signal,
+            });
+            return { status: response.status };
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    });
+    if (probe.error !== null) {
+        return makeResult("github-permissions", "fail", `github read-only probe failed: ${redactNetworkError(probe.error)}`, {
+            remediation: "Verify the GitHub API base URL and the GITHUB_TOKEN secret in the CI environment.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    const result = probe.value;
+    if (result === null) {
+        return makeResult("github-permissions", "skip", "no github context", {
+            latencyMs: probe.latencyMs,
+        });
+    }
+    if (result.status === 200) {
+        return makeResult("github-permissions", "ok", `github read-only probe returned HTTP ${result.status} (token redacted)`, { latencyMs: probe.latencyMs });
+    }
+    if (result.status === 401 || result.status === 403) {
+        return makeResult("github-permissions", "fail", `github read-only probe returned HTTP ${result.status} (insufficient scope or invalid token)`, {
+            remediation: "Rotate the GITHUB_TOKEN and ensure it carries `contents: read` and `pull-requests: read` for the proof-of-permission probe.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    return makeResult("github-permissions", "warn", `github read-only probe returned HTTP ${result.status}`, {
+        remediation: "Verify the API base URL is correct; the probe is GET-only and never sends a body.",
+        latencyMs: probe.latencyMs,
+    });
+}
+function ghesInstalledVersion(body) {
+    let parsed;
+    try {
+        parsed = JSON.parse(body);
+    }
+    catch {
+        return null;
+    }
+    if (parsed === null || typeof parsed !== "object")
+        return null;
+    const version = parsed["installed_version"];
+    return typeof version === "string" ? version : null;
+}
+function classifyGhesProbeStatus(result, metaUrl, latencyMs) {
+    if (result.status === 200) {
+        const version = ghesInstalledVersion(result.body);
+        const versionSuffix = version !== null ? ` (installed_version=${version})` : "";
+        return makeResult("github-ghes", "ok", `GHES meta probe returned HTTP 200${versionSuffix}`, {
+            latencyMs,
+        });
+    }
+    if (result.status === 401 || result.status === 403) {
+        return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status} (capability probe is unauthenticated; some installs require a token)`, {
+            remediation: "GitHub Enterprise Server's /api/v3/meta endpoint is unauthenticated on most installs but token-gated on others. If the install requires auth, supply a token with `site_admin: read` or use the GHES admin REST API directly to confirm the version.",
+            latencyMs,
+        });
+    }
+    if (result.status === 404) {
+        return makeResult("github-ghes", "fail", "GHES /api/v3/meta returned HTTP 404 — explicit API capability unsupported", {
+            remediation: "This GHES install does not expose /api/v3/meta. umactually cannot determine version/capability; review posting will continue but version-specific features (e.g. newer inline suggestion formats) are unsupported.",
+            latencyMs,
+        });
+    }
+    return makeResult("github-ghes", "warn", `GHES meta probe returned HTTP ${result.status}`, {
+        remediation: `Verify reachability of ${url_redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
+        latencyMs,
+    });
+}
+async function runGhesProbe(apiBase, fetchImpl, timeoutMs) {
+    const metaUrl = buildGithubRestUrl(apiBase, "/meta");
+    const probe = await timeProbe(async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetchImpl(metaUrl, {
+                method: "GET",
+                headers: { accept: "application/vnd.github+json" },
+                signal: controller.signal,
+            });
+            const text = await response.text();
+            return { status: response.status, body: text };
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    });
+    if (probe.error !== null) {
+        return makeResult("github-ghes", "fail", `GHES meta endpoint probe failed: ${redactNetworkError(probe.error)}`, {
+            remediation: `Verify reachability of ${url_redactUrlForLog(metaUrl)} and that the GHES instance exposes /api/v3/meta.`,
+            latencyMs: probe.latencyMs,
+        });
+    }
+    const result = probe.value;
+    if (result === null) {
+        return makeResult("github-ghes", "skip", "no github context", {
+            latencyMs: probe.latencyMs,
+        });
+    }
+    return classifyGhesProbeStatus(result, metaUrl, probe.latencyMs);
+}
+async function checkGithubGhesCapability(env, fetchImpl, timeoutMs) {
+    let apiBase;
+    try {
+        apiBase = buildGithubApiBaseFromEnv(env);
+    }
+    catch (error) {
+        return makeResult("github-ghes", "fail", `GITHUB_API_URL is not usable: ${error instanceof Error ? error.message : String(error)}`, {
+            remediation: "Set GITHUB_API_URL to an HTTPS URL with no userinfo or query string, or unset it to use github.com.",
+        });
+    }
+    if (isGithubComBase(apiBase)) {
+        return makeResult("github-ghes", "skip", "github.com default — GitHub Enterprise Server capability probe not applicable", {
+            remediation: "Set GITHUB_API_URL to a GHES host (e.g. https://ghe.example.com/api/v3) to probe GHES capability.",
+        });
+    }
+    return runGhesProbe(apiBase, fetchImpl, timeoutMs);
+}
+async function checkAzurePermissions(env, fetchImpl, timeoutMs) {
+    const token = env["AZURE_DEVOPS_TOKEN"] ?? env["SYSTEM_ACCESSTOKEN"];
+    if (token === undefined || token.length === 0) {
+        return makeResult("azure-permissions", "skip", "no AZURE_DEVOPS_TOKEN / SYSTEM_ACCESSTOKEN detected; cannot probe platform permissions", {
+            remediation: "Set AZURE_DEVOPS_TOKEN (secret variable) or enable SYSTEM_ACCESSTOKEN in the pipeline options.",
+        });
+    }
+    const collectionUri = env[ENV_KEYS.SYSTEM_COLLECTIONURI];
+    if (typeof collectionUri !== "string" || collectionUri.length === 0) {
+        return makeResult("azure-permissions", "skip", "no SYSTEM_COLLECTIONURI detected; cannot determine the Azure DevOps project host", {
+            remediation: "Run the command inside an Azure Pipelines PR build or supply --collection-uri.",
+        });
+    }
+    const url = `${collectionUri.replace(/\/$/u, "")}/_apis/connectionData?api-version=7.1-preview.1`;
+    const probe = await timeProbe(async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetchImpl(url, {
+                method: "GET",
+                headers: { accept: "application/json", authorization: `Bearer ${brand/* REDACTED_SECRET_TOKEN */.uq}` },
+                signal: controller.signal,
+            });
+            return { status: response.status };
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    });
+    if (probe.error !== null) {
+        return makeResult("azure-permissions", "fail", `azure read-only probe failed: ${redactNetworkError(probe.error)}`, {
+            remediation: "Verify the Azure DevOps collection URL and the SYSTEM_ACCESSTOKEN secret.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    const result = probe.value;
+    if (result === null) {
+        return makeResult("azure-permissions", "skip", "no azure context", {
+            latencyMs: probe.latencyMs,
+        });
+    }
+    if (result.status === 200) {
+        return makeResult("azure-permissions", "ok", `azure read-only probe returned HTTP ${result.status} (token redacted)`, { latencyMs: probe.latencyMs });
+    }
+    if (result.status === 401 || result.status === 403) {
+        return makeResult("azure-permissions", "fail", `azure read-only probe returned HTTP ${result.status} (insufficient scope or invalid token)`, {
+            remediation: "Rotate the AZURE_DEVOPS_TOKEN and ensure the pipeline identity holds `Project Collection Build Service` access or a higher scope PAT.",
+            latencyMs: probe.latencyMs,
+        });
+    }
+    return makeResult("azure-permissions", "warn", `azure read-only probe returned HTTP ${result.status}`, {
+        remediation: "Verify the collection URI and the API version (`7.1-preview.1` for connectionData).",
+        latencyMs: probe.latencyMs,
+    });
+}
+function parseProvider(value) {
+    switch (value) {
+        case "anthropic":
+            return "anthropic";
+        case "copilot":
+            return "copilot";
+        case "openai-compatible":
+        case undefined:
+        default:
+            return "openai-compatible";
+    }
+}
+// ---------------------------------------------------------------------------
+// Public entry point
+// ---------------------------------------------------------------------------
+async function runFullDoctor(deps) {
+    const allowedMethods = deps.allowedMethods ?? DEFAULT_FULL_ALLOWED_METHODS;
+    const timeoutMs = deps.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
+    const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+    const safeFetch = makeSafeFetch(fetchImpl, allowedMethods, timeoutMs);
+    const fsAdapterSync = deps.fsAdapterSync;
+    const checks = [
+        doctor_full_checkNode(deps.nodeVersion ?? process.versions.node),
+        await doctor_full_checkDistFreshness(deps),
+        doctor_full_checkEnv(deps.env),
+        await doctor_full_checkGit(deps),
+        checkSavedConfig(deps.cwd),
+        checkReviewPolicy(deps.cwd, fsAdapterSync),
+        checkCredentials(deps.env),
+        await checkModelDiscovery(deps.env, safeFetch, timeoutMs),
+        await checkProviderLatency(deps.env, safeFetch, timeoutMs),
+        checkContextBudgets(),
+        checkCiPlatform(deps),
+        await checkGithubPermissions(deps.env, safeFetch, timeoutMs),
+        await checkGithubGhesCapability(deps.env, safeFetch, timeoutMs),
+        await checkAzurePermissions(deps.env, safeFetch, timeoutMs),
+    ];
+    const exitCode = checks.some((c) => c.status === "fail") ? 1 : 0;
+    const json = {
+        schemaVersion: 1,
+        command: "doctor",
+        mode: "full",
+        exitCode,
+        checks,
+    };
+    return { exitCode, checks, json };
+}
+// ---------------------------------------------------------------------------
+// Internal re-exports for unit tests (the module-level export is
+// kept narrow so the public surface stays small).
+// ---------------------------------------------------------------------------
+const __TEST__ = {
+    safeFetch: makeSafeFetch,
+    redactNetworkError,
+    isAllowedMethod: (method, allowed) => allowed.includes(method.toUpperCase()),
+};
 
 ;// CONCATENATED MODULE: ./src/cli/modes-help.ts
 /** Canonical CLI modes banner shared by help and bare invocation output. */
@@ -1980,123 +6486,6 @@ function printModesBanner(stream) {
 
 ;// CONCATENATED MODULE: external "node:readline"
 const external_node_readline_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:readline");
-;// CONCATENATED MODULE: ./src/util/fs-atomic.ts
-// SPDX-License-Identifier: MIT
-// Filesystem adapter + atomic-write primitive used by the uninstall
-// subcommand to safely rewrite user-owned shell rc files (e.g. .zshrc,
-// .bashrc, .profile) when reverting the installer's PATH entry.
-//
-// This module is intentionally pure (sync node:fs primitives, no I/O
-// other than what the caller asks for) so that the uninstall tests can
-// substitute their own in-memory adapter via `FsAdapter` without
-// pulling in node:fs at all. The adapter shape was lifted verbatim
-// from src/cli/uninstall.ts (T2/T3 of the init-guided-setup plan);
-// behavior must remain byte-identical — the rc-file revert is a
-// safety-critical path and the rename-on-sibling-tempfile primitive
-// is what protects it from the disk-full / read-only-mount TOCTOU
-// class of bug.
-
-/**
- * Atomically write `content` to `path` by writing to a sibling temp
- * file and renaming over the target. On POSIX, rename(2) is atomic
- * on the same filesystem; on Windows, MoveFileEx with
- * MOVEFILE_REPLACE_EXISTING is similarly atomic. If anything fails
- * before the rename, the original file is untouched.
- *
- * The function name and rename-and-cleanup semantics are part of
- * the revertPath safety contract; do not relax the cleanup without
- * auditing the rc-file revert path.
- */
-function writeFileAtomic(path, content) {
-    // Write to a sibling temp file, then rename atomically over the
-    // target. On POSIX, rename(2) is atomic on the same filesystem
-    // (the target either points to the old content or the new, never
-    // a partial state). On Windows, MoveFileEx with REPLACE_EXISTING
-    // is similarly atomic. If anything fails before the rename, the
-    // original file is untouched.
-    const tmpPath = `${path}.umactually-tmp-${process.pid}-${Date.now()}`;
-    try {
-        (0,external_node_fs_.writeFileSync)(tmpPath, content, "utf8");
-        (0,external_node_fs_.renameSync)(tmpPath, path);
-    }
-    catch (err) {
-        // Best-effort cleanup of the orphan temp file.
-        try {
-            (0,external_node_fs_.unlinkSync)(tmpPath);
-        }
-        catch {
-            // ignore
-        }
-        throw err;
-    }
-}
-/**
- * Return the file's mode bits (e.g. 0o600) or null if the file
- * does not exist or the mode cannot be determined. Returns only the
- * permission bits (masked with 0o7777) so callers don't have to
- * think about the file-type bits in `Stats.mode`.
- */
-function getMode(path) {
-    try {
-        return (0,external_node_fs_.statSync)(path).mode & 0o7777;
-    }
-    catch {
-        return null;
-    }
-}
-/**
- * Set the file's mode bits. Throws on failure. Callers are expected
- * to have already checked that the file exists and that the caller
- * has permission to change it (e.g. they own the file).
- */
-function setMode(path, mode) {
-    (0,external_node_fs_.chmodSync)(path, mode);
-}
-const defaultFsAdapter = {
-    exists: (path) => (0,external_node_fs_.existsSync)(path),
-    isSymlink: (path) => {
-        try {
-            return (0,external_node_fs_.lstatSync)(path).isSymbolicLink();
-        }
-        catch {
-            return false;
-        }
-    },
-    isFile: (path) => {
-        try {
-            return (0,external_node_fs_.lstatSync)(path).isFile();
-        }
-        catch {
-            return false;
-        }
-    },
-    isDirectory: (path) => {
-        try {
-            return (0,external_node_fs_.lstatSync)(path).isDirectory();
-        }
-        catch {
-            return false;
-        }
-    },
-    unlink: (path) => {
-        (0,external_node_fs_.unlinkSync)(path);
-    },
-    getMode: (path) => getMode(path),
-    setMode: (path, mode) => {
-        setMode(path, mode);
-    },
-    removeDir: (path, options) => {
-        (0,external_node_fs_.rmSync)(path, { recursive: options.recursive, force: true });
-    },
-    readFile: (path) => (0,external_node_fs_.readFileSync)(path, "utf8"),
-    writeFile: (path, content) => {
-        (0,external_node_fs_.writeFileSync)(path, content, "utf8");
-    },
-    writeFileAtomic: (path, content) => {
-        writeFileAtomic(path, content);
-    },
-};
-
 ;// CONCATENATED MODULE: ./src/cli/uninstall.ts
 // SPDX-License-Identifier: MIT
 // Built-in `umactually uninstall` subcommand.
@@ -2130,7 +6519,7 @@ const defaultFsAdapter = {
 
 
 
-const { join: uninstall_join } = external_node_path_namespaceObject;
+const { join: uninstall_join } = external_node_path_;
 
 const SHELL_RC_FILES = [".zshrc", ".bashrc", ".profile"];
 /** Default stdin reader: a single line from /dev/tty via readline, with a
@@ -2277,7 +6666,7 @@ function parseUninstallArgs(argv) {
     return { mode, errors, help, json };
 }
 function classifyExecPath(execPath, platform, homeDir) {
-    const p = platform === "win32" ? external_node_path_namespaceObject.win32 : external_node_path_namespaceObject.posix;
+    const p = platform === "win32" ? external_node_path_.win32 : external_node_path_.posix;
     const name = p.basename(execPath).toLowerCase();
     if (platform === "win32") {
         if (name !== "umactually.exe") {
@@ -2471,9 +6860,9 @@ function purgeConfig(deps) {
     // "" and break the startsWith check). Instead we handle the
     // "/", "/foo", "C:\\", "C:\\Users\\foo" cases explicitly.
     for (const dir of [configDir, cacheDir]) {
-        const dirNormalized = external_node_path_namespaceObject.normalize(dir);
+        const dirNormalized = external_node_path_.normalize(dir);
         const isInsideHome = dirNormalized === deps.homeDir
-            || dirNormalized.startsWith(deps.homeDir + external_node_path_namespaceObject.sep);
+            || dirNormalized.startsWith(deps.homeDir + external_node_path_.sep);
         if (!isInsideHome) {
             checks.push({
                 id: dir === cacheDir ? "cache-removal" : "config-removal",
@@ -2897,7 +7286,7 @@ function renderCommandsTable(commands) {
     return commands.map((c) => renderCommandLine(c, width));
 }
 const TOP_LEVEL_HELP_TEXT = [
-    `${BRAND} — provider-agnostic PR review CLI`,
+    `${brand/* BRAND */.qt} — provider-agnostic PR review CLI`,
     "",
     "Commands:",
     ...renderCommandsTable(TOP_LEVEL_COMMANDS),
@@ -2919,7 +7308,7 @@ const TOP_LEVEL_HELP_TEXT = [
 ].join("\n");
 // ── Per-command contextual help ────────────────────────────────────────────
 const REVIEW_HELP_TEXT = [
-    `${BRAND} review — run an AI-powered PR review`,
+    `${brand/* BRAND */.qt} review — run an AI-powered PR review`,
     "",
     "Usage:",
     "  umactually review [flags]       Run review (also the default command)",
@@ -2938,7 +7327,7 @@ const REVIEW_HELP_TEXT = [
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
 const INIT_HELP_TEXT = [
-    `${BRAND} init — guided setup wizard`,
+    `${brand/* BRAND */.qt} init — guided setup wizard`,
     "",
     "Usage:",
     "  umactually init                       Walk through provider + CI setup interactively (recommended)",
@@ -2962,32 +7351,50 @@ const INIT_HELP_TEXT = [
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
 const DOCTOR_USAGE_COMMANDS = [
-    { command: "umactually doctor", description: "Run all environment checks" },
+    { command: "umactually doctor", description: "Run fast offline environment checks (default)" },
+    { command: "umactually doctor --full", description: "Run extended read-only readiness probes (slower; opens network)" },
     { command: "umactually doctor --json", description: "Emit machine-readable JSON" },
     { command: "umactually doctor --help", description: "Show this help" },
 ];
 const DOCTOR_HELP_TEXT = [
-    `${BRAND} doctor — check that your environment is ready for review`,
+    `${brand/* BRAND */.qt} doctor — check that your environment is ready for review`,
     "",
     "Usage:",
     ...renderCommandsTable(DOCTOR_USAGE_COMMANDS),
     "",
     "Checks:",
-    "  node          Verifies Node.js >= 24 is on PATH",
-    "  git           Verifies git is available and the cwd is a repository",
-    "  env           Reports which UMACTUALLY_* / REVIEW_* env vars are set",
-    "  dist-freshness Verifies the bundled dist/ is up to date (dev only)",
+    "  Default (offline, always run):",
+    "    node             Verifies Node.js >= 24 is on PATH",
+    "    git              Verifies git is available and the cwd is a repository",
+    "    env              Reports which UMACTUALLY_* / REVIEW_* env vars are set",
+    "    dist-freshness   Verifies the bundled dist/ is up to date (dev only)",
+    "",
+    "  --full (read-only probes; opens network):",
+    "    saved-config       Verifies the saved provider config exists and parses",
+    "    review-policy      Verifies the committed umactually.review.json parses",
+    "    credentials        Verifies the credential env var is present (never logs the value)",
+    "    model-discovery    Probes the provider's /v1/models via GET (no body)",
+    "    provider-latency   Times a sanitized GET to the provider base URL",
+    "    context-budgets    Reports the canonical context budget defaults",
+    "    ci-platform        Detects GitHub Actions / Azure Pipelines / other CI",
+    "    github-permissions GETs a read-only endpoint to prove token scope",
+    "    azure-permissions  GETs a read-only endpoint to prove token scope",
+    "",
+    "Full-mode trust model: `--full` never sends POST/PATCH/PUT/DELETE, never",
+    "carries a body, never mutates umactually.config.json or",
+    "umactually.review.json, and never prints secrets. See the",
+    "request-capture test in test/unit/cli-doctor-full.test.ts.",
     "",
     "Global flags:",
     ...GLOBAL_FLAGS.map(renderFlagLine),
     "",
     "Exit codes:",
-    "  0  All checks passed",
-    "  1  One or more checks failed or warned",
+    "  0  All checks passed (anything but `fail` is OK)",
+    "  1  One or more checks failed (--full uses the same rule)",
     "  2  Usage error",
 ].join("\n");
 const CHECK_REVIEW_ARTIFACT_HELP_TEXT = [
-    `${BRAND} check-review-artifact — validate a review JSON artifact`,
+    `${brand/* BRAND */.qt} check-review-artifact — validate a review JSON artifact`,
     "",
     "Usage:",
     "  umactually check-review-artifact <path>   Validate the artifact at <path>",
@@ -3057,583 +7464,6 @@ const INIT_HELP = (/* unused pure expression or super */ null && (INIT_HELP_TEXT
 const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
 const UNINSTALL_HELP = (/* unused pure expression or super */ null && (UNINSTALL_HELP_TEXT));
 const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
-
-;// CONCATENATED MODULE: ./src/util/saved-config-flock.ts
-// SPDX-License-Identifier: MIT
-// Internal POSIX `flock(2)` wrapper used by `saved-config.ts` to serialize
-// concurrent `umactually init` invocations.
-//
-// node:fs does not expose `flock(2)` directly and we don't want to add a
-// native dependency. We shell out to the coreutils `flock(1)` CLI with the
-// `-n` flag (non-blocking try-lock) and pass the LOCK FILE PATH (not the
-// fd number) — passing an fd number to flock(1) only works when the child
-// process inherits the parent's fd table, which is not portable across
-// CI sandboxes, vite-node workers, or any setup that uses
-// `stdio: "ignore"`. The path form uses the same inode and is portable.
-//
-// On hosts without `flock(1)` (macOS without coreutils, alpine without
-// busybox flock) we fall through to a lenient path — the atomic-rename
-// write in `saved-config.ts` still protects against corruption; we lose
-// only the "second init wins cleanly" guarantee. v1 of the wizard
-// documents this as single-machine-only and the parent writeSavedConfig()
-// guards with a no-op on win32.
-class FlockUnavailableError extends Error {
-    constructor() {
-        super("flock(1) is unavailable");
-        this.name = "FlockUnavailableError";
-    }
-}
-function tryFlockNonBlocking(lockPath) {
-    try {
-        const { spawnSync } = __nccwpck_require__(802);
-        const r = spawnSync("flock", ["-n", lockPath, "true"], { stdio: "ignore", timeout: 1000 });
-        return r.status === 0;
-    }
-    catch {
-        throw new FlockUnavailableError();
-    }
-}
-
-;// CONCATENATED MODULE: ./src/config/saved-config.ts
-// SPDX-License-Identifier: MIT
-// `umactually init` saved-config persistence.
-//
-// Stores typed, NON-SECRET provider settings at `<homeDir>/.umactually/config.json`
-// (or `<cwd>/umactually.config.json` when the user opts into repo scope). The shape
-// is intentionally small:
-//
-//   { schemaVersion: 1, provider, [apiUrl], [model] }
-//
-// `apiKey` is NEVER read from or written to this file. The wizard prompts for it
-// at runtime (flag/env) and uses it for the live provider HEAD probe, but the
-// secret stays in the operator's env / CI secret store. The bundle §1.6 contract
-// is enforced at three layers:
-//
-//   1. The `SavedConfig` type excludes `apiKey`.
-//   2. `redactSecretsInString` is the canonical scrubber for any field that
-//      happens to be populated with a secret-shaped value by mistake.
-//   3. `writeSavedConfig` runs a defensive secret-regex scan over the FINAL
-//      serialized bytes before releasing the lock — if the regex matches, the
-//      write is refused with exit-1 hint ("writer produced an unintended
-//      secret literal").
-//
-// Layer 3 is paranoia: layers 1+2 already prevent the leak. The scan exists so
-// a future change that adds a new string field cannot silently regress the
-// no-secrets-at-rest guarantee.
-
-
-
-
-
-/**
- * Module-level mutable holder for the flock-availability signal. The
- * lock acquisition block writes to it; the success-return path reads
- * it. Avoids threading the flag through every early-return in the
- * writer. Reset to `false` on every writer entry (see writeSavedConfig).
- */
-const writeSavedConfigFlockUnavailable = { flag: false };
-const SAVED_CONFIG_SCHEMA_VERSION = 1;
-const SAVED_CONFIG_GLOBAL_PATH = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually", "config.json");
-const SAVED_CONFIG_REPO_PATH = (cwd) => (0,external_node_path_namespaceObject.join)(cwd, "umactually.config.json");
-const SAVED_CONFIG_GLOBAL_DIR = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually");
-const SAVED_CONFIG_GLOBAL_LOCK = (homeDir) => (0,external_node_path_namespaceObject.join)(homeDir, ".umactually", "init.lock");
-const saved_config_DEFAULT_OPENAI_URL = "https://api.openai.com/v1";
-const saved_config_DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
-/**
- * The canonical regex for any string-shaped secret the runtime or scanner
- * recognizes. Exported so callers (tests, log filters) can use the exact same
- * pattern.
- */
-const SECRET_REGEX = /gh[pousr]_[A-Za-z0-9]+|glpat-[A-Za-z0-9]+|s\.r[A-Za-z0-9]+|sk-[A-Za-z0-9]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gu;
-const VALID_PROVIDERS = new Set([
-    "openai-compatible",
-    "anthropic",
-    "copilot",
-]);
-// ---------------------------------------------------------------------------
-// Read path
-// ---------------------------------------------------------------------------
-/**
- * Resolve the effective saved config by checking the repo path first
- * (`<cwd>/umactually.config.json`) and falling back to the global path
- * (`<homeDir>/.umactually/config.json`). Returns `config: null` if neither
- * file exists.
- *
- * Refuses:
- *   - symlinks at either candidate path (exit 1, hint to remove the symlink)
- *   - non-regular files (exit 1)
- *   - malformed JSON (exit 2, "corrupt saved config at <path>" with repair hint)
- *   - missing/wrong `schemaVersion` (exit 2)
- *   - unknown `provider` (exit 2)
- *
- * Empty string in any optional field is coerced to absent (mirrors the
- * `pickString` empty-string-as-missing rule in `loader.ts`).
- */
-function readSavedConfig(deps) {
-    const fs = deps.fs ?? defaultFsAdapter;
-    for (const candidate of [SAVED_CONFIG_REPO_PATH(deps.cwd), SAVED_CONFIG_GLOBAL_PATH(deps.homeDir)]) {
-        if (!fs.exists(candidate))
-            continue;
-        if (fs.isSymlink(candidate)) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 1,
-                message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
-            };
-        }
-        if (!fs.isFile(candidate)) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 1,
-                message: `refusing to read saved config: ${candidate} is not a regular file`,
-            };
-        }
-        let raw;
-        try {
-            raw = fs.readFile(candidate);
-        }
-        catch (err) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 2,
-                message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
-            };
-        }
-        let parsed;
-        try {
-            parsed = JSON.parse(raw);
-        }
-        catch (err) {
-            return {
-                ok: false,
-                path: candidate,
-                exitCode: 2,
-                message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
-            };
-        }
-        const validated = validateSavedConfig(parsed, candidate);
-        if (!validated.ok)
-            return validated;
-        return { ok: true, config: validated.config, path: candidate };
-    }
-    return { ok: true, config: null, path: SAVED_CONFIG_GLOBAL_PATH(deps.homeDir) };
-}
-function validateSavedConfig(parsed, candidate) {
-    if (parsed === null || typeof parsed !== "object") {
-        return {
-            ok: false,
-            path: candidate,
-            exitCode: 2,
-            message: `corrupt saved config at ${candidate}: expected object, received ${parsed === null ? "null" : typeof parsed}`,
-        };
-    }
-    const obj = parsed;
-    if (obj["schemaVersion"] !== SAVED_CONFIG_SCHEMA_VERSION) {
-        return {
-            ok: false,
-            path: candidate,
-            exitCode: 2,
-            message: `unsupported schemaVersion in ${candidate}: expected ${SAVED_CONFIG_SCHEMA_VERSION}, received ${JSON.stringify(obj["schemaVersion"])}`,
-        };
-    }
-    if (typeof obj["provider"] !== "string" || !VALID_PROVIDERS.has(obj["provider"])) {
-        return {
-            ok: false,
-            path: candidate,
-            exitCode: 2,
-            message: `invalid provider in ${candidate}: ${JSON.stringify(obj["provider"])} (expected one of ${[...VALID_PROVIDERS].join(", ")})`,
-        };
-    }
-    const apiUrlRaw = obj["apiUrl"];
-    const modelRaw = obj["model"];
-    // Type guard: optional fields must be a string when present. Anything
-    // else (number, array, null) is rejected — empty string is treated as
-    // absent (mirrors pickString's empty-string-as-missing rule in
-    // loader.ts:286-299). The wizard's default-acceptance path (press
-    // Enter) leaves the field at "" which the writer used to serialize
-    // verbatim — we coerce to undefined here so the next read round-trips
-    // cleanly without losing type information.
-    if (apiUrlRaw !== undefined && (typeof apiUrlRaw !== "string")) {
-        return {
-            ok: false,
-            path: candidate,
-            exitCode: 2,
-            message: `invalid apiUrl in ${candidate}: expected string when present`,
-        };
-    }
-    if (modelRaw !== undefined && (typeof modelRaw !== "string")) {
-        return {
-            ok: false,
-            path: candidate,
-            exitCode: 2,
-            message: `invalid model in ${candidate}: expected string when present`,
-        };
-    }
-    const apiUrl = typeof apiUrlRaw === "string" && apiUrlRaw.length > 0 ? apiUrlRaw : undefined;
-    const model = typeof modelRaw === "string" && modelRaw.length > 0 ? modelRaw : undefined;
-    const config = {
-        schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
-        provider: obj["provider"],
-        ...(apiUrl !== undefined ? { apiUrl } : {}),
-        ...(model !== undefined ? { model } : {}),
-    };
-    return { ok: true, config };
-}
-// ---------------------------------------------------------------------------
-// Write path
-// ---------------------------------------------------------------------------
-/**
- * Persist `config` atomically. Honors the no-secrets-at-rest contract:
- *   - The `SavedConfig` type excludes `apiKey`; this function never reads one.
- *   - A defensive secret-regex scan over the FINAL bytes catches any
- *     accidental leak (e.g. a future field that accepts free-form input).
- *
- * Safety rails:
- *   - Acquires an advisory flock on `<homeDir>/.umactually/init.lock` (POSIX
- *     `flock(2)` via the `flock(1)` CLI; Windows is a no-op, see note below).
- *   - Creates `<homeDir>/.umactually/` with mode 0o700 on POSIX.
- *   - Refuses symlinks at the target path (exit 1).
- *   - Prompts before overwriting an existing regular file; `--force`
- *     bypasses the prompt.
- *   - On malformed JSON in the existing file, moves it aside to
- *     `<path>.bak-<mtime>` and proceeds.
- *   - Uses `writeFileAtomic` (sibling-tempfile + rename) and `chmod 0o600`
- *     on POSIX. Windows inherits the parent directory ACL.
- *
- * Windows flock note: `flock(2)` is POSIX-only. On Windows we open the lock
- * file (creating it if missing) and rely on the OS's default sharing mode
- * to serialize concurrent init invocations; this is best-effort and
- * matches the wizard's documented v1 single-OS-at-a-time expectation.
- * The lock fd is released in `finally`.
- */
-async function writeSavedConfig(config, deps) {
-    writeSavedConfigFlockUnavailable.flag = false;
-    const fs = deps.fs ?? defaultFsAdapter;
-    const platform = deps.platform ?? process.platform;
-    const isPosix = platform !== "win32";
-    const targetPath = deps.scope === "repo"
-        ? SAVED_CONFIG_REPO_PATH(deps.cwd)
-        : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
-    const targetDir = deps.scope === "repo" ? deps.cwd : SAVED_CONFIG_GLOBAL_DIR(deps.homeDir);
-    // -- Acquire flock (advisory; non-blocking) -----------------------------
-    const lockPath = SAVED_CONFIG_GLOBAL_LOCK(deps.homeDir);
-    let lockFd = null;
-    try {
-        if (isPosix) {
-            // Ensure the lock dir exists so we can open the lock file even on a
-            // first-run machine. mkdirSync is a no-op if the dir already exists.
-            try {
-                (0,external_node_fs_.mkdirSync)(SAVED_CONFIG_GLOBAL_DIR(deps.homeDir), { recursive: true, mode: 0o700 });
-            }
-            catch {
-                // mkdir failure here will resurface at the target-dir ensure below.
-            }
-            // Open the lock file (creates it if missing) so flock(1) has a real
-            // inode to lock against — the file itself carries no payload, only
-            // the inode carries the lock.
-            try {
-                lockFd = (0,external_node_fs_.openSync)(lockPath, "w");
-            }
-            catch {
-                return {
-                    ok: false,
-                    exitCode: 1,
-                    message: `cannot acquire init lock at ${lockPath}; another init may be in progress; rm ${lockPath} if stale`,
-                };
-            }
-            // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
-            // the PATH (not the fd number — see saved-config-flock.ts for why
-            // the fd-number form silently no-ops in vite-node / CI sandboxes).
-            //
-            // Flock availability:
-            //   - flock(1) is in coreutils on every Linux and macOS (via brew
-            //     install coreutils). When it is present, status=0 means lock
-            //     acquired; status≠0 means another init holds it (contention).
-            //   - On hosts without flock(1) (macOS without coreutils, alpine
-            //     without busybox flock, restricted CI sandboxes), the wrapper
-            //     throws `FlockUnavailableError`. We MUST surface this so the
-            //     operator knows the init-time concurrency lock is NOT
-            //     enforced: writes can still race. The atomic-rename primitive
-            //     keeps the file corruption-safe (last-writer-wins on a per-
-            //     inode basis), but a parallel `umactually init` could clobber
-            //     a half-written sibling temp file if the lock is genuinely
-            //     missing. The check below records the unavailability; the
-            //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
-            //     so the wizard can emit a hint to the user.
-            let flockResult = true;
-            let lockUnavailable = false;
-            try {
-                flockResult = tryFlockNonBlocking(lockPath);
-            }
-            catch (err) {
-                if (err instanceof FlockUnavailableError) {
-                    // flock(1) is missing on this host. Atomic-rename still prevents
-                    // file corruption; we lose only the "second init declines"
-                    // guarantee. Surface a hint to the operator so they understand
-                    // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
-                    lockUnavailable = true;
-                }
-                else {
-                    throw err;
-                }
-            }
-            if (!flockResult) {
-                try {
-                    (0,external_node_fs_.closeSync)(lockFd);
-                    lockFd = null;
-                }
-                catch {
-                    // ignore
-                }
-                return {
-                    ok: false,
-                    exitCode: 1,
-                    message: `another init is in progress; rm ${lockPath} if stale`,
-                    lockUnavailable: false,
-                };
-            }
-            // Stash `lockUnavailable` on the active function scope — the
-            // success-return branch below reads it. We use a tiny mutable
-            // holder rather than a let inside the try block so the success
-            // path at the end of writeSavedConfig() can read it without
-            // threading it through every early return.
-            writeSavedConfigFlockUnavailable.flag = lockUnavailable;
-        }
-        // Windows: best-effort serialization via shared-lock semantics on the
-        // lock file's existence + the atomic-rename primitive. Documented above.
-        // -- Ensure target directory + 0o700 on POSIX ------------------------
-        try {
-            (0,external_node_fs_.mkdirSync)(targetDir, { recursive: true, mode: 0o700 });
-            if (isPosix && deps.scope === "global") {
-                // Re-stat the directory; root + restrictive umask can mask the mode
-                // arg. Best-effort: chmod and swallow the error (E-⚠8).
-                try {
-                    const st = (0,external_node_fs_.statSync)(targetDir);
-                    if ((st.mode & 0o777) !== 0o700) {
-                        setMode(targetDir, 0o700);
-                    }
-                }
-                catch {
-                    // ignore — chmod failure on a dir the user can already write to
-                    // is non-fatal; we still chmod the FILE to 0o600 below.
-                }
-            }
-        }
-        catch (err) {
-            return {
-                ok: false,
-                exitCode: 1,
-                message: `cannot create saved-config directory ${targetDir}: ${err instanceof Error ? err.message : String(err)}`,
-            };
-        }
-        // -- Refuse symlinks at the target -----------------------------------
-        if (fs.isSymlink(targetPath)) {
-            return {
-                ok: false,
-                exitCode: 1,
-                message: `refusing to overwrite: ${targetPath} is a symlink; remove it and re-run init`,
-            };
-        }
-        // -- Existing-file handling ------------------------------------------
-        if (fs.exists(targetPath) && !fs.isSymlink(targetPath)) {
-            let existingIsCorrupt = false;
-            try {
-                const existingRaw = fs.readFile(targetPath);
-                JSON.parse(existingRaw); // throws on malformed JSON
-            }
-            catch {
-                existingIsCorrupt = true;
-            }
-            if (existingIsCorrupt) {
-                // Corrupt JSON: move aside instead of clobbering. The backup
-                // preserves operator history for forensics; the wizard surfaces
-                // the backup path in its C-7 envelope.
-                const mtime = (deps.now ?? Date.now)();
-                const backupPath = `${targetPath}.bak-${Math.floor(mtime)}`;
-                try {
-                    (0,external_node_fs_.renameSync)(targetPath, backupPath);
-                }
-                catch (err) {
-                    return {
-                        ok: false,
-                        exitCode: 1,
-                        message: `refusing to clobber corrupt saved config at ${targetPath} and could not move it aside: ${err instanceof Error ? err.message : String(err)}; rm ${targetPath} manually`,
-                    };
-                }
-            }
-            else if (!deps.force) {
-                // Valid JSON existing file: prompt for overwrite (unless --force).
-                if (deps.overwriteReader === undefined) {
-                    return {
-                        ok: false,
-                        exitCode: 1,
-                        message: `refusing to overwrite existing saved config at ${targetPath}; pass --force to bypass or answer 'y' to the overwrite prompt`,
-                    };
-                }
-                const answer = await deps.overwriteReader();
-                if (answer !== true) {
-                    return {
-                        ok: false,
-                        exitCode: 1,
-                        message: `refusing to overwrite existing saved config at ${targetPath}; nothing was written`,
-                    };
-                }
-            }
-        }
-        // -- Serialize with deterministic key order (schemaVersion, provider, apiUrl, model) -----
-        const serialized = serializeSavedConfig(config);
-        // -- Defensive secret-regex scan -------------------------------------
-        if (SECRET_REGEX.test(serialized)) {
-            SECRET_REGEX.lastIndex = 0;
-            return {
-                ok: false,
-                exitCode: 1,
-                message: "internal: writer produced an unintended secret literal; refusing to persist",
-            };
-        }
-        SECRET_REGEX.lastIndex = 0;
-        // -- Atomic write + chmod 0o600 --------------------------------------
-        try {
-            writeFileAtomic(targetPath, serialized);
-        }
-        catch (err) {
-            return {
-                ok: false,
-                exitCode: 1,
-                message: `cannot write saved config at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
-            };
-        }
-        if (isPosix) {
-            try {
-                setMode(targetPath, 0o600);
-            }
-            catch {
-                // Non-fatal: the file is on disk; chmod may fail under restrictive
-                // mount options. The wizard surfaces a warn check in T12 but does
-                // not abort the write (E-⚠8).
-            }
-        }
-        // -- Verify mode round-tripped to 0o600 on POSIX ----------------------
-        if (isPosix) {
-            const mode = getMode(targetPath);
-            if (mode !== null && (mode & 0o777) !== 0o600) {
-                return {
-                    ok: false,
-                    exitCode: 1,
-                    message: `saved config written but mode is ${(mode & 0o777).toString(8)} (expected 0o600); check filesystem mount options`,
-                };
-            }
-        }
-        return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8"), lockUnavailable: writeSavedConfigFlockUnavailable.flag };
-    }
-    finally {
-        // -- Release flock ---------------------------------------------------
-        // flock(1) is a wrapper around flock(2); closing the fd releases the lock.
-        if (isPosix && lockFd !== null) {
-            try {
-                (0,external_node_fs_.closeSync)(lockFd);
-            }
-            catch {
-                // ignore — the lock is advisory; a stuck release on process exit
-                // does not break the file write.
-            }
-        }
-    }
-}
-// ---------------------------------------------------------------------------
-// Serialization (deterministic key order)
-// ---------------------------------------------------------------------------
-/**
- * JSON.stringify with 2-space indent and key order: schemaVersion, provider,
- * apiUrl, model. Any additional key is rejected at the type level; this is
- * the single serialization site so the byte layout is fixed across versions.
- */
-function serializeSavedConfig(config) {
-    const ordered = {
-        schemaVersion: config.schemaVersion,
-        provider: config.provider,
-    };
-    if (config.apiUrl !== undefined)
-        ordered["apiUrl"] = config.apiUrl;
-    if (config.model !== undefined)
-        ordered["model"] = config.model;
-    return JSON.stringify(ordered, null, 2) + "\n";
-}
-// ---------------------------------------------------------------------------
-// Secret redaction
-// ---------------------------------------------------------------------------
-/**
- * Replace every secret-shaped substring in `input` with `REDACTED_SECRET_TOKEN`.
- * Used by `--debug-raw` diagnostics and any other site that has to log a
- * blob the user supplied (prompts, env echoes) — it is the last line of
- * defense against accidental secret leakage. Callers MUST treat the return
- * value as still-tainted for display purposes; the token is itself a hint
- * to the reader, not a security boundary.
- */
-function redactSecretsInString(input) {
-    return input.replace(SECRET_REGEX, REDACTED_SECRET_TOKEN);
-}
-
-;// CONCATENATED MODULE: ./src/cli/load-saved-config.ts
-// SPDX-License-Identifier: MIT
-// Runtime wrapper around the CLI's `umactually init` saved-config reader.
-//
-// `readSavedConfig` in `src/config/saved-config.ts` is shaped for the wizard
-// (exit-code + message) and refuses to proceed on malformed JSON. The
-// `umactually review` and `umactually --files` entry paths, plus the bare
-// `umactually` quickstart gate, need a NON-exit-shaped variant: read the
-// file, return whatever you got, surface the failure as a `warning` the
-// caller decides whether to print. This keeps the resolver sites
-// (`apply-saved-config`, `runLoadedConfigQuickstart`) free of `process.exit`
-// concerns and keeps the wizard's strict contract intact.
-//
-// S6 contract: this function NEVER persists or transmits `apiKey`.
-// The `SavedConfig` type excludes it; `readSavedConfig` rejects attempts
-// to deserialize unknown keys at the type level.
-
-
-/**
- * Read the runtime-effective saved config (repo path first, global fallback),
- * without ever exiting on failure. Returns `{config: null, warning: <msg>}`
- * when the file is missing, malformed, or refused for security reasons —
- * callers decide whether to surface the warning to the user.
- *
- * Defaults `cwd` to `process.cwd()` and `homeDir` to `os.homedir()` so
- * the common path is a no-arg call. Tests inject explicit values to
- * avoid touching the real user's `~/.umactually/config.json`.
- *
- * Never throws. The wizard's `readSavedConfig` is the throwing/exiting
- * variant; this one is the runtime-tolerant variant. They share the
- * underlying validation through the same `SavedConfig` type.
- */
-function tryReadSavedConfig(deps = {}) {
-    const homeDir = deps.homeDir ?? (0,external_node_os_namespaceObject.homedir)();
-    const result = readSavedConfig({
-        homeDir,
-        cwd: deps.cwd ?? process.cwd(),
-    });
-    if (result.ok) {
-        return { config: result.config, path: result.path, warning: null };
-    }
-    // Failure path: synthesize the global path as the canonical
-    // "where the loader looked" pointer. The wizard's failure result
-    // doesn't carry a path field, but an operator running
-    // `umactually --show-config` against a corrupt file wants to know
-    // WHICH file failed to parse; the global-path shape is the closest
-    // meaningful answer we can give without re-implementing the
-    // candidate walk that `readSavedConfig` does. The exact failure
-    // path is also embedded in `warning` text (per the wizard's
-    // "corrupt saved config at <path>" contract) so callers needing
-    // the precise file path can parse the warning.
-    return {
-        config: null,
-        path: result.path,
-        warning: result.message,
-    };
-}
 
 ;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
 // SPDX-License-Identifier: MIT
@@ -3708,7 +7538,7 @@ async function readInteractiveLine(input) {
     if (!canPromptInteractively()) {
         throw new SmartPromptUnavailable("NO_TTY", "Cannot read interactive input: stdin is not a TTY. Set --api-url / --api-key on the command line or via UMACTUALLY_API_URL / UMACTUALLY_API_KEY env vars.");
     }
-    process.stdout.write(`${BRAND_PREFIX}${input.prompt}\n`);
+    process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${input.prompt}\n`);
     const stdin = process.stdin;
     // Race the read against a timeout promise so a missed keypress
     // surfaces the typed TIMEOUT rejection WITHOUT relying on the
@@ -3935,15 +7765,15 @@ steps:
 `;
 function renderCiTemplate(input) {
     const template = input.target === "github" ? GITHUB_WORKFLOW_TEMPLATE : AZURE_PIPELINE_TEMPLATE;
-    const body = template.replace(/__UMACTUALLY_VERSION__/gu, input.packageVersion);
+    const body = template.replaceAll("__UMACTUALLY_VERSION__", input.packageVersion);
     const filename = input.target === "github" ? GITHUB_WORKFLOW_FILENAME : AZURE_PIPELINE_FILENAME;
     const relativePath = input.target === "github"
-        ? (0,external_node_path_namespaceObject.join)(input.paths?.githubDir ?? ".github/workflows", filename)
+        ? (0,external_node_path_.join)(input.paths?.githubDir ?? ".github/workflows", filename)
         : filename;
     return { filename, relativePath, body };
 }
 function detectCiTarget(input) {
-    if (input.exists((0,external_node_path_namespaceObject.join)(".github")))
+    if (input.exists((0,external_node_path_.join)(".github")))
         return "github";
     if (input.exists("azure-pipelines.yml"))
         return "azure";
@@ -3964,6 +7794,7 @@ function detectCiTarget(input) {
 // every interactive prompt (≤15s per-prompt), wraps the whole wizard in a
 // 60s global `Promise.race` budget, and threads the saved config through
 // `writeSavedConfig` from `saved-config.ts` for atomic + 0o600 persistence.
+
 
 
 
@@ -4027,11 +7858,12 @@ const FLAG_HANDLERS = {
     "--yes": { consume: false, apply: (state) => { state.yes = true; } },
     "--apply": { consume: false, apply: (state) => { state.apply = true; } },
     "--non-interactive": { consume: false, apply: (state) => { state.nonInteractive = true; } },
+    "--policy-template": { consume: false, apply: (state) => { state.policyTemplate = true; } },
     "--dry-run": { consume: false, apply: (state) => { state.dryRun = true; } },
     "--show": { consume: false, apply: (state) => { state.show = true; } },
     "--ci": { consume: true, validate: parseCi, apply: (state, value) => { state.ci = value; } },
     "--scope": { consume: true, validate: parseScope, apply: (state, value) => { state.scope = value; } },
-    "--provider": { consume: true, validate: parseProvider, apply: (state, value) => { state.provider = value; } },
+    "--provider": { consume: true, validate: init_parseProvider, apply: (state, value) => { state.provider = value; } },
     "--api-url": { consume: true, validate: parseApiUrl, apply: (state, value) => { state.apiUrl = value; } },
     "--api-key": { consume: true, validate: parseApiKey, apply: (state, value) => { state.apiKey = value; } },
     "--github-api-base": { consume: true, validate: parseGithubApiBase, apply: (state, value) => { state.githubApiBase = value; } },
@@ -4086,6 +7918,7 @@ function createParsedInitState() {
         dryRun: false,
         show: false,
         nonInteractive: false,
+        policyTemplate: false,
     };
 }
 function flagValue() {
@@ -4112,7 +7945,7 @@ function parseScope(next) {
     }
     return flagValue();
 }
-function parseProvider(next) {
+function init_parseProvider(next) {
     if (next === undefined) {
         return flagError("--provider requires a value (openai-compatible|anthropic|copilot)");
     }
@@ -4176,6 +8009,8 @@ function applyEnvDefaults(state, env) {
  * precedence; --json implies non-interactive.
  */
 function resolveInitMode(state) {
+    if (state.policyTemplate)
+        return "policy-template";
     if (state.show)
         return "show";
     if (state.dryRun)
@@ -4190,7 +8025,7 @@ function resolveInitMode(state) {
  * resolver.
  */
 const init_INIT_HELP_TEXT = [
-    `${BRAND_PREFIX.replace(/: $/, "")} init — guided setup wizard`,
+    `${brand/* BRAND_PREFIX */.rc.replace(/: $/, "")} init — guided setup wizard`,
     "",
     "Usage:",
     "  umactually init                       Run the interactive wizard (TTY)",
@@ -4212,6 +8047,7 @@ const init_INIT_HELP_TEXT = [
     "  --force                    Overwrite an existing saved config without prompting",
     "  --yes                      Skip all confirmation prompts",
     "  --dry-run                  Compute the plan; no filesystem writes",
+    "  --policy-template          Write umactually.review.json template (opt-in; explicit)",
     "  --show                     Print the resolved saved config and exit",
     "  --json                     Emit machine-readable JSON envelope",
     "  --help, -h                 Show this help",
@@ -4241,10 +8077,10 @@ function formatInitJson(result) {
         ...result,
         checks: result.checks.map((c) => ({
             ...c,
-            message: redactSecretsInString(c.message),
-            ...(c.hint !== undefined ? { hint: redactSecretsInString(c.hint) } : {}),
+            message: (0,saved_config/* redactSecretsInString */.$K)(c.message),
+            ...(c.hint !== undefined ? { hint: (0,saved_config/* redactSecretsInString */.$K)(c.hint) } : {}),
         })),
-        hints: result.hints.map(redactSecretsInString),
+        hints: result.hints.map(saved_config/* redactSecretsInString */.$K),
     };
     return JSON.stringify(redacted) + "\n";
 }
@@ -4256,13 +8092,13 @@ function formatInitJson(result) {
 function formatInitHuman(result) {
     const lines = [];
     if (result.outcome === "ok") {
-        lines.push(`${BRAND_PREFIX}init complete`);
+        lines.push(`${brand/* BRAND_PREFIX */.rc}init complete`);
     }
     else if (result.outcome === "aborted") {
-        lines.push(`${BRAND_PREFIX}init aborted; nothing changed.`);
+        lines.push(`${brand/* BRAND_PREFIX */.rc}init aborted; nothing changed.`);
     }
     else {
-        lines.push(`${BRAND_PREFIX}init failed`);
+        lines.push(`${brand/* BRAND_PREFIX */.rc}init failed`);
     }
     if (result.savedConfigPath !== null) {
         lines.push(`  saved config: ${result.savedConfigPath}`);
@@ -4275,14 +8111,14 @@ function formatInitHuman(result) {
     }
     for (const c of result.checks) {
         const tag = c.status.toUpperCase().padEnd(5);
-        const line = `  [${tag}] ${redactSecretsInString(c.message)}`;
+        const line = `  [${tag}] ${(0,saved_config/* redactSecretsInString */.$K)(c.message)}`;
         lines.push(line);
         if (c.hint !== undefined && c.hint.length > 0) {
-            lines.push(`         hint: ${redactSecretsInString(c.hint)}`);
+            lines.push(`         hint: ${(0,saved_config/* redactSecretsInString */.$K)(c.hint)}`);
         }
     }
     for (const h of result.hints) {
-        lines.push(`  hint: ${redactSecretsInString(h)}`);
+        lines.push(`  hint: ${(0,saved_config/* redactSecretsInString */.$K)(h)}`);
     }
     lines.push("");
     return lines.join("\n");
@@ -4385,6 +8221,9 @@ async function runInitImpl({ args, deps, }) {
     if (mode === "show") {
         return runShowInit({ deps });
     }
+    if (mode === "policy-template") {
+        return runPolicyTemplateInit({ deps });
+    }
     if (mode === "dry-run") {
         return runDryRunInit({ args, deps });
     }
@@ -4397,8 +8236,8 @@ async function runInitImpl({ args, deps, }) {
 // --show: parse + print the resolved saved config; no writes, no prompts.
 // ---------------------------------------------------------------------------
 async function runShowInit({ deps }) {
-    const fs = deps.fsAdapter ?? defaultFsAdapter;
-    const result = readSavedConfig({
+    const fs = deps.fsAdapter ?? fs_atomic/* defaultFsAdapter */.aO;
+    const result = (0,saved_config/* readSavedConfig */.qj)({
         homeDir: deps.homeDir,
         cwd: deps.cwd,
         fs,
@@ -4415,7 +8254,7 @@ async function runShowInit({ deps }) {
                 {
                     id: "config-file-mode",
                     status: "fail",
-                    message: redactSecretsInString(result.message),
+                    message: (0,saved_config/* redactSecretsInString */.$K)(result.message),
                 },
             ],
             hints: [result.message],
@@ -4435,7 +8274,7 @@ async function runShowInit({ deps }) {
                     id: "config-file-mode",
                     status: "ok",
                     message: "no saved config found",
-                    hint: `checked ${SAVED_CONFIG_REPO_PATH(deps.cwd)} and ${SAVED_CONFIG_GLOBAL_PATH(deps.homeDir)}`,
+                    hint: `checked ${(0,saved_config/* SAVED_CONFIG_REPO_PATH */.MM)(deps.cwd)} and ${(0,saved_config/* SAVED_CONFIG_GLOBAL_PATH */.xp)(deps.homeDir)}`,
                 },
             ],
             hints: [],
@@ -4447,7 +8286,7 @@ async function runShowInit({ deps }) {
         outcome: "ok",
         exitCode: 0,
         savedConfigPath: result.path,
-        savedConfigBytes: Buffer.byteLength(serializeSavedConfig(result.config), "utf8"),
+        savedConfigBytes: Buffer.byteLength((0,saved_config/* serializeSavedConfig */.Mw)(result.config), "utf8"),
         ciGenerated: [],
         checks: [
             {
@@ -4465,6 +8304,99 @@ async function runShowInit({ deps }) {
     };
 }
 // ---------------------------------------------------------------------------
+// --policy-template: render the committed-policy template to stdout and
+// the target file (if requested). Explicit opt-in — NEVER auto-created by
+// the default init flow. The operator must pass --policy-template (or
+// equivalent) to receive a `umactually.review.json` file.
+// ---------------------------------------------------------------------------
+async function runPolicyTemplateInit({ deps, }) {
+    const fs = deps.fsAdapter ?? fs_atomic/* defaultFsAdapter */.aO;
+    const policyPath = REVIEW_POLICY_PATH(deps.cwd);
+    const rendered = renderPolicyTemplate();
+    const bytes = Buffer.byteLength(rendered, "utf8");
+    if (fs.exists(policyPath)) {
+        return policyAlreadyExistsResult(policyPath);
+    }
+    try {
+        fs.writeFileAtomic(policyPath, rendered);
+    }
+    catch (err) {
+        return policyWriteErrorResult(policyPath, err, deps.cwd);
+    }
+    return policyWriteOkResult(policyPath, bytes);
+}
+/**
+ * Build the "policy file already exists — refuse to overwrite" envelope.
+ */
+function policyAlreadyExistsResult(policyPath) {
+    return {
+        mode: "policy-template",
+        outcome: "error",
+        exitCode: 1,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "policy-template-write",
+                status: "fail",
+                message: `refusing to overwrite existing policy at ${policyPath}`,
+            },
+        ],
+        hints: [`pass --force to overwrite, or rm ${policyPath} first`],
+        sources: {},
+    };
+}
+/**
+ * Build the "policy write failed" envelope (filesystem write threw).
+ */
+function policyWriteErrorResult(policyPath, err, cwd) {
+    return {
+        mode: "policy-template",
+        outcome: "error",
+        exitCode: 1,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "policy-template-write",
+                status: "fail",
+                message: `cannot write policy at ${policyPath}: ${err instanceof Error ? err.message : String(err)}`,
+            },
+        ],
+        hints: [`ensure ${cwd} is writable`],
+        sources: {},
+    };
+}
+/**
+ * Build the "policy written successfully" envelope.
+ */
+function policyWriteOkResult(policyPath, bytes) {
+    return {
+        mode: "policy-template",
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "policy-template-write",
+                status: "ok",
+                message: `wrote policy template (${bytes} bytes) at ${policyPath}`,
+            },
+            {
+                id: "secret-redaction",
+                status: "ok",
+                message: "template contains no secrets",
+            },
+        ],
+        hints: [`edit ${policyPath} to customize effort, triggers, and budgets`],
+        sources: {},
+    };
+}
+// ---------------------------------------------------------------------------
 // --dry-run: compute the plan; perform NO filesystem writes; the api-key
 // is replaced with `REDACTED_SECRET_TOKEN` in the response envelope.
 // ---------------------------------------------------------------------------
@@ -4473,7 +8405,7 @@ async function runDryRunInit({ args, deps, }) {
     // fully determined. If none are present, fall back to the openai-
     // compatible default to keep the plan deterministic.
     const provider = args.provider ?? "openai-compatible";
-    const apiUrl = args.apiUrl ?? saved_config_DEFAULT_OPENAI_URL;
+    const apiUrl = args.apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx;
     const model = args.model;
     const config = buildConfig(provider, apiUrl, model);
     const ciGenerated = [];
@@ -4481,7 +8413,7 @@ async function runDryRunInit({ args, deps, }) {
         ciGenerated.push(args.ci);
     }
     else if (args.ci === "auto") {
-        const target = detectCiTargetHelper(deps.fsAdapter ?? defaultFsAdapter);
+        const target = detectCiTargetHelper(deps.fsAdapter ?? fs_atomic/* defaultFsAdapter */.aO);
         if (target !== null)
             ciGenerated.push(target);
     }
@@ -4490,9 +8422,9 @@ async function runDryRunInit({ args, deps, }) {
         outcome: "ok",
         exitCode: 0,
         savedConfigPath: args.scope === "repo"
-            ? SAVED_CONFIG_REPO_PATH(deps.cwd)
-            : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir),
-        savedConfigBytes: Buffer.byteLength(serializeSavedConfig(config), "utf8"),
+            ? (0,saved_config/* SAVED_CONFIG_REPO_PATH */.MM)(deps.cwd)
+            : (0,saved_config/* SAVED_CONFIG_GLOBAL_PATH */.xp)(deps.homeDir),
+        savedConfigBytes: Buffer.byteLength((0,saved_config/* serializeSavedConfig */.Mw)(config), "utf8"),
         ciGenerated,
         checks: [
             {
@@ -4514,7 +8446,7 @@ async function runDryRunInit({ args, deps, }) {
             {
                 id: "secret-redaction",
                 status: "ok",
-                message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
+                message: `api key placeholder: ${brand/* REDACTED_SECRET_TOKEN */.uq}`,
             },
         ],
         hints: ["dry-run: nothing was written; re-run without --dry-run to apply."],
@@ -4534,46 +8466,103 @@ async function runNonInteractiveInit({ args, deps, }) {
     // Validate required flags. Missing provider is a hard fail.
     const provider = args.provider;
     if (provider === undefined) {
-        return {
-            mode: "non-interactive",
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "non-interactive-validation",
-                    status: "fail",
-                    message: "--provider is required in --non-interactive mode",
-                },
-            ],
-            hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
-            sources: {},
-        };
+        return missingProviderResult();
     }
     // Per-provider required fields. apiKey is NEVER persisted so it's
     // validated only as "present" (consumed for the live HEAD probe).
-    // We intentionally do NOT retain `apiKey` / `githubApiBase` after
-    // validation — they are write-side blacklisted and don't enter the
-    // `writeSavedConfig` call below (bundle §1.1 S6). The copilot branch
-    // only validates that the operator passed a github-api-base OR
-    // accepts the canonical default; we don't store it because the
-    // saved config schema is provider/apiUrl/model only.
+    const perProvider = perProviderValidation(args, provider);
+    if ("outcome" in perProvider)
+        return perProvider;
+    const { apiUrl, model } = perProvider;
+    // Path safety: cwd must not be unsafe (no .., not absolute).
+    if (containsUnsafePathSegment(deps.cwd)) {
+        return unsafeCwdResult(deps.cwd);
+    }
+    const scope = args.scope ?? "global";
+    const config = buildConfig(provider, apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, model);
+    // apiKey and githubApiBase were validated for presence only and
+    // intentionally dropped before reaching writeSavedConfig (S6).
+    const writeResult = await (0,saved_config/* writeSavedConfig */.rn)(config, {
+        homeDir: deps.homeDir,
+        cwd: deps.cwd,
+        scope,
+        force: args.force,
+        platform: deps.platform,
+        ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
+        ...(deps.now !== undefined ? { now: deps.now } : {}),
+    });
+    if (!writeResult.ok) {
+        return nonInteractiveWriteFail(writeResult);
+    }
+    // CI generation. Honors --ci flag (or --yes if auto-detected).
+    const ciGenerated = await generateCiForResult({
+        args,
+        deps,
+        fs: deps.fsAdapter ?? fs_atomic/* defaultFsAdapter */.aO,
+        packageVersion: deps.packageVersion,
+    });
+    return {
+        mode: "non-interactive",
+        outcome: "ok",
+        exitCode: 0,
+        savedConfigPath: writeResult.path,
+        savedConfigBytes: writeResult.bytes,
+        ciGenerated,
+        checks: nonInteractiveSuccessChecks(deps, writeResult, ciGenerated),
+        hints: [],
+        sources: {
+            provider: { source: "flag" },
+            ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" } } : {}),
+            ...(config.model !== undefined ? { model: { source: "flag" } } : {}),
+        },
+    };
+}
+/**
+ * Build the "missing --provider" envelope for `runNonInteractiveInit`.
+ */
+function missingProviderResult() {
+    return {
+        mode: "non-interactive",
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "non-interactive-validation",
+                status: "fail",
+                message: "--provider is required in --non-interactive mode",
+            },
+        ],
+        hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+        sources: {},
+    };
+}
+/**
+ * Per-provider required-fields check for `runNonInteractiveInit`.
+ * `apiKey` is NEVER persisted so it is validated only as "present"
+ * (consumed for the live HEAD probe). We intentionally do NOT retain
+ * `apiKey` / `githubApiBase` after validation — they are write-side
+ * blacklisted and don't enter the `writeSavedConfig` call below
+ * (bundle §1.1 S6). The copilot branch only validates that the
+ * operator passed a github-api-base OR accepts the canonical default;
+ * we don't store it because the saved config schema is
+ * provider/apiUrl/model only.
+ */
+function perProviderValidation(args, provider) {
     const pendingPrompts = [];
     let apiUrl = args.apiUrl;
     let model = args.model;
     if (provider === "openai-compatible") {
-        if (apiUrl === undefined)
-            apiUrl = saved_config_DEFAULT_OPENAI_URL;
+        apiUrl ??= saved_config/* DEFAULT_OPENAI_URL */.Nx;
         if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
     }
     else if (provider === "anthropic") {
         if (args.apiKey === undefined)
             pendingPrompts.push("--api-key");
-        if (apiUrl === undefined)
-            apiUrl = saved_config_DEFAULT_ANTHROPIC_URL;
+        apiUrl ??= saved_config/* DEFAULT_ANTHROPIC_URL */.Tq;
     }
     else {
         // copilot — no apiKey prompt; githubApiBase presence is acknowledged
@@ -4598,111 +8587,89 @@ async function runNonInteractiveInit({ args, deps, }) {
             sources: {},
         };
     }
-    // Path safety: cwd must not be unsafe (no .., not absolute). The
-    // saved config path is derived from `cwd` and `homeDir`; we never
-    // accept user-supplied paths so the input surface is fixed.
-    if (containsUnsafePathSegment(deps.cwd)) {
-        return {
-            mode: "non-interactive",
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "non-interactive-validation",
-                    status: "fail",
-                    message: `cwd contains an unsafe segment: ${deps.cwd}`,
-                },
-            ],
-            hints: ["--non-interactive requires a safe cwd (no '..', not absolute)."],
-            sources: {},
-        };
-    }
-    const scope = args.scope ?? "global";
-    const config = buildConfig(provider, apiUrl ?? saved_config_DEFAULT_OPENAI_URL, model);
-    // apiKey and githubApiBase were validated for presence only and
-    // intentionally dropped before reaching writeSavedConfig (S6).
-    // Note that the SavedConfig type excludes apiKey, so the writer
-    // can't accidentally persist it. See buildConfig + bundle §1.6.
-    const writeResult = await writeSavedConfig(config, {
-        homeDir: deps.homeDir,
-        cwd: deps.cwd,
-        scope,
-        force: args.force,
-        platform: deps.platform,
-        ...(deps.fsAdapter !== undefined ? { fs: deps.fsAdapter } : {}),
-        ...(deps.now !== undefined ? { now: deps.now } : {}),
-    });
-    if (!writeResult.ok) {
-        return {
-            mode: "non-interactive",
-            outcome: "error",
-            exitCode: writeResult.exitCode,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "config-atomic-write",
-                    status: "fail",
-                    message: redactSecretsInString(writeResult.message),
-                },
-            ],
-            hints: [writeResult.message],
-            sources: {},
-        };
-    }
-    // CI generation. Honors --ci flag (or --yes if auto-detected).
-    const ciGenerated = await generateCiForResult({
-        args,
-        deps,
-        fs: deps.fsAdapter ?? defaultFsAdapter,
-        packageVersion: deps.packageVersion,
-    });
+    return { apiUrl, model };
+}
+/**
+ * Build the "unsafe cwd" envelope for `runNonInteractiveInit`. The
+ * saved config path is derived from `cwd` and `homeDir`; we never
+ * accept user-supplied paths so the input surface is fixed.
+ */
+function unsafeCwdResult(cwd) {
     return {
         mode: "non-interactive",
-        outcome: "ok",
-        exitCode: 0,
-        savedConfigPath: writeResult.path,
-        savedConfigBytes: writeResult.bytes,
-        ciGenerated,
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "non-interactive-validation",
+                status: "fail",
+                message: `cwd contains an unsafe segment: ${cwd}`,
+            },
+        ],
+        hints: ["--non-interactive requires a safe cwd (no '..', not absolute)."],
+        sources: {},
+    };
+}
+/**
+ * Build the "writeSavedConfig failed" envelope for
+ * `runNonInteractiveInit`.
+ */
+function nonInteractiveWriteFail(writeResult) {
+    return {
+        mode: "non-interactive",
+        outcome: "error",
+        exitCode: writeResult.exitCode,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
         checks: [
             {
                 id: "config-atomic-write",
-                status: "ok",
-                message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+                status: "fail",
+                message: (0,saved_config/* redactSecretsInString */.$K)(writeResult.message),
             },
-            {
-                id: "config-file-mode",
-                status: deps.platform === "win32" ? "skip" : "ok",
-                message: deps.platform === "win32"
-                    ? "Windows inherits parent ACL"
-                    : "mode 0o600 verified",
-            },
-            {
-                id: "secret-redaction",
-                status: "ok",
-                message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
-            },
-            ...(ciGenerated.length > 0
-                ? [
-                    {
-                        id: "ci-generation",
-                        status: "ok",
-                        message: `generated ${ciGenerated.join(", ")} workflow`,
-                    },
-                ]
-                : []),
         ],
-        hints: [],
-        sources: {
-            provider: { source: "flag" },
-            ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" } } : {}),
-            ...(config.model !== undefined ? { model: { source: "flag" } } : {}),
-        },
+        hints: [writeResult.message],
+        sources: {},
     };
+}
+/**
+ * Build the success-checks array for `runNonInteractiveInit`. The
+ * optional CI-generation check is appended only when at least one CI
+ * target was generated.
+ */
+function nonInteractiveSuccessChecks(deps, writeResult, ciGenerated) {
+    return [
+        {
+            id: "config-atomic-write",
+            status: "ok",
+            message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+        },
+        {
+            id: "config-file-mode",
+            status: deps.platform === "win32" ? "skip" : "ok",
+            message: deps.platform === "win32"
+                ? "Windows inherits parent ACL"
+                : "mode 0o600 verified",
+        },
+        {
+            id: "secret-redaction",
+            status: "ok",
+            message: `api key placeholder: ${brand/* REDACTED_SECRET_TOKEN */.uq}`,
+        },
+        ...(ciGenerated.length > 0
+            ? [
+                {
+                    id: "ci-generation",
+                    status: "ok",
+                    message: `generated ${ciGenerated.join(", ")} workflow`,
+                },
+            ]
+            : []),
+    ];
 }
 // ---------------------------------------------------------------------------
 // Interactive path: 5-base-prompt sequence with per-branch sub-prompts.
@@ -4711,23 +8678,7 @@ async function runNonInteractiveInit({ args, deps, }) {
 async function runInteractiveInit({ args, deps, }) {
     const isTTY = deps.isTTY ?? canPromptInteractively();
     if (!isTTY) {
-        return {
-            mode: "interactive",
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "non-interactive-validation",
-                    status: "fail",
-                    message: "interactive init requires a TTY; re-run with --non-interactive",
-                },
-            ],
-            hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
-            sources: {},
-        };
+        return nottyResult();
     }
     const reader = deps.stdinReader ?? init_defaultStdinReader;
     // Q1 — scope (default global)
@@ -4741,23 +8692,7 @@ async function runInteractiveInit({ args, deps, }) {
         return abortedResult(args.mode);
     const provider = parseProviderChoice(providerAnswer);
     if (provider === null) {
-        return {
-            mode: args.mode,
-            outcome: "error",
-            exitCode: 2,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "provider-choice",
-                    status: "fail",
-                    message: `unknown provider family: ${redactSecretsInString(providerAnswer)}`,
-                },
-            ],
-            hints: ["expected one of: openai-compatible, anthropic, copilot"],
-            sources: {},
-        };
+        return unknownProviderResult(providerAnswer, args.mode);
     }
     // Q3 — per-branch sub-prompts
     const branch = await promptBranch({ provider, env: deps.env });
@@ -4779,15 +8714,13 @@ async function runInteractiveInit({ args, deps, }) {
         return ciChoice.result;
     // Q5 — Confirm save
     const confirmAnswer = await safePrompt(reader, isTTY, "? Save these settings? [y/N]: ", "");
-    if (confirmAnswer === null)
-        return abortedResult(args.mode);
-    if (!/^y(es)?$/i.test(confirmAnswer.trim())) {
+    if (!isSaveConfirmed(confirmAnswer)) {
         return abortedResult(args.mode);
     }
     // Persist. The apiKey from branch.apiKey is consumed for the live
     // HEAD probe ONLY; never passed to writeSavedConfig.
-    const config = buildConfig(provider, branch.apiUrl ?? saved_config_DEFAULT_OPENAI_URL, branch.model);
-    const writeResult = await writeSavedConfig(config, {
+    const config = buildConfig(provider, branch.apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, branch.model);
+    const writeResult = await (0,saved_config/* writeSavedConfig */.rn)(config, {
         homeDir: deps.homeDir,
         cwd: deps.cwd,
         scope: scopeChoice,
@@ -4797,23 +8730,7 @@ async function runInteractiveInit({ args, deps, }) {
         ...(deps.now !== undefined ? { now: deps.now } : {}),
     });
     if (!writeResult.ok) {
-        return {
-            mode: args.mode,
-            outcome: "error",
-            exitCode: writeResult.exitCode,
-            savedConfigPath: null,
-            savedConfigBytes: null,
-            ciGenerated: [],
-            checks: [
-                {
-                    id: "config-atomic-write",
-                    status: "fail",
-                    message: redactSecretsInString(writeResult.message),
-                },
-            ],
-            hints: [writeResult.message],
-            sources: {},
-        };
+        return interactiveWriteFail(writeResult, args.mode);
     }
     return {
         mode: args.mode,
@@ -4822,44 +8739,7 @@ async function runInteractiveInit({ args, deps, }) {
         savedConfigPath: writeResult.path,
         savedConfigBytes: writeResult.bytes,
         ciGenerated: ciChoice.generated,
-        checks: [
-            {
-                id: "config-atomic-write",
-                status: "ok",
-                message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
-            },
-            {
-                id: "config-file-mode",
-                status: deps.platform === "win32" ? "skip" : "ok",
-                message: deps.platform === "win32"
-                    ? "Windows inherits parent ACL"
-                    : "mode 0o600 verified",
-            },
-            {
-                id: "secret-redaction",
-                status: "ok",
-                message: `api key placeholder: ${REDACTED_SECRET_TOKEN}`,
-            },
-            {
-                id: "provider-choice",
-                status: "ok",
-                message: `selected provider: ${provider}`,
-            },
-            {
-                id: "scope-choice",
-                status: "ok",
-                message: `selected scope: ${scopeChoice}`,
-            },
-            ...(ciChoice.generated.length > 0
-                ? [
-                    {
-                        id: "ci-generation",
-                        status: "ok",
-                        message: `generated ${ciChoice.generated.join(", ")} workflow`,
-                    },
-                ]
-                : []),
-        ],
+        checks: interactiveSuccessChecks(deps, writeResult, provider, scopeChoice, ciChoice.generated),
         hints: [],
         sources: {
             provider: { source: "default" },
@@ -4867,6 +8747,130 @@ async function runInteractiveInit({ args, deps, }) {
             ...(config.model !== undefined ? { model: { source: "default" } } : {}),
         },
     };
+}
+/**
+ * Build the "interactive requires a TTY" envelope for
+ * `runInteractiveInit`.
+ */
+function nottyResult() {
+    return {
+        mode: "interactive",
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "non-interactive-validation",
+                status: "fail",
+                message: "interactive init requires a TTY; re-run with --non-interactive",
+            },
+        ],
+        hints: ["--non-interactive requires --provider; e.g. --provider openai-compatible"],
+        sources: {},
+    };
+}
+/**
+ * Build the "unknown provider family" envelope for
+ * `runInteractiveInit` (Q2 parse failure).
+ */
+function unknownProviderResult(providerAnswer, mode) {
+    return {
+        mode,
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "provider-choice",
+                status: "fail",
+                message: `unknown provider family: ${(0,saved_config/* redactSecretsInString */.$K)(providerAnswer)}`,
+            },
+        ],
+        hints: ["expected one of: openai-compatible, anthropic, copilot"],
+        sources: {},
+    };
+}
+/**
+ * Q5 — confirm-save prompt parse. True when the operator typed `y`
+ * or `yes` (case-insensitive); null (EOF/timeout) and any other
+ * input are treated as a decline. Returns `false` on null so the
+ * caller maps it to `abortedResult`.
+ */
+function isSaveConfirmed(confirmAnswer) {
+    if (confirmAnswer === null)
+        return false;
+    return /^y(es)?$/i.test(confirmAnswer.trim());
+}
+/**
+ * Build the "writeSavedConfig failed" envelope for `runInteractiveInit`.
+ */
+function interactiveWriteFail(writeResult, mode) {
+    return {
+        mode,
+        outcome: "error",
+        exitCode: writeResult.exitCode,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [
+            {
+                id: "config-atomic-write",
+                status: "fail",
+                message: (0,saved_config/* redactSecretsInString */.$K)(writeResult.message),
+            },
+        ],
+        hints: [writeResult.message],
+        sources: {},
+    };
+}
+/**
+ * Build the success-checks array for `runInteractiveInit`. The
+ * optional CI-generation check is appended only when at least one
+ * CI target was generated.
+ */
+function interactiveSuccessChecks(deps, writeResult, provider, scopeChoice, ciGenerated) {
+    return [
+        {
+            id: "config-atomic-write",
+            status: "ok",
+            message: `wrote saved config (${writeResult.bytes} bytes) at ${writeResult.path}`,
+        },
+        {
+            id: "config-file-mode",
+            status: deps.platform === "win32" ? "skip" : "ok",
+            message: deps.platform === "win32"
+                ? "Windows inherits parent ACL"
+                : "mode 0o600 verified",
+        },
+        {
+            id: "secret-redaction",
+            status: "ok",
+            message: `api key placeholder: ${brand/* REDACTED_SECRET_TOKEN */.uq}`,
+        },
+        {
+            id: "provider-choice",
+            status: "ok",
+            message: `selected provider: ${provider}`,
+        },
+        {
+            id: "scope-choice",
+            status: "ok",
+            message: `selected scope: ${scopeChoice}`,
+        },
+        ...(ciGenerated.length > 0
+            ? [
+                {
+                    id: "ci-generation",
+                    status: "ok",
+                    message: `generated ${ciGenerated.join(", ")} workflow`,
+                },
+            ]
+            : []),
+    ];
 }
 /**
  * Build the ordered list of sub-prompts for `provider`. The `env`
@@ -4887,8 +8891,8 @@ function buildPerBranchPrompts(provider, _env) {
                 {
                     label: OPENAI_BASE_URL_LABEL,
                     envVarName: "UMACTUALLY_API_URL",
-                    placeholder: saved_config_DEFAULT_OPENAI_URL,
-                    default: saved_config_DEFAULT_OPENAI_URL,
+                    placeholder: saved_config/* DEFAULT_OPENAI_URL */.Nx,
+                    default: saved_config/* DEFAULT_OPENAI_URL */.Nx,
                 },
                 {
                     label: API_KEY_LABEL,
@@ -4962,7 +8966,7 @@ async function promptBranch(input) {
     if (provider === "anthropic") {
         return {
             outcome: "ok",
-            apiUrl: saved_config_DEFAULT_ANTHROPIC_URL,
+            apiUrl: saved_config/* DEFAULT_ANTHROPIC_URL */.Tq,
             apiKey: collected["UMACTUALLY_API_KEY"],
             githubApiBase: undefined,
             model,
@@ -4979,7 +8983,7 @@ async function promptBranch(input) {
 }
 async function promptCi(input) {
     const { args, deps, reader, isTTY, packageVersion } = input;
-    const fs = deps.fsAdapter ?? defaultFsAdapter;
+    const fs = deps.fsAdapter ?? fs_atomic/* defaultFsAdapter */.aO;
     let chosen = "none";
     if (args.ci !== undefined) {
         chosen = args.ci === "auto" ? detectCiTargetHelper(fs) ?? "none" : args.ci;
@@ -5029,7 +9033,7 @@ async function promptCi(input) {
                     {
                         id: "ci-generation",
                         status: "fail",
-                        message: redactSecretsInString(gen.message),
+                        message: (0,saved_config/* redactSecretsInString */.$K)(gen.message),
                     },
                 ],
                 hints: [gen.message],
@@ -5096,7 +9100,7 @@ function parseProviderChoice(answer) {
  */
 function containsUnsafePathSegment(p) {
     const segments = p.split(/[\\/]/);
-    if (segments.some((s) => s === ".."))
+    if (segments.includes(".."))
         return true;
     try {
         const canonicalCwd = (0,external_node_fs_.realpathSync)(p);
@@ -5113,9 +9117,9 @@ function containsUnsafePathSegment(p) {
  * is truly optional, and the runtime resolves it at review time.
  */
 function buildConfig(provider, apiUrl, model) {
-    const defaultForProvider = provider === "anthropic" ? saved_config_DEFAULT_ANTHROPIC_URL : saved_config_DEFAULT_OPENAI_URL;
+    const defaultForProvider = provider === "anthropic" ? saved_config/* DEFAULT_ANTHROPIC_URL */.Tq : saved_config/* DEFAULT_OPENAI_URL */.Nx;
     const base = {
-        schemaVersion: SAVED_CONFIG_SCHEMA_VERSION,
+        schemaVersion: saved_config/* SAVED_CONFIG_SCHEMA_VERSION */.uy,
         provider,
     };
     const includeApiUrl = apiUrl !== defaultForProvider;
@@ -5140,16 +9144,17 @@ function detectCiTargetHelper(fs) {
     return detectCiTarget({ exists: (p) => fs.exists(p) });
 }
 async function generateCiForResult(input) {
-    if (input.args.ci === "github" || input.args.ci === "azure") {
+    const ci = input.args.ci;
+    if (isExplicitCiTarget(ci)) {
         const r = await generateCi({
-            target: input.args.ci,
+            target: ci,
             fs: input.fs,
             deps: input.deps,
             packageVersion: input.packageVersion,
         });
-        return r.ok ? [input.args.ci] : [];
+        return r.ok ? [ci] : [];
     }
-    if (input.args.ci === "auto") {
+    if (ci === "auto") {
         const target = detectCiTargetHelper(input.fs);
         if (target === null)
             return [];
@@ -5162,6 +9167,15 @@ async function generateCiForResult(input) {
         return r.ok ? [target] : [];
     }
     return [];
+}
+/**
+ * True when `ci` is one of the explicit, operator-selected CI targets
+ * (`github` / `azure`) — i.e. NOT the `auto` (auto-detect) or `none`
+ * (decline) sentinels. Acts as a TypeScript type guard so the caller
+ * can pass the narrowed value to functions expecting `CiTarget`.
+ */
+function isExplicitCiTarget(ci) {
+    return ci === "github" || ci === "azure";
 }
 /**
  * Generate the canonical CI workflow file. Refuses to clobber an
@@ -5224,7 +9238,7 @@ async function generateCi(input) {
  */
 function joinRelativeCwd(cwd, relative) {
     const segments = relative.split(/[\\/]/).filter((s) => s.length > 0 && s !== ".");
-    if (segments.some((s) => s === "..")) {
+    if (segments.includes("..")) {
         throw new Error(`unsafe relative path: ${relative}`);
     }
     const targetPath = `${cwd.replace(/[\\/]+$/, "")}/${segments.join("/")}`;
@@ -8140,7 +12154,7 @@ async function runConfigFlow() {
     // schema mismatch) via the clack `stream.warn` so it appears as a
     // proper warning block rather than as part of the config block.
     if (saved.warning !== null) {
-        stream.warn(saved.warning);
+        await stream.warn(saved.warning);
     }
     // Step 2: display the saved config OR the "no saved config" hint.
     if (saved.config !== null) {
@@ -8292,7 +12306,7 @@ const REVIEW_MARKER = "<!-- umactually -->";
  */
 const MANIFEST_SCHEMA = "umactually/v1";
 /** Opening HTML-comment prefix of the manifest hidden inside each UmActually review comment. */
-const MANIFEST_MARKER_PREFIX = `<!-- ${BRAND}:manifest `;
+const MANIFEST_MARKER_PREFIX = `<!-- ${brand/* BRAND */.qt}:manifest `;
 /** Closing HTML-comment suffix of the manifest hidden inside each UmActually review comment. */
 const MANIFEST_MARKER_SUFFIX = " -->";
 /**
@@ -8495,7 +12509,7 @@ function isSafeInteger(value) {
  * Replaces the byte-identical local copies in `src/provider/provider-parse.ts`
  * and `src/provider/copilot-token.ts` (one definition, many call sites).
  */
-function readStringField(record, key) {
+function json_guards_readStringField(record, key) {
     const value = record[key];
     return typeof value === "string" ? value : null;
 }
@@ -9262,7 +13276,7 @@ function extractTextPayload(endpoint, rawText) {
     const parsed = tryParseJson(rawText);
     if (parsed !== undefined && json_guards_isRecord(parsed)) {
         if (endpoint === "responses") {
-            const direct = readStringField(parsed, "output_text");
+            const direct = json_guards_readStringField(parsed, "output_text");
             if (direct !== null && direct.length > 0) {
                 return direct;
             }
@@ -9311,7 +13325,7 @@ function extractTextPayload(endpoint, rawText) {
                     const message = readRecordField(choice, "message");
                     if (message === null)
                         continue;
-                    const content = readStringField(message, "content");
+                    const content = json_guards_readStringField(message, "content");
                     if (content !== null && content.length > 0) {
                         return content;
                     }
@@ -9348,8 +13362,8 @@ function parseReviewPayload(text, context) {
     if (!json_guards_isRecord(candidate)) {
         return null;
     }
-    const summary = readStringField(candidate, "summary") ?? "";
-    const verdict = readStringField(candidate, "verdict") ?? "";
+    const summary = json_guards_readStringField(candidate, "summary") ?? "";
+    const verdict = json_guards_readStringField(candidate, "verdict") ?? "";
     const comments = readCommentArray(candidate["comments"], context);
     const suppressed_comments = readCommentArray(candidate["suppressed_comments"], context);
     // Soft parse-fail detector (CLARITY-10b): some providers/models return
@@ -9771,6 +13785,47 @@ function extractLastReviewDraftFromReasoning(output) {
     }
     return lastDraft;
 }
+/** Defensively parse a raw suggestion object from provider JSON. Returns undefined on any structural issue. */
+function parseRawSuggestion(value) {
+    if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+        return {};
+    }
+    const obj = value;
+    const replacement = obj["replacement"];
+    const originalTextHash = obj["originalTextHash"];
+    const endLine = obj["endLine"];
+    if (typeof replacement !== "string" || typeof originalTextHash !== "string") {
+        return {};
+    }
+    const raw = {
+        replacement,
+        originalTextHash,
+        ...(typeof endLine === "number" ? { endLine } : {}),
+    };
+    return { rawSuggestion: raw };
+}
+/** Defensively parse a raw remediation object from provider JSON. Returns undefined on any structural issue. */
+function parseRawRemediation(value) {
+    if (value === undefined || value === null || typeof value !== "object" || Array.isArray(value)) {
+        return {};
+    }
+    const obj = value;
+    const objective = obj["objective"];
+    const targetPath = obj["targetPath"];
+    const targetAnchor = obj["targetAnchor"];
+    if (typeof objective !== "string" || typeof targetPath !== "string" || typeof targetAnchor !== "string") {
+        return {};
+    }
+    const constraints = Array.isArray(obj["constraints"])
+        ? obj["constraints"].filter((v) => typeof v === "string")
+        : [];
+    const verificationCommands = Array.isArray(obj["verificationCommands"])
+        ? obj["verificationCommands"].filter((v) => typeof v === "string")
+        : [];
+    return {
+        rawRemediation: { objective, targetPath, targetAnchor, constraints, verificationCommands },
+    };
+}
 function readCommentArray(value, context) {
     if (!isUnknownArray(value)) {
         return [];
@@ -9788,7 +13843,7 @@ function readCommentArray(value, context) {
         const path = entry["path"];
         const line = readSafeIntegerField(entry, "line");
         if (typeof path === "string" && line !== null) {
-            const body = readStringField(entry, "body") ?? "";
+            const body = json_guards_readStringField(entry, "body") ?? "";
             comments.push({
                 path,
                 line,
@@ -9801,20 +13856,20 @@ function readCommentArray(value, context) {
                 // The sink + providerName + commentIndex options let the caller
                 // (live-provider.ts via the ambient sink; tests via explicit
                 // options) observe malformed severity values per-comment.
-                severity: normalizeProviderSeverity(readStringField(entry, "severity"), body, 
+                severity: normalizeProviderSeverity(json_guards_readStringField(entry, "severity"), body, 
                 // exactOptionalPropertyTypes: omit undefined keys so the call
                 // is assignable to the strict optional types in
                 // `normalizeProviderSeverity`'s third parameter.
                 effectiveSink !== undefined || effectiveProviderName !== undefined
                     ? {
-                        ...(effectiveSink !== undefined ? { sink: effectiveSink } : {}),
-                        ...(effectiveProviderName !== undefined
-                            ? { providerName: effectiveProviderName }
-                            : {}),
+                        ...(effectiveSink !== undefined && { sink: effectiveSink }),
+                        ...(effectiveProviderName !== undefined && { providerName: effectiveProviderName }),
                         commentIndex: index,
                     }
                     : { commentIndex: index }),
-                category: readStringField(entry, "category") ?? "general",
+                category: json_guards_readStringField(entry, "category") ?? "general",
+                ...(parseRawSuggestion(entry["suggestion"]) ?? {}),
+                ...(parseRawRemediation(entry["remediation"]) ?? {}),
             });
         }
     });
@@ -10012,7 +14067,7 @@ function tryExtractSse(rawText) {
         // the canonical OpenAI Responses API shape.
         const wrappedResponse = readRecordField(parsed, "response");
         if (wrappedResponse !== null) {
-            const eventType = readStringField(parsed, "type");
+            const eventType = json_guards_readStringField(parsed, "type");
             // Skip reasoning-text deltas entirely. Some providers emit
             // `response.reasoning_text.delta` events
             // alongside the final answer. Concat-ing them into `fragments`
@@ -10026,7 +14081,7 @@ function tryExtractSse(rawText) {
             }
             if (eventType === "response.completed" || eventType === "response.done") {
                 // Final event: prefer the full response payload if it has output_text.
-                const outText = readStringField(wrappedResponse, "output_text");
+                const outText = json_guards_readStringField(wrappedResponse, "output_text");
                 if (outText !== null && outText.length > 0) {
                     completedResponseText = outText;
                 }
@@ -10043,7 +14098,7 @@ function tryExtractSse(rawText) {
                 continue;
             }
             if (eventType === "response.output_text.delta" || eventType === "response.delta") {
-                const deltaText = readStringField(parsed, "delta");
+                const deltaText = json_guards_readStringField(parsed, "delta");
                 if (deltaText !== null) {
                     fragments.push(deltaText);
                 }
@@ -10056,7 +14111,7 @@ function tryExtractSse(rawText) {
             for (const choice of choices) {
                 const delta = readRecordField(choice, "delta");
                 if (delta !== null) {
-                    const content = readStringField(delta, "content");
+                    const content = json_guards_readStringField(delta, "content");
                     if (content !== null) {
                         fragments.push(content);
                     }
@@ -10067,11 +14122,11 @@ function tryExtractSse(rawText) {
         // /responses streaming (alternative non-OpenAI variant): top-level delta
         // string directly on the JSON object. Skip reasoning deltas — they
         // are chain-of-thought prose, not part of the final review payload.
-        const topLevelType = readStringField(parsed, "type");
+        const topLevelType = json_guards_readStringField(parsed, "type");
         if (typeof topLevelType === "string" && topLevelType.includes("reasoning")) {
             continue;
         }
-        const deltaText = readStringField(parsed, "delta");
+        const deltaText = json_guards_readStringField(parsed, "delta");
         if (deltaText !== null) {
             fragments.push(deltaText);
         }
@@ -10229,15 +14284,15 @@ function checkErrorEnvelope(parsed) {
     // Single `error` object (RFC 7807 / common shape).
     const errorField = parsed["error"];
     if (json_guards_isRecord(errorField)) {
-        const message = readStringField(errorField, "message") ??
-            readStringField(errorField, "type") ??
-            readStringField(errorField, "code") ??
+        const message = json_guards_readStringField(errorField, "message") ??
+            json_guards_readStringField(errorField, "type") ??
+            json_guards_readStringField(errorField, "code") ??
             "Provider returned an error envelope.";
         return {
             kind: "error-envelope",
             message,
-            ...(readStringField(errorField, "type") !== null
-                ? { detail: `type: ${readStringField(errorField, "type")}` }
+            ...(json_guards_readStringField(errorField, "type") !== null
+                ? { detail: `type: ${json_guards_readStringField(errorField, "type")}` }
                 : {}),
         };
     }
@@ -10246,9 +14301,9 @@ function checkErrorEnvelope(parsed) {
     if (isUnknownArray(errorsField) && errorsField.length > 0) {
         const first = errorsField[0];
         if (json_guards_isRecord(first)) {
-            const message = readStringField(first, "message") ??
-                readStringField(first, "detail") ??
-                readStringField(first, "title") ??
+            const message = json_guards_readStringField(first, "message") ??
+                json_guards_readStringField(first, "detail") ??
+                json_guards_readStringField(first, "title") ??
                 "Provider returned an errors array.";
             return {
                 kind: "error-envelope",
@@ -10324,11 +14379,11 @@ function readUsageBlock(parsed) {
  * responses that DO contain a valid review.
  */
 function checkHasReviewContent(parsed) {
-    const summary = readStringField(parsed, "summary");
+    const summary = json_guards_readStringField(parsed, "summary");
     if (summary !== null && summary.length > 0) {
         return true;
     }
-    const verdict = readStringField(parsed, "verdict");
+    const verdict = json_guards_readStringField(parsed, "verdict");
     if (verdict !== null && verdict.length > 0) {
         return true;
     }
@@ -10367,120 +14422,6 @@ function checkErrorDocUrl(rawText) {
         };
     }
     return null;
-}
-
-;// CONCATENATED MODULE: ./src/provider/provider-error.ts
-class ProviderError extends Error {
-    code;
-    endpoint;
-    status;
-    requestId;
-    name = "ProviderError";
-    /**
-     * Raw provider response body for diagnostic errors (currently only
-     * `code === "parse"` carries it). Surfaced to the PR-level summary card
-     * so reviewers can see exactly what the model returned. `undefined` for
-     * non-parse errors so the constructor signature stays compatible.
-     */
-    rawText;
-    /**
-     * True when the parse error was caused by a truncated SSE stream —
-     * the provider's response ended before the model emitted a
-     * `response.completed` (or equivalent) event. Distinct from a
-     * completed-but-malformed response (where the stream ended cleanly
-     * but the JSON itself was structurally wrong). Surfaced in the
-     * parse-fail diagnostic so reviewers can tell "raise
-     * --max-output-tokens and retry" apart from "model returned bad JSON".
-     * `undefined` for non-parse errors.
-     */
-    truncated;
-    /**
-     * Token usage reported by the provider in the `response.completed`
-     * event's `usage` block. Surfaced by the headroom-warning check so
-     * operators can see whether the model filled its token budget
-     * (explains the truncated-stream case). `undefined` when the
-     * provider didn't emit usage data or the stream was truncated
-     * before the completed event.
-     */
-    usage;
-    /**
-     * Structured details when `code === "provider_error"`. Carries the
-     * detection signal kind (zero-usage, error-envelope, error-doc-url)
-     * and a human-readable message so downstream layers can surface
-     * actionable remediation advice. `undefined` for all other error
-     * codes.
-     */
-    providerErrorDetails;
-    constructor(code, endpoint, status, requestId, message, options) {
-        super(message, options);
-        this.code = code;
-        this.endpoint = endpoint;
-        this.status = status;
-        this.requestId = requestId;
-        this.rawText = options?.rawText;
-        this.truncated = options?.truncated;
-        this.usage = options?.usage;
-        this.providerErrorDetails = options?.providerErrorDetails;
-    }
-}
-/**
- * Routing-level failure predicates intentionally diverge by boundary:
- *
- * - URL-candidate fallback stays inside one OpenAI-compatible provider
- *   client. HTTP 404 and 400 can both mean the operator's base URL shape
- *   missed the provider's route, so the client may advance to the next
- *   resolved candidate without changing wire protocol.
- * - Cross-protocol fallback crosses from one provider protocol family to
- *   another. It fires on 404 only because the wire shape genuinely does
- *   not have a route for this URL at this provider. We intentionally
- *   exclude HTTP 400 even though URL-candidate fallback accepts it.
- *
- * 400 typically signals a payload-level error (malformed body, missing
- * required field, unsupported `max_tokens` value, content-policy
- * rejection). Firing cross-protocol fallback on a payload-400 would silently mask wire-shape bugs:
- * an Anthropic call that 400s on an
- * unsupported parameter would retry against OpenAI's wire shape (different
- * body layout) and possibly succeed, with the operator seeing a successful
- * review attributed to the OTHER protocol without ever knowing their
- * original call was malformed.
- */
-function isRoutableFailureForUrlCandidate(error) {
-    return error.status === 404 || error.status === 400;
-}
-function isRoutableFailureForCrossProtocol(error) {
-    return error.status === 404;
-}
-function sanitizeHttpStatus(endpoint, status) {
-    return `Provider ${endpoint} responded with HTTP ${status}.`;
-}
-function sanitizeMessage(error, fallback) {
-    if (error instanceof Error) {
-        const safe = error.message.replace(/\s+/g, " ").trim();
-        if (safe.length === 0) {
-            return fallback;
-        }
-        if (safe.length > 160) {
-            return `${safe.slice(0, 157)}...`;
-        }
-        return safe;
-    }
-    return fallback;
-}
-function isAbortError(error) {
-    if (error instanceof Error) {
-        if (error.name === "AbortError" || error.name === "TimeoutError") {
-            return true;
-        }
-    }
-    const code = readErrorCode(error);
-    return code === "ABORT_ERR" || code === "23";
-}
-function readErrorCode(error) {
-    if (typeof error !== "object" || error === null) {
-        return null;
-    }
-    const code = error.code;
-    return typeof code === "string" ? code : null;
 }
 
 ;// CONCATENATED MODULE: ./src/util/async.ts
@@ -10764,6 +14705,7 @@ const tokenCache = new Map();
 async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fetchImpl, endpoint, requestId) {
     let response;
     try {
+        assertCopilotTokenEndpointAllowed(tokenUrl);
         response = await fetchImpl(tokenUrl, {
             method: "GET",
             headers: tokenHeaders,
@@ -10804,10 +14746,10 @@ async function fetchAndCacheSessionToken(githubToken, tokenUrl, tokenHeaders, fe
             error: new ProviderError("parse", endpoint, response.status, requestId, "Copilot session token response was not a JSON object."),
         };
     }
-    const token = readStringField(envelope, "token");
+    const token = json_guards_readStringField(envelope, "token");
     const expiresAt = readSafeIntegerField(envelope, "expires_at");
     const endpoints = readRecordField(envelope, "endpoints");
-    const chatApiBase = endpoints === null ? null : readStringField(endpoints, "api");
+    const chatApiBase = endpoints === null ? null : json_guards_readStringField(endpoints, "api");
     if (token === null || expiresAt === null || chatApiBase === null) {
         return {
             ok: false,
@@ -10836,432 +14778,29 @@ function clearCopilotTokenCache() {
 function buildCacheKey(githubToken) {
     return githubToken;
 }
-
-;// CONCATENATED MODULE: ./src/util/url.ts
-/** Join provider base URLs consistently; eliminates duplicated slash trimming across provider clients. */
-function joinUrl(baseUrl, path) {
-    const trimmedBase = url_stripTrailingSlash(baseUrl);
-    const prefixedPath = path.startsWith("/") ? path : `/${path}`;
-    return `${trimmedBase}${prefixedPath}`;
-}
 /**
- * Resolve a provider's `baseUrl` down to its origin (scheme + host + port),
- * then append a default API prefix. This makes the action robust against
- * any operator-supplied path: no matter what the user puts after the host
- * (`/v1`, `/openai`, `/anthropic`, `/api/v2`, etc.), the action always
- * targets the canonical OpenAI-style path on the host root.
- *
- * Goal: `${result}/responses` and `${result}/chat/completions` must
- * reach the provider regardless of what path the operator typed in
- * `UMACTUALLY_API_URL`. The provider is responsible for serving those
- * routes at the host root + `/v1/...`.
- *
- * Examples (defaultPrefix = `/v1`):
- *   - `https://api.example.com`           → `https://api.example.com/v1`
- *   - `https://api.example.com/`          → `https://api.example.com/v1`
- *   - `https://api.example.com/v1`        → `https://api.example.com/v1`
- *   - `https://api.example.com/openai`    → `https://api.example.com/v1`
- *   - `https://api.example.com/anthropic` → `https://api.example.com/v1`
- *   - `https://api.example.com/api/v2`    → `https://api.example.com/v1`
- *   - `https://api.example.com/v1/openai` → `https://api.example.com/v1`
- *
- * The path is **always** discarded. This is intentional: the action
- * calls OpenAI-style routes (`/responses`, `/chat/completions`),
- * and the operator's path is treated as decorative noise rather than
- * a routing hint. The fix trades a small amount of flexibility (no
- * custom namespace support) for a large amount of robustness — the
- * action works the same regardless of what path the operator typed.
- *
- * If an operator genuinely needs a custom namespace, they can use
- * the `--provider copilot` path (which uses GitHub's API directly)
- * or the `copilot` provider family which has its own routing.
- *
- * Detection uses a minimal URL parse. The fallback substring path
- * handles unencoded spaces and other URL-parse failures.
- *
- * @param baseUrl       Operator-supplied base URL.
- * @param defaultPrefix Default prefix to append to the origin.
- *                      Default `/v1`.
+ * Reject an obviously unsafe token endpoint before the network call.
+ * Catches the misconfiguration where a GHES-issued token is sent to
+ * a github.com endpoint (or vice versa): HTTPS-only, no userinfo,
+ * no query/fragment.
  */
-function resolveProviderBaseUrl(baseUrl, defaultPrefix = "/v1") {
-    const origin = extractOrigin(baseUrl);
-    return `${origin}${defaultPrefix}`;
-}
-/**
- * Return the origin (scheme + host + port) of a URL, stripping any path,
- * query, and fragment. Used by `resolveProviderBaseUrl` to normalize
- * operator-supplied URLs to their canonical host root.
- *
- * Returns the input unchanged if it cannot be parsed as a URL — this
- * preserves the original string for callers that want a best-effort
- * fallback. Callers that need a strict guarantee should pass a
- * well-formed URL.
- */
-function extractOrigin(baseUrl) {
+function assertCopilotTokenEndpointAllowed(tokenUrl) {
+    let parsed;
     try {
-        return new URL(baseUrl).origin;
+        parsed = new URL(tokenUrl);
     }
     catch {
-        const schemeSep = baseUrl.indexOf("://");
-        if (schemeSep === -1) {
-            const firstSlash = baseUrl.indexOf("/");
-            return firstSlash === -1 ? baseUrl : baseUrl.slice(0, firstSlash);
-        }
-        const sepLen = 3; // "://" length
-        const afterScheme = baseUrl.slice(schemeSep + sepLen);
-        const firstSlash = afterScheme.indexOf("/");
-        const authority = firstSlash === -1 ? afterScheme : afterScheme.slice(0, firstSlash);
-        return baseUrl.slice(0, schemeSep + sepLen) + authority;
+        throw new ProviderError("parse", "chat", null, "no-request-id", `Copilot token endpoint URL is not parseable: '${tokenUrl}'.`);
     }
-}
-/**
- * Extract the hostname from a URL string. Returns null when the
- * input is empty, malformed, or a bare string without a scheme
- * separator. The caller is expected to fall back to a sensible
- * default when null is returned.
- *
- * Why hostname-only: substring matching on the full URL is too
- * loose. A URL like `https://example.com/provider-router` could
- * falsely match a provider keyword in the path. The hostname extract
- * prevents path text from influencing hostname-based decisions.
- *
- * The returned hostname is always lowercased so callers can compare
- * directly against lowercase host keys. `URL.hostname` is already
- * lowercased per the WHATWG URL spec; the manual fallback path
- * (for scheme-less URLs) explicitly lowercases to keep the
- * case-insensitive match consistent regardless of whether the
- * URL had a parseable scheme.
- *
- * Examples:
- *   - `https://api.example.com/v1`        → `api.example.com`
- *   - `ROUTER.EXAMPLE.COM`                → `router.example.com`
- *   - `localhost:8080`                    → null (`new URL("localhost:8080")`
- *     parses with empty hostname because `localhost` is not a
- *     special scheme; the function returns null for empty hosts)
- *   - `` (empty string)                   → null
- */
-function extractHostname(baseUrl) {
-    const trimmed = baseUrl.trim();
-    if (trimmed.length === 0)
-        return null;
-    let host;
-    try {
-        host = new URL(trimmed).hostname;
+    if (parsed.protocol !== "https:") {
+        throw new ProviderError("parse", "chat", null, "no-request-id", `Copilot token endpoint must use HTTPS (got '${parsed.protocol}'); refusing to send the GitHub token over an insecure channel.`);
     }
-    catch {
-        // Fallback: scheme-less URLs (`ROUTER.EXAMPLE.COM`, `localhost:8080`)
-        // don't parse with `new URL()`. Strip the scheme manually, then
-        // read up to the first `/` or `:`.
-        const schemeSep = trimmed.indexOf("://");
-        const afterScheme = schemeSep === -1 ? trimmed : trimmed.slice(schemeSep + 3);
-        const firstSlash = afterScheme.indexOf("/");
-        const firstColon = afterScheme.indexOf(":");
-        const stop = firstSlash === -1 ? afterScheme.length : firstSlash;
-        host = firstColon === -1 || firstColon > stop
-            ? afterScheme.slice(0, stop)
-            : afterScheme.slice(0, firstColon);
+    if (parsed.username.length > 0 || parsed.password.length > 0) {
+        throw new ProviderError("parse", "chat", null, "no-request-id", "Copilot token endpoint must NOT carry userinfo; refusing to embed credentials in the URL.");
     }
-    return host.length > 0 ? host.toLowerCase() : null;
-}
-/**
- * Return the ORDERED list of base URL candidates to try when calling
- * the openai-compatible provider. The first candidate is the
- * operator-supplied URL as-pasted (after trimming trailing slashes) —
- * we always respect what the operator typed. Subsequent candidates
- * are progressively more "normalized" forms: first the origin with
- * the default prefix prepended, then the origin alone (rare —
- * only useful if the provider serves routes at the root with no
- * prefix).
- *
- * The list is de-duplicated so the caller doesn't try the same URL
- * twice. The provider tries each candidate in order; if a candidate
- * 404s on both `/responses` and `/chat/completions`, the next
- * candidate is tried. The first candidate that returns a non-404
- * response wins.
- *
- * This is the "robust to any URL shape" contract: no matter what
- * the operator types, we find a working endpoint. The order is
- * important — the operator's URL comes first so the wire path
- * matches their intent whenever possible.
- *
- * Examples (defaultPrefix = `/v1`):
- *   - `https://api.example.com` →
- *       [`https://api.example.com`,
- *        `https://api.example.com/v1`]
- *   - `https://api.example.com/v1` →
- *       [`https://api.example.com/v1`,
- *        `https://api.example.com/v1`]  (de-duplicated)
- *   - `https://api.example.com/anthropic` →
- *       [`https://api.example.com/anthropic`,
- *        `https://api.example.com/v1`]
- *   - `https://api.example.com/api/v2` →
- *       [`https://api.example.com/api/v2`,
- *        `https://api.example.com/v1`]
- *
- * The fallback candidate (origin + default prefix) is included even
- * when the operator's URL is a bare host, so a single candidate is
- * tried twice (de-duplicated to one). This keeps the contract
- * uniform: callers always iterate a list, no special-casing.
- */
-function resolveProviderBaseUrlCandidates(baseUrl, defaultPrefix = "/v1") {
-    const pasted = url_stripTrailingSlash(baseUrl);
-    const normalized = resolveProviderBaseUrl(baseUrl, defaultPrefix);
-    if (pasted === normalized) {
-        return [pasted];
+    if (parsed.search.length > 0 || parsed.hash.length > 0) {
+        throw new ProviderError("parse", "chat", null, "no-request-id", "Copilot token endpoint must NOT carry query strings or fragments.");
     }
-    return [pasted, normalized];
-}
-/**
- * Resolve the Anthropic Messages API URL from the operator-supplied base URL.
- *
- * Mirrors the OFFICIAL @anthropic-ai/sdk convention (Claude Code's
- * `ANTHROPIC_BASE_URL=https://api.anthropic.com` becomes
- * `POST https://api.anthropic.com/v1/messages`) and the documented
- * fix in https://github.com/xemantic/anthropic-sdk-kotlin/pull/145 —
- * which notes that previously "client.post('/v1/messages') replaced
- * any path on a configured baseUrl, breaking Anthropic-compatible
- * providers whose endpoints live under a path prefix."
- *
- * Anthropic-compatible gateways commonly mount the protocol under a
- * path prefix. For example:
- *
- *   `--api-url https://gateway.example.com/llm/anthropic` →
- *   `POST https://gateway.example.com/llm/anthropic/v1/messages`
- *
- * NOT `https://gateway.example.com/v1/messages`. The path on the
- * operator's URL is real routing, not decorative noise.
- *
- * Behavior:
- *
- *   - Parse the input as a URL and split out origin / path / query /
- *     fragment via the WHATWG URL parser. Query string and fragment
- *     are intentionally dropped — they don't address `/v1/messages`
- *     at any known Anthropic-protocol gateway, and passing them
- *     through would smuggle the endpoint into the query segment
- *     (`.../v1?token=abc/v1/messages`), an invalid URL that fires
- *     against a different route.
- *   - Trim trailing slashes from the resulting path.
- *   - If the path already ends in `/v1/messages`, return as-is
- *     (operator pre-appended; idempotent).
- *   - If it ends in `/v1`, append `/messages` (don't double-`/v1` —
- *     matches the SDK default of `https://api.anthropic.com/v1`).
- *   - Otherwise, append `/v1/messages` to the existing path (path
- *     prefix is preserved).
- *   - On URL-parse failure (operator supplied something that isn't a
- *     valid URL), fall back to a trailing-slash strip + naive
- *     concatenation — preserves the original string when the WHATWG
- *     parser can't decode it but still drops the function rather
- *     than throwing.
- *
- * Examples:
- *
- *   - `https://api.anthropic.com`                        → `https://api.anthropic.com/v1/messages`
- *   - `https://api.anthropic.com/v1`                     → `https://api.anthropic.com/v1/messages`
- *   - `https://api.anthropic.com/v1/`                    → `https://api.anthropic.com/v1/messages`
- *   - `https://gateway.example.com/anthropic`            → `https://gateway.example.com/anthropic/v1/messages`
- *   - `https://gateway.example.com/anthropic/`           → `https://gateway.example.com/anthropic/v1/messages`
- *   - `https://gateway.example.com/llm/anthropic`        → `https://gateway.example.com/llm/anthropic/v1/messages`
- *   - `https://api.anthropic.com/v1/messages`            → `https://api.anthropic.com/v1/messages` (idempotent)
- *   - `https://api.anthropic.com/v1?token=abc`           → `https://api.anthropic.com/v1/messages` (query dropped)
- *   - `https://api.anthropic.com/v1#section`             → `https://api.anthropic.com/v1/messages` (fragment dropped)
- *
- * Note: this helper REPLACES `resolveProviderBaseUrl` for the
- * Anthropic provider only. The OpenAI-compatible provider still uses
- * `resolveProviderBaseUrlCandidates` because OpenAI gateways
- * (`/openai`, `/api/v2`, etc.) live at the host root + `/v1`, so the
- * try-as-pasted-then-origin-with-`/v1` fallback is the right
- * contract there. Anthropic path-prefix gateways need their configured
- * path preserved.
- */
-function resolveAnthropicMessagesUrl(baseUrl) {
-    // Parse once and split origin / path. Drop query string and fragment
-    // up front — they don't address the canonical /v1/messages route at
-    // any known Anthropic-protocol gateway, and passing them through
-    // would append the path segment into the query (`...?token=abc/v1/
-    // messages`), an invalid URL.
-    let origin;
-    let pathPart;
-    try {
-        const parsed = new URL(baseUrl);
-        origin = parsed.origin;
-        pathPart = parsed.pathname;
-    }
-    catch {
-        // Unparseable input. Fall back to extractOrigin + raw concatenation.
-        //
-        // IMPORTANT: keep `pathPart` in the SAME shape `parsed.pathname`
-        // would have produced — including a leading `/`. The dispatcher
-        // checks below assume the leading-slash form (`/v1`,
-        // `/v1/messages`); stripping the slash would route an unparseable
-        // input through the wrong branch and produce a doubled
-        // `/v1/v1/messages` suffix.
-        origin = extractOrigin(baseUrl);
-        pathPart = url_stripTrailingSlash(baseUrl).slice(origin.length);
-    }
-    // Normalize: WHATWG URL sets pathname to "/" for a bare host; we
-    // want the empty string so concatenation produces `origin + /v1/messages`
-    // without a doubled slash.
-    const cleanedPath = url_stripTrailingSlash(pathPart === "/" ? "" : pathPart);
-    if (cleanedPath.endsWith("/v1/messages")) {
-        // Operator pre-appended the full messages endpoint; idempotent.
-        return joinUrl(origin, cleanedPath);
-    }
-    // Match the LAST path segment being literally `v1`. The previous
-    // `cleanedPath.endsWith("/v1")` was a suffix check that falsely
-    // matched paths whose trailing characters happened to be `v1`
-    // (e.g. `/my-v1` → wrong branch, would append `/messages`
-    // instead of `/v1/messages`). Path-segment comparison is the
-    // Anthropic-SDK intent: only a trailing `/v1` *segment* counts,
-    // not any path that happens to end in those two characters.
-    const lastSegment = cleanedPath === "" ? "" : cleanedPath.slice(cleanedPath.lastIndexOf("/") + 1);
-    if (cleanedPath === "/v1" || lastSegment === "v1") {
-        return joinUrl(origin, `${cleanedPath}/messages`);
-    }
-    return joinUrl(origin, `${cleanedPath}/v1/messages`);
-}
-/**
- * Heuristic: does the operator's `UMACTUALLY_API_URL` look like it's
- * pointing at an Anthropic-protocol gateway?
- *
- * Used by the live-provider dispatcher to commit to the Anthropic
- * Messages API client even when `--provider` defaults to
- * `openai-compatible`. Without this, the openai-compatible client's
- * URL candidate loop downgrades paths like
- * `https://gateway.example.com/llm/anthropic` to the origin+`/v1`
- * fallback, and the action ends up POSTing OpenAI wire-shape requests
- * to an Anthropic-protocol gateway — silently breaking operator intent.
- *
- * Contract: returns `true` when ANY path segment **exactly** equals
- * `anthropic` (case-insensitive, byte-for-byte match — no prefix or
- * suffix overlap). Anything else (bare host, `/v1`, `/openai`,
- * arbitrary custom paths, segments that *contain* `anthropic` but
- * don't equal it) returns `false`.
- *
- * The exact-segment match is intentional: `anthropic-v2` /
- * `my-anthropic` / `anthropic-fork` etc. are different segments
- * from `anthropic` and don't trigger the heuristic. This is a
- * tight, conservative contract — the only paths that commit to
- * Anthropic protocol are paths that are LITERALLY `/anthropic`
- * (with optional trailing `/v1`, `/llm/anthropic`, `/v1/anthropic`,
- * etc. but never `/anthropic-anything`). A false positive here
- * would silently POST Anthropic wire shape to a server expecting
- * something else, which is worse than the (recoverable) false
- * negative of falling through to the cross-protocol fallback chain.
- *
- * Examples (see `test/unit/looks-like-anthropic-endpoint.test.ts`):
- *
- *   `https://gateway.example.com/anthropic`            → true  (segment "anthropic")
- *   `https://gateway.example.com/anthropic/v1`         → true  (segment "anthropic")
- *   `https://gateway.example.com/llm/anthropic`        → true  (segment "anthropic")
- *   `https://gateway.example.com/v1/anthropic`        → true  (segment "anthropic")
- *   `https://api.openai.com/v1`                        → false (no "anthropic" segment)
- *   `https://api.example.com/`                         → false (no path)
- *   `https://api.example.com/anthropic-v2`            → false (segment "anthropic-v2" ≠ "anthropic")
- *   `https://api.example.com/my-anthropic`             → false (segment "my-anthropic" ≠ "anthropic")
- *   `https://api.example.com/anthropic-team/foo`       → false (segment "anthropic-team" ≠ "anthropic")
- *   `https://api.example.com/anthropic?token=…`        → true  (query dropped, path segment "anthropic" matches)
- *
- * Conservative by design: a `false` result means the dispatcher
- * won't auto-commit to Anthropic protocol, falling back to the
- * `--provider` choice and the cross-protocol fallback chain.
- * An unexpected `false` is recoverable (the fallback still fires
- * on a real 404); an unexpected `true` would silently pick the
- * Anthropic wire shape on a URL that doesn't speak it.
- */
-function looksLikeAnthropicEndpoint(baseUrl) {
-    if (baseUrl.length === 0)
-        return false;
-    let pathname;
-    try {
-        pathname = new URL(baseUrl).pathname;
-    }
-    catch {
-        // Substring fallback for unparseable URLs.
-        pathname = url_stripTrailingSlash(baseUrl).replace(/^[a-z]+:\/\/[^/]*/i, "");
-    }
-    // Normalize trailing slashes and split into segments. The leading
-    // slash is preserved; an empty pathname for bare hosts collapses
-    // to zero segments.
-    const segments = pathname.split("/").filter(s => s.length > 0);
-    return segments.some(s => s.toLowerCase() === "anthropic");
-}
-/**
- * Removes trailing slashes from a URL or path segment. Useful before
- * joining paths so empty-path joins don't produce double slashes.
- */
-function url_stripTrailingSlash(value) {
-    return value.replace(/\/+$/u, "");
-}
-/**
- * Strip the query string and fragment from a URL for safe inclusion
- * in CI logs and operator-facing diagnostics. The URL may carry
- * session tokens, tenant identifiers, or other credential-bearing
- * parameters in the query slot — leaking those into the action's
- * stderr notices (which are persisted as GitHub Actions annotations)
- * is a credential-disclosure risk that we explicitly avoid.
- *
- * Behavior:
- *   - Empty input                        → empty output
- *   - Bare host                          → unchanged
- *   - With query string                  → origin + path (no `?`)
- *   - With fragment                      → origin + path (no `#`)
- *   - Unparseable input                  → substring-stripped; never throws
- *
- * Examples:
- *   - `https://api.example.com`                   → `https://api.example.com`
- *   - `https://api.example.com/v1`                → `https://api.example.com/v1`
- *   - `https://api.example.com?token=secret`      → `https://api.example.com`
- *   - `https://api.example.com/v1#anchor`         → `https://api.example.com/v1`
- */
-function redactUrlForLog(value) {
-    if (value.length === 0)
-        return value;
-    try {
-        const parsed = new URL(value);
-        // WHATWG URL normalizes pathname to start with `/`; for a bare
-        // host it's just `/`, so concatenating origin + `/` would
-        // produce `https://api.example.com/` for an input of
-        // `https://api.example.com`. Strip the trailing slash so the
-        // redacted form matches the input canonicalization the operator
-        // typed.
-        const path = parsed.pathname === "/" ? "" : parsed.pathname;
-        return `${parsed.origin}${path}`;
-    }
-    catch {
-        // Unparseable URL — strip query and fragment manually.
-        const noQuery = value.split("?")[0] ?? value;
-        return noQuery.split("#")[0] ?? noQuery;
-    }
-}
-/** Convert a local filesystem path to a `file://` URL; eliminates duplicated URL-construction logic in the action and CLI entries. */
-function pathToFileUrl(value) {
-    return new URL(`file://${value.replace(/\\/gu, "/")}`).href;
-}
-/** Create request correlation IDs consistently; eliminates duplicated UUID fallback logic across providers. */
-function createRequestId() {
-    const cryptoApi = globalThis.crypto;
-    if (cryptoApi?.randomUUID !== undefined) {
-        return cryptoApi.randomUUID();
-    }
-    const bytes = new Uint8Array(16);
-    if (cryptoApi?.getRandomValues !== undefined) {
-        cryptoApi.getRandomValues(bytes);
-    }
-    else {
-        // Last-resort fallback: non-cryptographic PRNG. Only reached when the
-        // runtime has no `crypto` global AND no Node `crypto` module loaded —
-        // i.e. very old Node (< 19) without `--experimental-global-webcrypto`,
-        // or non-Node embedders. Request IDs are correlation handles, not
-        // security tokens, so the entropy quality is acceptable here.
-        for (let index = 0; index < bytes.length; index += 1) {
-            bytes[index] = Math.floor(Math.random() * 256);
-        }
-    }
-    const hex = [];
-    for (const byte of bytes) {
-        hex.push(byte.toString(16).padStart(2, "0"));
-    }
-    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
 }
 
 ;// CONCATENATED MODULE: ./src/provider/copilot.ts
@@ -11275,9 +14814,9 @@ function createRequestId() {
 
 
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
-const COPILOT_EDITOR_PLUGIN_VERSION = `${BRAND}/0.1.0`;
+const COPILOT_EDITOR_PLUGIN_VERSION = `${brand/* BRAND */.qt}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";
-const COPILOT_USER_AGENT = `${BRAND}/0.1.0`;
+const COPILOT_USER_AGENT = `${brand/* BRAND */.qt}/0.1.0`;
 const ENDPOINT_CHAT = "chat";
 async function runCopilotRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -11365,7 +14904,14 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     // catches chat-format responses fed to the responses endpoint and
     // similar misconfigurations.
     if (isNonEmptyReview(review)) {
-        return { ok: true, endpoint: ENDPOINT_CHAT, review, requestId };
+        const usage = parseProviderUsage(rawText);
+        return {
+            ok: true,
+            endpoint: ENDPOINT_CHAT,
+            review,
+            requestId,
+            ...(usage !== undefined ? { usage } : {}),
+        };
     }
     // Provider-error detection: check for router/proxy misconfiguration
     // before the self-healing retry. See openai-compatible.ts for the
@@ -11501,7 +15047,7 @@ function replaceSecretsLiterally(value, secrets) {
     for (const secret of secrets) {
         if (secret.length === 0)
             continue;
-        out = out.split(secret).join(REDACTED_SECRET_TOKEN);
+        out = out.split(secret).join(brand/* REDACTED_SECRET_TOKEN */.uq);
     }
     return out;
 }
@@ -11574,11 +15120,11 @@ async function runProviderRequest(config) {
     // annotations are visible in the GitHub Actions log and survive
     // even if the action's `process.stderr.write` is captured.
     if (baseUrlCandidates.length > 1) {
-        process.stderr.write(`::notice::${BRAND_PREFIX}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.map(redactUrlForLog).join(", ")}\n`);
+        process.stderr.write(`::notice::${brand/* BRAND_PREFIX */.rc}Resolving provider base URL: trying ${baseUrlCandidates.length} candidates in order: ${baseUrlCandidates.map(url_redactUrlForLog).join(", ")}\n`);
     }
     let lastAttempt = { ok: false, error: new ProviderError("network", ENDPOINT_RESPONSES, null, requestId, "No base URL candidates resolved.") };
     for (const candidate of baseUrlCandidates) {
-        process.stderr.write(`::notice::${BRAND_PREFIX}Trying base URL: ${redactUrlForLog(candidate)}\n`);
+        process.stderr.write(`::notice::${brand/* BRAND_PREFIX */.rc}Trying base URL: ${url_redactUrlForLog(candidate)}\n`);
         const firstAttempt = await runWithRetryLoop(config, fetchImpl, requestId, ENDPOINT_RESPONSES, candidate);
         if (firstAttempt.ok) {
             return firstAttempt;
@@ -11596,7 +15142,7 @@ async function runProviderRequest(config) {
             if (!isRoutableFailureForUrlCandidate(chatAttempt.error)) {
                 return chatAttempt;
             }
-            process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
+            process.stderr.write(`::notice::${brand/* BRAND_PREFIX */.rc}Base URL ${url_redactUrlForLog(candidate)} returned routable failure (status=${chatAttempt.error.status}); advancing to next candidate.\n`);
             lastAttempt = chatAttempt;
             continue;
         }
@@ -11605,7 +15151,7 @@ async function runProviderRequest(config) {
         if (!isRoutableFailureForUrlCandidate(firstAttempt.error)) {
             return firstAttempt;
         }
-        process.stderr.write(`::notice::${BRAND_PREFIX}Base URL ${redactUrlForLog(candidate)} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
+        process.stderr.write(`::notice::${brand/* BRAND_PREFIX */.rc}Base URL ${url_redactUrlForLog(candidate)} returned routable failure (status=${firstAttempt.error.status}); advancing to next candidate.\n`);
         lastAttempt = firstAttempt;
     }
     return lastAttempt;
@@ -11700,7 +15246,14 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // fed to the responses endpoint can otherwise pass as a 0-finding
     // "empty review" — see CLARITY-10.
     if (isNonEmptyReview(review)) {
-        return { ok: true, endpoint, review, requestId };
+        const usage = parseProviderUsage(rawText);
+        return {
+            ok: true,
+            endpoint,
+            review,
+            requestId,
+            ...(usage !== undefined ? { usage } : {}),
+        };
     }
     // Provider-error detection: before attempting the self-healing
     // retry, check whether the raw response is a provider error (router
@@ -11836,7 +15389,7 @@ function redactDebugSecrets(value, config) {
         config.additionalPromptOverride ?? "",
     ]);
     for (const pattern of DEBUG_SECRET_PATTERNS) {
-        redacted = redacted.replace(pattern, REDACTED_SECRET_TOKEN);
+        redacted = redacted.replace(pattern, brand/* REDACTED_SECRET_TOKEN */.uq);
     }
     return redacted;
 }
@@ -11969,7 +15522,7 @@ function parseEnumField(field, raw) {
     }
     const normalized = normalizeEnumInput(raw);
     if (!(field.enumValues ?? []).includes(normalized)) {
-        throw new errors_InvalidConfigError(field.field, `unknown enum value ${REDACTED_PLACEHOLDER}`);
+        throw new errors_InvalidConfigError(field.field, `unknown enum value ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
     }
     return normalized;
 }
@@ -12133,10 +15686,10 @@ function extractAnthropicTextPayload(rawText) {
     for (const block of content) {
         if (!json_guards_isRecord(block))
             continue;
-        const type = readStringField(block, "type");
+        const type = json_guards_readStringField(block, "type");
         if (type !== "text")
             continue;
-        const text = readStringField(block, "text");
+        const text = json_guards_readStringField(block, "text");
         if (text !== null && text.length > 0)
             fragments.push(text);
     }
@@ -12151,7 +15704,7 @@ function extractAnthropicTextPayload(rawText) {
 function readStopReason(parsed) {
     if (!json_guards_isRecord(parsed))
         return null;
-    const stopReason = readStringField(parsed, "stop_reason");
+    const stopReason = json_guards_readStringField(parsed, "stop_reason");
     if (stopReason === null || stopReason.length === 0)
         return null;
     return stopReason;
@@ -12293,7 +15846,23 @@ async function runOnce(config, fetchImpl, requestId, url) {
     }
     const review = parseReviewPayload(textPayload);
     if (isNonEmptyReview(review)) {
-        return { ok: true, endpoint: ENDPOINT, review, requestId };
+        // Try to read usage from the response body even on the success
+        // path so the local audit artifact can compute cost estimates.
+        let successUsage;
+        try {
+            const parsedRaw = JSON.parse(rawText);
+            successUsage = readUsage(parsedRaw);
+        }
+        catch {
+            // rawText wasn't JSON; no usage to surface.
+        }
+        return {
+            ok: true,
+            endpoint: ENDPOINT,
+            review,
+            requestId,
+            ...(successUsage !== undefined ? { usage: successUsage } : {}),
+        };
     }
     // Empty JSON or "truncated stream" parse-fail path. We check
     // `stop_reason === "max_tokens"` AND `rawText.length > 16K` to
@@ -12442,47 +16011,10 @@ function countLineSecrets(line) {
 function redactLineSecrets(line) {
     let redactedLine = line;
     for (const pattern of HIGH_CONFIDENCE_SECRET_PATTERNS) {
-        redactedLine = redactedLine.replace(pattern, REDACTED_SECRET_TOKEN);
+        redactedLine = redactedLine.replace(pattern, brand/* REDACTED_SECRET_TOKEN */.uq);
     }
     return redactedLine;
 }
-
-;// CONCATENATED MODULE: ./src/util/env-keys.ts
-/** Centralized registry for supported user configuration and runner-owned environment keys. */
-const ENV_KEYS = {
-    // User-controlled credentials and connection settings
-    UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
-    UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
-    UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
-    UMACTUALLY_PROVIDER: "UMACTUALLY_PROVIDER",
-    UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
-    UMACTUALLY_INSTRUCTION_FILES: "UMACTUALLY_INSTRUCTION_FILES",
-    // GitHub runner metadata
-    GITHUB_ACTIONS: "GITHUB_ACTIONS",
-    GITHUB_EVENT_PATH: "GITHUB_EVENT_PATH",
-    GITHUB_TOKEN: "GITHUB_TOKEN",
-    GH_TOKEN: "GH_TOKEN",
-    GITHUB_REPOSITORY: "GITHUB_REPOSITORY",
-    GITHUB_REF: "GITHUB_REF",
-    GITHUB_SHA: "GITHUB_SHA",
-    // Azure DevOps runner metadata
-    TF_BUILD: "TF_BUILD",
-    SYSTEM_ACCESSTOKEN: "SYSTEM_ACCESSTOKEN",
-    SYSTEM_TEAMPROJECT: "SYSTEM_TEAMPROJECT",
-    SYSTEM_COLLECTIONURI: "SYSTEM_COLLECTIONURI",
-    BUILD_REPOSITORY_ID: "BUILD_REPOSITORY_ID",
-    SYSTEM_PULLREQUEST_PULLREQUESTID: "SYSTEM_PULLREQUEST_PULLREQUESTID",
-    SYSTEM_PULLREQUEST_SOURCECOMMITID: "SYSTEM_PULLREQUEST_SOURCECOMMITID",
-    SYSTEM_PULLREQUEST_TARGETBRANCHNAME: "SYSTEM_PULLREQUEST_TARGETBRANCHNAME",
-    // GitHub action inputs
-    INPUT_DRY_RUN: "INPUT_DRY_RUN",
-    INPUT_EVENT: "INPUT_EVENT",
-    INPUT_DIFF: "INPUT_DIFF",
-    INPUT_REVIEW: "INPUT_REVIEW",
-    INPUT_THREADS: "INPUT_THREADS",
-    INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
-    INPUT_PLATFORM: "INPUT_PLATFORM",
-};
 
 ;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
 
@@ -12629,7 +16161,7 @@ function authHeaders(token, opts) {
     return {
         Authorization: `Bearer ${token}`,
         Accept: mediaType,
-        "User-Agent": USER_AGENT,
+        "User-Agent": brand/* USER_AGENT */._O,
         ...(includeContentType ? { "Content-Type": "application/json" } : {}),
         ...opts?.extra,
     };
@@ -13616,6 +17148,1085 @@ function shouldKeepFinding(controls, finding) {
     return isSeverityAtLeast(controls.minimum, finding);
 }
 
+;// CONCATENATED MODULE: ./src/review/fingerprint.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 4 — Durable finding fingerprint + identity contract (v1).
+//
+// This module owns the canonical v1 fingerprint algorithm, the
+// length-prefixed UTF-8 serializer for the pre-hash canonical fields,
+// and the hard FINGERPRINT_COLLISION check.
+//
+// The fingerprint is stable across line shifts (because raw line
+// numbers are never inputs) and changes when category, anchor, path,
+// or ruleKey change. Two findings with the same fingerprint and the
+// same identityDigest dedup; the same fingerprint with a different
+// identityDigest is a hard collision that short-circuits posting and
+// writes no new state.
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+const FINGERPRINT_V1_PREFIX = "umactually-finding-v1";
+const IDENTITY_V1_PREFIX = "umactually-identity-v1";
+// ---------------------------------------------------------------------------
+// Typed error: FingerprintCollisionError
+// ---------------------------------------------------------------------------
+/**
+ * Hard failure raised when two findings share the same fingerprint
+ * digest but have different identityDigests. This is a
+ * FINGERPRINT_COLLISION: the semantic anchor collides but the
+ * canonical fields differ, meaning the fingerprinting scheme cannot
+ * distinguish the two findings.
+ *
+ * The caller MUST short-circuit: post nothing, resolve nothing, write
+ * no new state.
+ */
+class FingerprintCollisionError extends Error {
+    fingerprintDigest;
+    collisionType;
+    constructor(fingerprintDigest, collisionType, detail, options) {
+        const detailSuffix = detail !== undefined ? ` (${detail})` : "";
+        super(`FINGERPRINT_COLLISION: fingerprint ${fingerprintDigest} maps to divergent identity digests${detailSuffix}. ` +
+            "Posting, resolution, and state mutation are suppressed.", options);
+        this.name = "FingerprintCollisionError";
+        this.fingerprintDigest = fingerprintDigest;
+        this.collisionType = collisionType;
+    }
+}
+// ---------------------------------------------------------------------------
+// Path normalization
+// ---------------------------------------------------------------------------
+/**
+ * Normalize a path to its canonical form for fingerprinting:
+ *   1. Replace backslashes with POSIX forward slashes.
+ *   2. Strip a single leading `a/` or `b/` (diff prefix).
+ *   3. Reject absolute paths (`/...` on Unix, `C:\...` / `C:/...` on Windows).
+ *   4. Reject `.` and `..` path components.
+ *   5. Case-fold to lowercase ONLY when `caseInsensitive` is true.
+ *
+ * Default is case-sensitive (no case-folding).
+ */
+function normalizeCanonicalPath(rawPath, opts = {}) {
+    let p = rawPath.replaceAll(/\\/gu, "/");
+    // Reject absolute paths before any other processing.
+    if (p.startsWith("/") || /^[a-zA-Z]:\//u.test(p)) {
+        throw new Error(`normalizeCanonicalPath: absolute paths are not allowed (got "${rawPath}")`);
+    }
+    // Strip a single leading "a/" or "b/" diff prefix.
+    if (p.startsWith("a/") || p.startsWith("b/")) {
+        p = p.slice(2);
+    }
+    // Reject "." and ".." components.
+    const segments = p.split("/");
+    for (const seg of segments) {
+        if (seg === "." || seg === "..") {
+            throw new Error(`normalizeCanonicalPath: path traversal components ("." or "..") are not allowed (got "${rawPath}")`);
+        }
+    }
+    if (opts.caseInsensitive === true) {
+        return p.toLowerCase();
+    }
+    return p;
+}
+// ---------------------------------------------------------------------------
+// Category normalization
+// ---------------------------------------------------------------------------
+/**
+ * Normalize a category: lowercase, trim, collapse internal whitespace
+ * and hyphens to a single underscore.
+ */
+function normalizeCategory(rawCategory) {
+    return rawCategory
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/gu, "_");
+}
+// ---------------------------------------------------------------------------
+// Rule key normalization
+// ---------------------------------------------------------------------------
+/**
+ * Normalize the rule key. Returns the provider-supplied stable rule id
+ * when present. When absent, synthesizes a deterministic SHA-256 from
+ * the lowercased category + the normalized first sentence (numbers,
+ * paths, quoted identifiers, and whitespace variance removed).
+ */
+function normalizeRuleKey(category, ruleKey, bodyFirstSentence) {
+    if (ruleKey !== undefined && ruleKey.length > 0) {
+        return ruleKey;
+    }
+    // Synthesize: SHA-256 of lowercase(category) + normalizedFirstSentence
+    const normalizedCategory = category.trim().toLowerCase();
+    const normalizedSentence = normalizeFirstSentence(bodyFirstSentence ?? "");
+    return (0,external_node_crypto_.createHash)("sha256")
+        .update(normalizedCategory + normalizedSentence)
+        .digest("hex");
+}
+/**
+ * Normalize the first sentence for synthetic rule key derivation:
+ *   - Remove numbers (digit sequences).
+ *   - Remove path-like tokens (contain `/` or start with `./`).
+ *   - Remove quoted identifiers (single/double/backtick quoted).
+ *   - Collapse whitespace variance to single spaces.
+ */
+function normalizeFirstSentence(raw) {
+    return raw
+        // Take only the first sentence (up to first period followed by space/end).
+        .replace(/\.[^.]*$/u, "")
+        // Remove quoted identifiers: 'foo', "foo", `foo`
+        .replace(/(['"`])[^'"`]*\1/gu, "")
+        // Remove path-like tokens (anything containing a forward slash).
+        .replace(/\b[\w.-]+\/[\w./-]+\b/gu, "")
+        // Remove digit sequences.
+        .replace(/\d+/gu, "")
+        // Collapse whitespace.
+        .replace(/\s+/gu, " ")
+        .trim()
+        .toLowerCase();
+}
+// ---------------------------------------------------------------------------
+// Hunk anchor normalization
+// ---------------------------------------------------------------------------
+/**
+ * Compute the hunk anchor: SHA-256 of the whitespace-normalized
+ * three-line preimage/context with line numbers removed.
+ *
+ * "Whitespace-normalized" means: collapse runs of whitespace to a
+ * single space, trim each line, and join lines with `\n`. This makes
+ * the anchor robust against indentation changes and trailing whitespace.
+ */
+function computeHunkAnchor(hunkPreimage) {
+    const normalized = hunkPreimage
+        .split("\n")
+        .map((line) => 
+    // Remove leading line-number prefixes (e.g. "42\t" or "42: ").
+    line
+        .replace(/^\d+[\t:]?\s*/u, "")
+        .replace(/\s+/gu, " ")
+        .trim())
+        .join("\n");
+    return (0,external_node_crypto_.createHash)("sha256").update(normalized).digest("hex");
+}
+// ---------------------------------------------------------------------------
+// Length-prefixed UTF-8 serialization
+// ---------------------------------------------------------------------------
+/**
+ * Serialize the five canonical pre-hash fields using length-prefixed
+ * UTF-8: `uint32be byteLength || bytes` for each field, concatenated.
+ *
+ * NEVER use JSON.stringify for canonical fields — the field order and
+ * encoding must be deterministic and independent of key insertion order.
+ */
+function serializeCanonicalFields(fields) {
+    const parts = [];
+    for (const field of fields) {
+        const buf = Buffer.from(field, "utf8");
+        const len = Buffer.allocUnsafe(4);
+        len.writeUInt32BE(buf.length, 0);
+        parts.push(len, buf);
+    }
+    return new Uint8Array(Buffer.concat(parts));
+}
+// ---------------------------------------------------------------------------
+// Core: computeDurableFindingIdentity
+// ---------------------------------------------------------------------------
+/**
+ * Compute the durable finding identity (fingerprint + identityDigest)
+ * for a single finding input.
+ *
+ * Algorithm (v1):
+ *   fingerprintDigest = sha256(
+ *     "umactually-finding-v1\0"
+ *     + canonicalPath + "\0"
+ *     + anchorKind + "\0"
+ *     + canonicalAnchor + "\0"
+ *     + normalizedCategory + "\0"
+ *     + normalizedRuleKey
+ *   )
+ *
+ *   identityDigest = sha256(
+ *     "umactually-identity-v1\0"
+ *     + serializeCanonicalFields([
+ *         canonicalPath, anchorKind, canonicalAnchor,
+ *         normalizedCategory, normalizedRuleKey
+ *       ])
+ *   )
+ *
+ * The fingerprint uses simple null-joined fields; the identityDigest
+ * uses length-prefixed serialization for collision-resistant identity.
+ * Both are stable across line shifts because raw line numbers are
+ * never inputs.
+ */
+function computeDurableFindingIdentity(input) {
+    // 1. Canonical path (with rename mapping applied).
+    let resolvedPath = input.path;
+    if (input.pathRewrites !== undefined) {
+        for (const rewrite of input.pathRewrites) {
+            if (resolvedPath === rewrite.from) {
+                resolvedPath = rewrite.to;
+                break;
+            }
+        }
+    }
+    const canonicalPath = normalizeCanonicalPath(resolvedPath, {
+        caseInsensitive: input.caseInsensitive,
+    });
+    // 2. Anchor.
+    const anchorKind = input.anchorKind;
+    let canonicalAnchor;
+    if (anchorKind === "symbol") {
+        const name = input.symbolName ?? "";
+        const kind = input.symbolKind ?? "";
+        canonicalAnchor = `${name}:${kind}`;
+    }
+    else {
+        // hunk
+        canonicalAnchor = computeHunkAnchor(input.hunkPreimage ?? "");
+    }
+    // 3. Category.
+    const normalizedCategory = normalizeCategory(input.category);
+    // 4. Rule key.
+    const normalizedRuleKey = normalizeRuleKey(input.category, input.ruleKey, input.bodyFirstSentence);
+    // 5. Fingerprint digest (null-joined, prefixed).
+    const fingerprintInput = [
+        FINGERPRINT_V1_PREFIX,
+        canonicalPath,
+        anchorKind,
+        canonicalAnchor,
+        normalizedCategory,
+        normalizedRuleKey,
+    ].join("\0");
+    const fingerprintDigest = (0,external_node_crypto_.createHash)("sha256").update(fingerprintInput).digest("hex");
+    // 6. Identity digest (length-prefixed serialization, prefixed).
+    const serialized = serializeCanonicalFields([
+        canonicalPath,
+        anchorKind,
+        canonicalAnchor,
+        normalizedCategory,
+        normalizedRuleKey,
+    ]);
+    const identityInput = Buffer.concat([
+        Buffer.from(IDENTITY_V1_PREFIX + "\0", "utf8"),
+        Buffer.from(serialized),
+    ]);
+    const identityDigest = (0,external_node_crypto_.createHash)("sha256").update(identityInput).digest("hex");
+    return {
+        fingerprintVersion: 1,
+        fingerprintDigest,
+        identityDigest,
+        canonicalPath,
+        anchorKind,
+        canonicalAnchor,
+        normalizedCategory,
+        normalizedRuleKey,
+    };
+}
+function recordEntryOrThrow(seen, entry, defaultSource) {
+    const fp = entry.identity.fingerprintDigest;
+    const existing = seen.get(fp);
+    if (existing === undefined) {
+        seen.set(fp, { identityDigest: entry.identity.identityDigest, body: entry.body, source: defaultSource });
+        return;
+    }
+    if (existing.identityDigest === entry.identity.identityDigest)
+        return;
+    const collisionType = existing.source === "persisted" ? "against-persisted-state" : "within-review";
+    const detail = defaultSource === "persisted"
+        ? `persisted "${existing.body.slice(0, 60)}" vs persisted "${entry.body.slice(0, 60)}"`
+        : `"${existing.body.slice(0, 60)}" vs "${entry.body.slice(0, 60)}"`;
+    throw new FingerprintCollisionError(fp, collisionType, detail);
+}
+function assertNoFingerprintCollision(current, persisted = []) {
+    const seen = new Map();
+    for (const entry of persisted)
+        recordEntryOrThrow(seen, entry, "persisted");
+    for (const entry of current)
+        recordEntryOrThrow(seen, entry, "current");
+}
+
+;// CONCATENATED MODULE: ./src/diff/filter-build-artifacts.ts
+/**
+ * Centralized exclusion of build-artifact / generated paths from review diffs.
+ *
+ * Background — what this solves
+ * -----------------------------
+ * LLMs have strong training-data priors for paths like `dist/cli.js`,
+ * `dist/index.js`, `build/`, `node_modules/`, and lockfiles. When a review
+ * prompt carries these paths in the diff (or — worse — emits them in the
+ * model's response), the model "recognizes" them from training and starts
+ * fabricating content about what they contain, even when those paths are
+ * not in the supplied diff. PR #56 surfaced this in production: an
+ * `auto`-model review of a 122-line source-only diff still produced 8
+ * findings citing `dist/cli.js:N` and `dist/index.js:N` line numbers.
+ *
+ * The production-tool survey (CodeRabbit, Sourcery, Greptile, Ellipsis)
+ * converges on the same defense: strip these paths from the diff
+ * upstream AND surface them as negative examples in the prompt.
+ *
+ * Why this lives in its own module
+ * --------------------------------
+ * Until now, exclusion happened in two places that could drift:
+ *   1. `scripts/prepare-azure-pr-inputs.sh` — shell-side `':!dist'`
+ *   2. `.github/workflows/self-review.yml` — no exclusion at all (REST diff)
+ *
+ * A single TypeScript filter applied uniformly:
+ *   - on the GitHub REST-diff path (`src/platform/github/api.ts`)
+ *   - on the Azure REST-reconstruction path (`src/platform/azure/api.ts`)
+ *   - on the local `git diff` path (defense in depth, since the shell
+ *     already excludes — the script's `':!dist'` and our filter should
+ *     agree)
+ *   - on the CLI `--diff <path>` reader (so a user-supplied diff that
+ *     still contains dist/ — e.g. from a non-standard pipeline — gets
+ *     filtered too)
+ *
+ * Patterns are minimatch-style globs (directory, wildcard, ext). They
+ * match against the forward-slash normalized path so the filter is
+ * OS-agnostic.
+ */
+/** Build-artifact / generated path globs that should never enter a review prompt. */
+const DEFAULT_BUILD_ARTIFACT_PATTERNS = [
+    // Output directories (match the dir and anything under it)
+    "dist/",
+    "build/",
+    "out/",
+    "target/", // Rust/Java
+    "_build/", // Elixir
+    ".next/",
+    ".nuxt/",
+    ".output/",
+    // Compiled / minified / bundled (double-star so we match at any depth)
+    "**/*.min.js",
+    "**/*.min.css",
+    "**/*.bundle.js",
+    "**/*.bundle.css",
+    "**/*.chunk.js",
+    // Source maps (match at any depth)
+    "**/*.map",
+    // Test coverage
+    "coverage/",
+    ".nyc_output/",
+    // Dependencies
+    "node_modules/",
+    "vendor/",
+    // Lockfiles (match at any depth, including monorepo subdirs)
+    "**/package-lock.json",
+    "**/yarn.lock",
+    "**/pnpm-lock.yaml",
+    "**/bun.lockb",
+    "**/Gemfile.lock",
+    "**/Cargo.lock",
+    "**/poetry.lock",
+    "**/composer.lock",
+    // TypeScript build info (at any depth)
+    "**/*.tsbuildinfo",
+];
+/** Normalize a path to forward-slashes for matching. */
+function toPosixPath(path) {
+    return path.replace(/\\/gu, "/");
+}
+/**
+ * Convert a single minimatch-ish glob to a RegExp anchored at both ends.
+ *
+ * Supports:
+ *   - directory pattern (ending in slash) — matches the dir itself or anything under it
+ *   - double-star — matches any number of path segments
+ *   - single-star — matches any number of non-slash characters
+ *   - exact path — no wildcards, anchored match only
+ *   - `*.ext`              — matches any path ending in `.ext`
+ *   - `name.ext`           — exact match (no wildcards)
+ *
+ * Does NOT support full minimatch syntax — the goal is a small, predictable
+ * filter, not a general-purpose matcher. Excluded files are an allowlist;
+ * new patterns should be added to `DEFAULT_BUILD_ARTIFACT_PATTERNS` and
+ * covered by tests in `test/unit/diff-filter.test.ts`.
+ */
+function globToRegExp(glob) {
+    // Build the RegExp by walking the glob character-by-character.
+    // The naive `.replace` approach had a subtle bug: escaping slashes
+    // and ordering `**` before `*` is easy to get wrong. The
+    // character-by-character walk is more verbose but unambiguous.
+    let pattern = "";
+    let i = 0;
+    while (i < glob.length) {
+        const ch = glob[i];
+        if (ch === "*") {
+            if (glob[i + 1] === "*") {
+                pattern += ".*";
+                i += 2;
+                continue;
+            }
+            pattern += "[^/]*";
+            i += 1;
+            continue;
+        }
+        if (ch === "?") {
+            pattern += "[^/]";
+            i += 1;
+            continue;
+        }
+        if (ch === "." || ch === "+" || ch === "(" || ch === ")" ||
+            ch === "|" || ch === "^" || ch === "$" || ch === "{" ||
+            ch === "}" || ch === "[" || ch === "]" || ch === "\\") {
+            pattern += `\\${ch}`;
+            i += 1;
+            continue;
+        }
+        pattern += ch;
+        i += 1;
+    }
+    if (glob.endsWith("/")) {
+        // Directory pattern (e.g. `dist/`, `node_modules/`).
+        // Strip the trailing `/` for matching: `dist/` becomes `dist`,
+        // then we match either the dir itself (`dist`) or the dir followed
+        // by `/<anything>` (`dist/cli.js`, `dist/nested/file.js`).
+        // For monorepo cases (`packages/api/dist/x.js`), we also match
+        // when the dir appears as a non-leading path segment.
+        const dirPattern = pattern.slice(0, -1);
+        return new RegExp(`(?:^${dirPattern}$|^${dirPattern}/|(?:^|.*/)${dirPattern}(?:/|$))`, "u");
+    }
+    // For patterns like `**/*.map`, the leading `**/` should match zero
+    // or more path segments. The greedy `.*` does that for us, but
+    // anchored to start we need to also allow the prefix to be empty.
+    // E.g. `app.js.map` should match `**/*.map`. We replace the leading
+    // `^.*?/` with `^(?:.*/)?` to make the prefix optional.
+    const finalPattern = pattern.startsWith(".*/") ? `(?:.*/)?${pattern.slice(3)}` : pattern;
+    return new RegExp(`^${finalPattern}$`, "u");
+}
+/**
+ * Check whether a path matches any of the given patterns.
+ *
+ * The path is normalized to forward-slashes before matching, so
+ * Windows-style `dist\cli.js` and POSIX `dist/cli.js` are treated
+ * identically.
+ */
+function isBuildArtifactPath(path, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
+    const normalized = toPosixPath(path);
+    for (const pattern of patterns) {
+        if (globToRegExp(pattern).test(normalized)) {
+            return true;
+        }
+    }
+    return false;
+}
+function cli_isExcludedPath(path) {
+    return isBuildArtifactPath(path);
+}
+/**
+ * Strip every diff block for a path matching a build-artifact pattern.
+ *
+ * The input is expected to be a unified diff (`diff --git a/... b/...`
+ * blocks separated by blank lines or file headers). Each block is dropped
+ * entirely — including its `index` line, `--- a/`, `+++ b/`, hunks, and
+ * any trailing context. Whitespace between blocks is preserved so the
+ * remaining diff is still well-formed.
+ *
+ * Lines that are not part of any block (e.g. a leading comment or
+ * garbage) are preserved verbatim. The function never throws on a
+ * malformed input; if no `diff --git` headers are found, the input is
+ * returned unchanged.
+ */
+function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
+    if (diffText.length === 0) {
+        return diffText;
+    }
+    // Split into blocks on diff --git headers. We use `String.split` with
+    // a multiline regex rather than `String.match` because the latter
+    // pattern's `(?=^diff --git |$)` lookahead matches the end of every
+    // line (the `m` flag makes `$` mean end-of-line), which truncated
+    // each block at the first `--- a/...` line. Splitting on the header
+    // itself and prepending it to each subsequent piece is unambiguous.
+    const parts = diffText.split(/^diff --git /um);
+    if (parts.length <= 1) {
+        // No `diff --git ` headers — input is either empty or not a diff.
+        return diffText;
+    }
+    const blocks = parts.slice(1).map((p) => `diff --git ${p}`);
+    const retained = [];
+    let retainedBytes = 0;
+    let droppedBlocks = 0;
+    for (const block of blocks) {
+        const { a, b } = extractTargetPaths(block);
+        // Test the artifact filter against BOTH sides so renames across
+        // the filter boundary are caught. A file moved FROM dist/ TO
+        // src/ is reported by the `a` side as `dist/x.js`; a file moved
+        // FROM src/ TO dist/ is reported by the `b` side as `dist/x.js`.
+        // Either side matching means the block touches a build artifact.
+        const matchesArtifact = (a !== null && isBuildArtifactPath(a, patterns)) ||
+            (b !== null && isBuildArtifactPath(b, patterns));
+        if (matchesArtifact) {
+            droppedBlocks += 1;
+            continue;
+        }
+        retained.push(block);
+        retainedBytes += block.length;
+    }
+    // Avoid returning an empty string when every block was filtered; downstream
+    // callers (e.g. `parseDiffPositions`) treat empty diffs as "no review
+    // surface" and produce a parse-fail. Surface that with a one-line marker
+    // so the model at least sees something meaningful.
+    if (retained.length === 0) {
+        return "";
+    }
+    // Join with a single newline so consecutive `diff --git` blocks are
+    // separated. The split stripped the leading `diff --git ` marker from
+    // every block (we re-prepended it), but the inter-block separator
+    // (the trailing newline of the previous block) was discarded by
+    // String.split's separator semantics. Re-inserting `\n` here keeps
+    // the output parseable as a unified diff.
+    return retained.join("\n");
+}
+/**
+ * Extract the target paths from a diff block. Returns both the
+ * `a/` (old) and `b/` (new) sides so the caller can test the
+ * artifact-pattern filter against BOTH paths of a rename. A file
+ * moved across the filter boundary (e.g. `dist/x.js` → `src/x.js`)
+ * is correctly filtered by testing the old path; a file moved INTO
+ * a non-artifact path (e.g. `src/x.js` → `dist/x.js`) is correctly
+ * filtered by testing the new path.
+ *
+ * Either side may be null (file add: only `b/`, file delete: only
+ * `a/`, malformed: neither).
+ */
+function extractTargetPaths(block) {
+    const lines = block.split(/\r?\n/u);
+    return {
+        a: readPathLine(lines, "--- "),
+        b: readPathLine(lines, "+++ "),
+    };
+}
+function readPathLine(lines, prefix) {
+    for (const line of lines) {
+        if (!line.startsWith(prefix)) {
+            continue;
+        }
+        const rawPath = line.slice(prefix.length).split("\t")[0]?.trim() ?? "";
+        if (rawPath === "" || rawPath === "/dev/null") {
+            return null;
+        }
+        return rawPath.startsWith("a/") || rawPath.startsWith("b/")
+            ? rawPath.slice(2)
+            : rawPath;
+    }
+    return null;
+}
+/**
+ * Return the list of paths that appear in a diff (both `a/` and `b/`
+ * sides, deduplicated, forward-slash normalized). Used by the prompt
+ * builder to enumerate the diff's file list as a path enum in the
+ * JSON-schema + system-prompt path.
+ *
+ * Skips `/dev/null` on either side (file adds/dels). Order matches
+ * the diff's first appearance.
+ */
+function cli_listDiffPaths(diffText) {
+    const seen = new Set();
+    const ordered = [];
+    const lines = diffText.split(/\r?\n/u);
+    for (const line of lines) {
+        if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
+            continue;
+        }
+        const rawPath = line.slice(4).split("\t")[0]?.trim() ?? "";
+        if (rawPath === "" || rawPath === "/dev/null") {
+            continue;
+        }
+        const stripped = rawPath.startsWith("a/") || rawPath.startsWith("b/")
+            ? rawPath.slice(2)
+            : rawPath;
+        const normalized = toPosixPath(stripped);
+        if (seen.has(normalized)) {
+            continue;
+        }
+        seen.add(normalized);
+        ordered.push(normalized);
+    }
+    return ordered;
+}
+
+;// CONCATENATED MODULE: ./src/review/suggestion.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 12 — Validated developer-controlled suggestions + agent-ready
+// remediation instructions WITHOUT auto-commit.
+//
+// This module is the single owner of:
+//   1. validateSuggestion — the defensive validator that runs path,
+//      side, range, original-content hash, diff anchoring, size,
+//      secret scan, generated-file exclusion, binary, and multiline
+//      boundary checks BEFORE marking a suggestion valid.
+//   2. RemediationInstruction — the structured { schemaVersion, objective,
+//      targetPath, targetAnchor, constraints[], verificationCommands[] }
+//      schema, with 8 KiB total serialized cap, per-string sanitization,
+//      closed-set constraints, allowlisted verification commands.
+//
+// Hard contract (enforced by tests + downstream boundary):
+//   - `validatedSuggestion` is rendered to GitHub suggestion fences or
+//     Azure suggestion representation ONLY when validation passes.
+//   - `remediationInstruction` (including verificationCommands[]) is
+//     serialized ONLY to the sanitized JSON/review artifact and NEVER
+//     to any platform comment body.
+//   - Each string in both structures is sanitized.
+//   - targetPath/anchor must already exist in the durable finding.
+//   - constraints are selected from a closed policy/context provenance
+//     label set.
+//   - verification commands come ONLY from an allowlisted repository-
+//     policy list.
+//   - Total serialized RemediationInstruction size capped at 8 KiB.
+//   - NO raw context/source/prompt is copied into either structure.
+//   - The module NEVER emits free-form agent prompt text, runs git
+//     apply/commit/push, creates PRs, or requests contents write.
+
+
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+/** Total serialized size cap for a RemediationInstruction (8 KiB). */
+const MAX_REMEDIATION_SIZE_BYTES = 8192;
+/** Schema version for RemediationInstruction. */
+const REMEDIATION_INSTRUCTION_SCHEMA_VERSION = 1;
+/**
+ * Closed set of allowed constraint labels. Constraints are selected
+ * from policy/context provenance labels — operators can extend the
+ * policy file, but every wire value MUST be on this allowlist so a
+ * provider prompt cannot inject arbitrary constraint text.
+ */
+const ALLOWED_CONSTRAINT_LABELS = Object.freeze([
+    "policy:style",
+    "policy:security",
+    "policy:performance",
+    "policy:correctness",
+    "policy:maintainability",
+    "policy:tests",
+    "policy:documentation",
+    "context:provenance",
+    "context:diff-anchor",
+]);
+/**
+ * Closed allowlist of verification commands. These are the ONLY commands
+ * that may appear in `verificationCommands[]`. They come from a
+ * repository-policy allowlist (hard-coded here) — a provider prompt
+ * cannot inject arbitrary shell commands.
+ *
+ * The list intentionally contains only safe, read-only repository
+ * validation commands. No git mutation, no network egress, no file
+ * writes.
+ */
+const ALLOWED_VERIFICATION_COMMANDS = Object.freeze([
+    "npm test",
+    "npm run typecheck",
+    "npm run lint",
+    "npm run build",
+    "npm run test:unit",
+    "npm run test:scenario",
+    "npm run test:e2e",
+    "npm run check:dist-freshness",
+    "npm run render-docs:check",
+    "npm run check:version-alignment",
+]);
+/**
+ * High-confidence secret patterns for replacement scanning. Mirrors
+ * the patterns in `src/security/scan-review-secrets.ts` so a secret-
+ * shaped literal in a suggestion replacement is caught here BEFORE it
+ * can reach the platform comment body. A separate copy (rather than an
+ * import) keeps this module's validation pure — it does not depend on
+ * the async scanner's artifact-path contract.
+ */
+const SECRET_PATTERNS = [
+    /\bsk_test_[a-z_]+\b/u,
+    /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
+    /\bghp_[A-Za-z0-9]{36}\b/u,
+    /\bgithub_pat_\w{82}\b/u,
+    /\bxox[baprs]-[A-Za-z0-9-]+\b/u,
+    /\b-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----/u,
+];
+// ---------------------------------------------------------------------------
+// validateSuggestion
+// ---------------------------------------------------------------------------
+/**
+ * Defensive validator for a raw provider suggestion. Runs ALL of these
+ * checks BEFORE marking the suggestion valid:
+ *
+ *   1. malformed-input: rawSuggestion present, replacement non-empty,
+ *      originalTextHash non-empty.
+ *   2. generated-file: path must NOT match build-artifact / generated
+ *      patterns (dist/, build/, *.min.js, lockfiles, etc.).
+ *   3. off-diff-line: (path, line) must exist in the diff position index.
+ *   4. range-mismatch: when endLine is provided, endLine >= line.
+ *   5. stale-hash: SHA-256 of originalLineText must match originalTextHash.
+ *   6. multiline-boundary-escape: replacement must not contain ``` (the
+ *      markdown fence closer) which would escape the suggestion block.
+ *   7. binary: replacement must not contain null bytes or other control
+ *      characters characteristic of binary content.
+ *   8. oversized: replacement must not exceed the 8 KiB cap.
+ *   9. secret-bearing: replacement must not contain high-confidence
+ *      secret patterns.
+ *
+ * The replacement is sanitized (secrets redacted via the shared scanner)
+ * in the returned ValidatedSuggestion so downstream rendering never
+ * leaks a secret through the suggestion body.
+ */
+function validateSuggestion(input) {
+    const { rawSuggestion, path, line, diffPositions, originalLineText } = input;
+    // 1. Malformed input.
+    if (rawSuggestion === undefined || rawSuggestion === null) {
+        return reject("malformed-input", "suggestion is absent");
+    }
+    if (typeof rawSuggestion.replacement !== "string" || rawSuggestion.replacement.length === 0) {
+        return reject("malformed-input", "replacement must be a non-empty string");
+    }
+    if (typeof rawSuggestion.originalTextHash !== "string" || rawSuggestion.originalTextHash.length === 0) {
+        return reject("malformed-input", "originalTextHash must be a non-empty string");
+    }
+    // 2. Generated-file exclusion.
+    if (isBuildArtifactPath(path)) {
+        return reject("generated-file", `suggestion targets a generated/build-artifact path: ${path}`);
+    }
+    // 3. Off-diff line.
+    if (!diffPositions.hasPosition({ path, line })) {
+        return reject("off-diff-line", `suggestion anchor ${path}:${line} is not in the diff`);
+    }
+    // 4. Range mismatch.
+    const endLine = rawSuggestion.endLine ?? line;
+    if (endLine < line) {
+        return reject("range-mismatch", `endLine (${endLine}) < line (${line})`);
+    }
+    // 5. Stale hash.
+    const computedHash = sha256Hex(originalLineText);
+    if (computedHash !== rawSuggestion.originalTextHash) {
+        return reject("stale-hash", "originalTextHash does not match the actual line content");
+    }
+    // 6. Multiline boundary escape — replacement must not contain a
+    //    closing fence that would break out of the suggestion block.
+    if (rawSuggestion.replacement.includes("```")) {
+        return reject("multiline-boundary-escape", "replacement contains a markdown fence delimiter");
+    }
+    // 7. Binary — reject null bytes or a high concentration of control
+    //    characters (a strong signal of binary content, not source code).
+    if (containsBinaryContent(rawSuggestion.replacement)) {
+        return reject("binary", "replacement contains binary/control characters");
+    }
+    // 8. Oversized.
+    if (rawSuggestion.replacement.length > MAX_REMEDIATION_SIZE_BYTES) {
+        return reject("oversized", `replacement exceeds ${MAX_REMEDIATION_SIZE_BYTES} bytes`);
+    }
+    // 9. Secret-bearing.
+    if (suggestion_containsSecret(rawSuggestion.replacement)) {
+        return reject("secret-bearing", "replacement contains a high-confidence secret pattern");
+    }
+    // All checks passed — sanitize and return.
+    const sanitizedReplacement = sanitizeSuggestionText(rawSuggestion.replacement);
+    return {
+        validated: {
+            path,
+            line,
+            endLine,
+            side: "RIGHT",
+            replacement: sanitizedReplacement,
+            originalTextHash: rawSuggestion.originalTextHash,
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// buildRemediationInstruction
+// ---------------------------------------------------------------------------
+/**
+ * Build a validated RemediationInstruction from typed input. Every
+ * string is sanitized; constraints must be on the closed allowlist;
+ * verification commands must be on the allowlisted repository-policy
+ * list; total serialized size must be <= 8 KiB.
+ *
+ * Returns `{ ok: false, error }` with a typed error kind on any
+ * violation — the caller decides how to surface (typically: serialize
+ * the typed error into the artifact, keep the explanatory finding).
+ */
+function buildRemediationInstruction(input) {
+    // Objective.
+    if (typeof input.objective !== "string" || input.objective.length === 0) {
+        return remediationFail("invalid-objective", "objective must be a non-empty string");
+    }
+    // targetPath / targetAnchor — must be non-empty strings. The caller
+    // (pipeline boundary) MUST verify they exist in the durable finding
+    // BEFORE calling this builder; this function only checks structural
+    // validity (non-empty, no secret).
+    if (typeof input.targetPath !== "string" || input.targetPath.length === 0) {
+        return remediationFail("invalid-objective", "targetPath must be a non-empty string");
+    }
+    if (typeof input.targetAnchor !== "string" || input.targetAnchor.length === 0) {
+        return remediationFail("invalid-objective", "targetAnchor must be a non-empty string");
+    }
+    // Constraints — closed set.
+    if (!Array.isArray(input.constraints)) {
+        return remediationFail("invalid-constraint", "constraints must be an array");
+    }
+    for (const c of input.constraints) {
+        if (typeof c !== "string" || !ALLOWED_CONSTRAINT_LABELS.includes(c)) {
+            return remediationFail("invalid-constraint", `constraint "${String(c)}" is not on the allowlist`);
+        }
+    }
+    // Verification commands — allowlist.
+    if (!Array.isArray(input.verificationCommands)) {
+        return remediationFail("invalid-verification-command", "verificationCommands must be an array");
+    }
+    for (const v of input.verificationCommands) {
+        if (typeof v !== "string" || !ALLOWED_VERIFICATION_COMMANDS.includes(v)) {
+            return remediationFail("invalid-verification-command", `verification command "${String(v)}" is not on the allowlist`);
+        }
+    }
+    // Secret scan over every string field.
+    const allStrings = [
+        input.objective,
+        input.targetPath,
+        input.targetAnchor,
+        ...input.constraints,
+        ...input.verificationCommands,
+    ];
+    for (const s of allStrings) {
+        if (suggestion_containsSecret(s)) {
+            return remediationFail("secret-detected", "a RemediationInstruction string contains a secret-shaped literal");
+        }
+    }
+    // Sanitize every string.
+    const instruction = {
+        schemaVersion: REMEDIATION_INSTRUCTION_SCHEMA_VERSION,
+        objective: sanitizeSuggestionText(input.objective),
+        targetPath: sanitizeSuggestionText(input.targetPath),
+        targetAnchor: sanitizeSuggestionText(input.targetAnchor),
+        constraints: input.constraints.map(sanitizeSuggestionText),
+        verificationCommands: input.verificationCommands.map(sanitizeSuggestionText),
+    };
+    // Size cap — check the serialized size.
+    const serialized = serializeRemediationInstruction(instruction);
+    if (serialized.length > MAX_REMEDIATION_SIZE_BYTES) {
+        return remediationFail("oversized", `serialized RemediationInstruction exceeds ${MAX_REMEDIATION_SIZE_BYTES} bytes`);
+    }
+    return { ok: true, instruction };
+}
+// ---------------------------------------------------------------------------
+// validateRemediationInput — defensive parse from unknown
+// ---------------------------------------------------------------------------
+/**
+ * Parse an unknown raw value into a typed RemediationBuildInput. Used
+ * at the boundary where untrusted provider output first enters the
+ * remediation pipeline. Returns a typed error on any structural issue.
+ */
+function validateRemediationInput(raw) {
+    if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        return remediationInputFail("malformed-input", "remediation input must be an object");
+    }
+    const obj = raw;
+    const objective = obj["objective"];
+    const targetPath = obj["targetPath"];
+    const targetAnchor = obj["targetAnchor"];
+    const constraints = obj["constraints"];
+    const verificationCommands = obj["verificationCommands"];
+    if (typeof objective !== "string" || typeof targetPath !== "string" || typeof targetAnchor !== "string") {
+        return remediationInputFail("malformed-input", "objective, targetPath, targetAnchor must be strings");
+    }
+    if (constraints !== undefined && !Array.isArray(constraints)) {
+        return remediationInputFail("malformed-input", "constraints must be an array");
+    }
+    if (verificationCommands !== undefined && !Array.isArray(verificationCommands)) {
+        return remediationInputFail("malformed-input", "verificationCommands must be an array");
+    }
+    return {
+        ok: true,
+        input: {
+            objective,
+            targetPath,
+            targetAnchor,
+            constraints: Array.isArray(constraints) ? constraints.filter((v) => typeof v === "string") : [],
+            verificationCommands: Array.isArray(verificationCommands) ? verificationCommands.filter((v) => typeof v === "string") : [],
+        },
+    };
+}
+// ---------------------------------------------------------------------------
+// serializeRemediationInstruction
+// ---------------------------------------------------------------------------
+/**
+ * Deterministic serialization of a RemediationInstruction for the JSON
+ * artifact. Keys are in fixed order; secrets were already sanitized at
+ * build time. The output MUST stay under MAX_REMEDIATION_SIZE_BYTES.
+ */
+function serializeRemediationInstruction(instruction) {
+    const ordered = {
+        schemaVersion: instruction.schemaVersion,
+        objective: instruction.objective,
+        targetPath: instruction.targetPath,
+        targetAnchor: instruction.targetAnchor,
+        constraints: instruction.constraints,
+        verificationCommands: instruction.verificationCommands,
+    };
+    return JSON.stringify(ordered);
+}
+// ---------------------------------------------------------------------------
+// Rendering — GitHub suggestion fence
+// ---------------------------------------------------------------------------
+/**
+ * Render a validated suggestion as a GitHub suggestion fence. The
+ * GitHub native suggestion block uses ```suggestion … ``` so a reviewer
+ * can click "Commit suggestion" directly. ONLY a ValidatedSuggestion
+ * (produced by `validateSuggestion`) may be passed here.
+ *
+ * Contract:
+ *   - Opens with ```suggestion and closes with ```.
+ *   - No remediationInstruction content is ever included.
+ *   - The replacement was already sanitized at validation time.
+ */
+function renderGithubSuggestionFence(suggestion) {
+    return "```suggestion\n" + suggestion.replacement + "\n```";
+}
+// ---------------------------------------------------------------------------
+// Rendering — Azure suggestion representation
+// ---------------------------------------------------------------------------
+/**
+ * Render a validated suggestion for Azure DevOps. Azure DevOps does not
+ * have a native "suggestion" button like GitHub, but it DOES support
+ * the same ```suggestion markdown fence inside inline thread comments
+ * (rendered as a code block with the suggested text). The thread's
+ * `threadContext` (filePath + rightFileStart/end) carries the anchor,
+ * not the body — so the body just needs the fence.
+ *
+ * Contract: same as the GitHub fence — no remediationInstruction content.
+ */
+function renderAzureSuggestionBlock(suggestion) {
+    return "```suggestion\n" + suggestion.replacement + "\n```";
+}
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+function reject(kind, message) {
+    return { rejection: { kind, message } };
+}
+function remediationFail(kind, message) {
+    return { ok: false, error: { kind, message } };
+}
+function remediationInputFail(kind, message) {
+    return { ok: false, error: { kind, message } };
+}
+function sha256Hex(text) {
+    return (0,external_node_crypto_.createHash)("sha256").update(text, "utf8").digest("hex");
+}
+/**
+ * Detect binary content: null bytes or a high ratio of control
+ * characters. Source-code replacements should contain only printable
+ * ASCII/UTF-8, whitespace, and standard line endings.
+ */
+function containsBinaryContent(text) {
+    if (text.includes("\x00"))
+        return true;
+    // Count control characters (excluding common whitespace: \t \n \r).
+    let controlCount = 0;
+    for (const ch of text) {
+        const code = ch.codePointAt(0) ?? -1;
+        if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+            controlCount += 1;
+        }
+        if (code === 0x7f) {
+            controlCount += 1;
+        }
+    }
+    // Binary if >10% control characters and at least 2.
+    return controlCount >= 2 && controlCount / text.length > 0.1;
+}
+/**
+ * Scan text for high-confidence secret patterns. Mirrors the patterns
+ * in `src/security/scan-review-secrets.ts`.
+ */
+function suggestion_containsSecret(text) {
+    for (const pattern of SECRET_PATTERNS) {
+        if (pattern.test(text))
+            return true;
+    }
+    return false;
+}
+/**
+ * Sanitize suggestion/remediation text. Redacts any literal secret
+ * patterns with the canonical REDACTED token. The `secrets` array
+ * (per-run known secrets) is empty here because suggestion validation
+ * is a pre-posting boundary — the platform-specific secrets list is
+ * applied later by `sanitizeForPost` in the renderer.
+ */
+function sanitizeSuggestionText(text) {
+    // Redact high-confidence secret patterns with the REDACTED token.
+    let out = text;
+    for (const pattern of SECRET_PATTERNS) {
+        out = out.replace(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`), "REDACTED");
+    }
+    // Also run through the literal replace with an empty secrets list —
+    // identity when no per-run secrets are known.
+    return replaceSecretsLiterally(out, []);
+}
+
+;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
+
+/**
+ * Walk the diff text and return the raw line content for the first
+ * `+` or ` ` row at the given right-side position. Falls back to an empty
+ * string when the diff has no hunk header reachable for the file path.
+ *
+ * Exposed so the simulated-findings fixture can build context-aware bodies
+ * that reference a representative token from the actual diff line.
+ */
+function readDiffLine(diffText, position) {
+    const targetPath = `b/${position.path}`;
+    const diffLines = diffText.split(/\r?\n/u);
+    let currentPath = null;
+    let nextNewLine = null;
+    for (const rawLine of diffLines) {
+        if (rawLine.startsWith("diff --git ")) {
+            currentPath = null;
+            nextNewLine = null;
+            continue;
+        }
+        if (currentPath === null) {
+            const parsedPath = parseNewFilePath(rawLine);
+            if (parsedPath !== null) {
+                currentPath = parsedPath === position.path ? targetPath : parsedPath;
+            }
+            continue;
+        }
+        if (currentPath !== targetPath) {
+            continue;
+        }
+        if (rawLine.startsWith("@@ ")) {
+            const start = parseHunkStart(rawLine);
+            nextNewLine = start;
+            continue;
+        }
+        if (nextNewLine === null) {
+            continue;
+        }
+        if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
+            if (nextNewLine === position.line) {
+                return rawLine.slice(1).trim();
+            }
+            nextNewLine += 1;
+        }
+    }
+    return "";
+}
+/**
+ * Pull a meaningful token out of the diff line for context-aware bodies.
+ * Falls back to a path-derived identifier when the line is blank.
+ */
+function extractRepresentativeToken(lineContent, path) {
+    const identifierMatch = lineContent.match(/\b([A-Za-z_$][\w$]*)\s*\(/u);
+    if (identifierMatch !== null && identifierMatch[1] !== undefined) {
+        return identifierMatch[1];
+    }
+    const declarationMatch = lineContent.match(/\b(?:const|let|var|function|class|interface|type|export)\s+([A-Za-z_$][\w$]*)/u);
+    if (declarationMatch !== null && declarationMatch[1] !== undefined) {
+        return declarationMatch[1];
+    }
+    const genericMatch = lineContent.match(/\b([A-Za-z_$][\w$]{3,})\b/u);
+    if (genericMatch !== null && genericMatch[1] !== undefined) {
+        return genericMatch[1];
+    }
+    const fallback = path.replace(/[^\w]+/gu, "_").replace(/^_+|_+$/gu, "");
+    return fallback.length > 0 ? fallback : "this change";
+}
+
 ;// CONCATENATED MODULE: ./src/cli/live-shared.ts
 
 
@@ -13630,6 +18241,42 @@ function shouldKeepFinding(controls, finding) {
 
 
 
+
+
+
+/**
+ * Compute the durable finding identity for a provider comment and return
+ * a new comment carrying the identity. Called at the boundary where raw
+ * provider output enters the live pipeline (live-provider.ts
+ * `normalizeProviderComment`), so every downstream consumer (filters,
+ * renderers, platform adapters, evals, artifacts) sees the same typed
+ * finding shape.
+ *
+ * The identity is stable across line shifts because raw line numbers
+ * are never fingerprint inputs. Mutable full prose, secrets, absolute
+ * paths, tokens, and raw line numbers are excluded by construction.
+ */
+function enrichWithDurableIdentity(comment, opts = {}) {
+    const firstSentence = extractFirstSentence(comment.body);
+    const input = {
+        path: comment.path,
+        anchorKind: "symbol",
+        symbolName: undefined,
+        symbolKind: undefined,
+        hunkPreimage: undefined,
+        category: comment.category,
+        ruleKey: undefined,
+        bodyFirstSentence: firstSentence,
+        pathRewrites: opts.pathRewrites,
+        caseInsensitive: opts.caseInsensitive,
+    };
+    const identity = computeDurableFindingIdentity(input);
+    return { ...comment, durableIdentity: identity };
+}
+function extractFirstSentence(body) {
+    const match = /^[^.!?]*[.!?]/u.exec(body);
+    return match !== null ? match[0] : body;
+}
 /**
  * A provider outcome is structurally empty when it carries no inline comments
  * AND no suppressed comments. Used by `simulate-findings` to decide whether
@@ -13666,6 +18313,21 @@ function getLiveReviewHint(error) {
     }
     const hint = error.hint;
     return typeof hint === "string" ? hint : undefined;
+}
+/**
+ * Format the `reason` field of an `AbortSignal` for inclusion in a
+ * user-facing message. The four cases mirror the inline ternaries that
+ * previously lived in the Azure / GitHub reconcile preflight paths:
+ *   - `undefined` or empty string → the generic `"aborted"`
+ *   - `Error` instance → its `.message`
+ *   - everything else → `String(value)`
+ */
+function formatAbortReason(rawReason) {
+    if (rawReason === undefined || rawReason === "")
+        return "aborted";
+    if (rawReason instanceof Error)
+        return rawReason.message;
+    return String(rawReason);
 }
 /**
  * Gate that refuses to post when high-confidence secrets are detected in the
@@ -13785,7 +18447,22 @@ function buildInlineCommentBody(input) {
     const parentRef = isPositiveSafeInteger(input.parentThreadId)
         ? `> Reply to PR review summary #${input.parentThreadId}\n\n`
         : "";
-    return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}`;
+    // Validated suggestion fence — appended AFTER the body text when
+    // present. Both GitHub (native ```suggestion block) and Azure
+    // (rendered as a code block with the suggested text) interpret this
+    // same fence, so a single rendering produces the right output for
+    // both platforms. The `validatedSuggestion` field is ONLY populated
+    // by `validateSuggestion` (in this same module) after passing every
+    // defensive check — so a fence here always represents a validated,
+    // sanitized, diff-anchored suggestion.
+    //
+    // remediationInstruction is NEVER rendered into the comment body —
+    // it is serialized ONLY to the JSON artifact.
+    const validated = input.comment.validatedSuggestion;
+    const suggestionBlock = validated !== undefined
+        ? `\n\n${renderGithubSuggestionFence(validated)}`
+        : "";
+    return `${marker}${parentRef}\`${safeSeverity}\` \`${safeCategory}\`\n\n${safeBody}${suggestionBlock}`;
 }
 /**
  * Hard upper bound on the raw provider text we include in a parse-fail
@@ -14058,6 +18735,7 @@ function countSuppressedComments(review, diffText) {
  * which was the previous source of drift between the two platforms.
  */
 function preparePostedReview(input) {
+    const suggestionMode = input.suggestionMode ?? "off";
     // Parse the diff ONCE and pass the index to all three selectors.
     // Each of the public selectors (`selectPostableComments`,
     // `selectOffDiffComments`, `countSuppressedComments`) was
@@ -14071,6 +18749,17 @@ function preparePostedReview(input) {
         parsed: input.parsed,
         secrets: input.secrets,
     });
+    // Validate provider suggestions against the diff + sanitization rules
+    // when policy permits. Runs ONLY for postable comments so an off-diff
+    // or severity-filtered comment never gets a validated suggestion
+    // even if the provider attached one.
+    const validatedCommentsResult = validateSuggestionsForComments({
+        comments: postableComments,
+        diffText: input.diffText,
+        positions,
+        mode: suggestionMode,
+    });
+    const suggestionValidation = validatedCommentsResult.summary;
     // The off-diff comments array is needed for the manifest payload
     // (so reviewers can see which findings the post-filter dropped
     // and why). The suppressed count is also displayed. Both are
@@ -14084,7 +18773,7 @@ function preparePostedReview(input) {
     // the count inline rather than calling the helper.
     const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
     const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
-    const severityCounts = countBySeverity(postableComments);
+    const severityCounts = countBySeverity(validatedCommentsResult.comments);
     // Reconcile the model's raw verdict against the postable severity
     // counts. The body would render a `⛔ NEEDS_FIX` headline against a
     // `📊 0 inline findings` count for a review with nothing to act on
@@ -14102,11 +18791,11 @@ function preparePostedReview(input) {
         review: { ...input.review, verdict: effectiveVerdict },
         provider: input.provider,
         modelId: input.modelId,
-        validCommentCount: postableComments.length,
+        validCommentCount: validatedCommentsResult.comments.length,
         suppressedCommentCount,
         offDiffFromComments,
         severityCounts,
-        postedComments: postableComments,
+        postedComments: validatedCommentsResult.comments,
         secrets: input.secrets,
         // Threshold context — forwarded so the rendered `🏷️ …` tally can
         // append `*` when the active `--minimum-severity` setting hides one
@@ -14116,15 +18805,128 @@ function preparePostedReview(input) {
         ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
     });
     return {
-        postableComments,
+        postableComments: validatedCommentsResult.comments,
         offDiffFromComments,
         suppressedCommentCount,
         severityCounts,
         body,
         postedComments: postableComments,
         effectiveVerdict,
+        suggestionValidation,
         ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
     };
+}
+/**
+ * Validate raw provider suggestions + remediation instructions on a
+ * set of postable comments. Returns a summary suitable for the JSON
+ * artifact. NEVER mutates the input comments in place — produces
+ * NEW comments with `validatedSuggestion` and `remediationInstruction`
+ * fields populated.
+ *
+ * Hard contract:
+ *   - When `mode === "off"`, returns an empty summary without touching
+ *     any raw suggestion field. Zero side effects.
+ *   - When `mode === "validated"`, validates every raw suggestion
+ *     against the diff positions; records typed rejections without
+ *     rendering. Builds remediation instructions ONLY when the
+ *     comment's raw suggestion validated successfully (a remediation
+ *     without a validated suggestion is non-sensical).
+ *   - remediationInstructions are serialized ONLY to the JSON
+ *     artifact; the renderers NEVER include them in comment bodies.
+ */
+function validateSuggestionsForComments(input) {
+    if (input.mode === "off") {
+        return {
+            comments: input.comments,
+            summary: {
+                mode: "off",
+                validatedCount: 0,
+                rejections: [],
+                remediationInstructionsBuilt: 0,
+                remediationRejections: [],
+            },
+        };
+    }
+    const enriched = [];
+    const rejections = [];
+    const remediationRejections = [];
+    let validatedCount = 0;
+    let remediationInstructionsBuilt = 0;
+    for (const comment of input.comments) {
+        const result = validateOneCommentSuggestion(comment, input.diffText, input.positions);
+        if (result.rejection !== undefined) {
+            rejections.push(result.rejection);
+        }
+        if (result.remediationRejection !== undefined) {
+            remediationRejections.push(result.remediationRejection);
+        }
+        validatedCount += result.validatedDelta;
+        remediationInstructionsBuilt += result.remediationDelta;
+        enriched.push(result.comment);
+    }
+    return {
+        comments: enriched,
+        summary: {
+            mode: "validated",
+            validatedCount,
+            rejections,
+            remediationInstructionsBuilt,
+            remediationRejections,
+        },
+    };
+}
+function validateOneCommentSuggestion(comment, diffText, positions) {
+    const rawSuggestion = comment.rawSuggestion;
+    if (rawSuggestion === undefined) {
+        return { comment, rejection: undefined, remediationRejection: undefined, validatedDelta: 0, remediationDelta: 0 };
+    }
+    const originalLineText = readDiffLine(diffText, { path: comment.path, line: comment.line });
+    const result = validateSuggestion({
+        rawSuggestion,
+        path: comment.path,
+        line: comment.line,
+        diffPositions: positions,
+        originalLineText,
+    });
+    if (result.rejection !== undefined) {
+        return {
+            comment,
+            rejection: {
+                path: comment.path,
+                line: comment.line,
+                kind: result.rejection.kind,
+                message: result.rejection.message,
+            },
+            remediationRejection: undefined,
+            validatedDelta: 0,
+            remediationDelta: 0,
+        };
+    }
+    const built = tryBuildRemediation(comment.rawRemediation);
+    const enrichedComment = result.validated !== undefined
+        ? {
+            ...comment,
+            validatedSuggestion: result.validated,
+            ...(built.instruction !== undefined ? { remediationInstruction: built.instruction } : {}),
+        }
+        : comment;
+    return {
+        comment: enrichedComment,
+        rejection: undefined,
+        remediationRejection: built.rejection,
+        validatedDelta: 1,
+        remediationDelta: built.delta,
+    };
+}
+function tryBuildRemediation(rawRemediation) {
+    if (rawRemediation === undefined) {
+        return { instruction: undefined, rejection: undefined, delta: 0 };
+    }
+    const built = buildRemediationInstruction(rawRemediation);
+    if (built.ok) {
+        return { instruction: built.instruction, rejection: undefined, delta: 1 };
+    }
+    return { instruction: undefined, rejection: { kind: built.error.kind, message: built.error.message }, delta: 0 };
 }
 /**
  * Map a review verdict to a GitHub review-submission event. Delegates to
@@ -14158,8 +18960,8 @@ const mapReviewVerdictToGithubEvent = mapVerdictToGithubEvent;
 const mapReviewVerdictToAzureStatus = mapVerdictToAzureStatus;
 function sanitizeForPost(value, secrets) {
     const sanitized = value
-        .replace(/Authorization:\s*[^\r\n]*/giu, REDACTED_AUTHORIZATION_HEADER)
-        .replace(/\bBearer\s+\S+/giu, REDACTED_BEARER_TOKEN);
+        .replace(/Authorization:\s*[^\r\n]*/giu, brand/* REDACTED_AUTHORIZATION_HEADER */.tK)
+        .replace(/\bBearer\s+\S+/giu, brand/* REDACTED_BEARER_TOKEN */.h8);
     return replaceSecretsLiterally(sanitized, secrets);
 }
 async function readTextResponse(response) {
@@ -14211,7 +19013,7 @@ function ensureHttpOk(response, code, action, hint) {
         // Surface the server-side error message on stderr for operators;
         // the thrown LiveReviewError keeps its short public form.
         const snippet = truncateBodyForLog(text, 500);
-        process.stderr.write(`::debug::${BRAND_PREFIX}${action} HTTP ${response.status} body=${snippet}\n`);
+        process.stderr.write(`::debug::${brand/* BRAND_PREFIX */.rc}${action} HTTP ${response.status} body=${snippet}\n`);
     })
         .catch(() => {
         // Body read failed; nothing actionable to do here.
@@ -14348,92 +19150,6 @@ function buildParseWarningsArtifact(input) {
     };
 }
 
-;// CONCATENATED MODULE: ./src/cli/auto-model.ts
-
-
-function modelsUrl(apiUrl) {
-    const base = apiUrl.replace(/\/+$/u, "");
-    return base.endsWith("/v1") ? `${base}/models` : `${base}/v1/models`;
-}
-function redactNetworkReason(error) {
-    if (!(error instanceof Error))
-        return "model discovery request failed";
-    return error.message.replace(/https?:\/\/\S+/gu, (url) => redactUrlForLog(url));
-}
-function parseModelIds(body) {
-    if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
-        return { ok: false, error: { kind: "malformed", reason: "missing data array" } };
-    }
-    const ids = body.data.flatMap((entry) => {
-        if (typeof entry !== "object" || entry === null || !("id" in entry))
-            return [];
-        const id = entry.id;
-        return typeof id === "string" && id.trim().length > 0 ? [id.trim()] : [];
-    });
-    if (ids.length === 0)
-        return { ok: false, error: { kind: "empty" } };
-    if (ids.length > 1)
-        return { ok: false, error: { kind: "ambiguous", modelIds: ids } };
-    return { ok: true, ids };
-}
-function discoverySignal(dependencies) {
-    const timeoutSignal = dependencies.timeoutMs === undefined
-        ? undefined
-        : AbortSignal.timeout(dependencies.timeoutMs);
-    if (dependencies.signal === undefined)
-        return timeoutSignal;
-    if (timeoutSignal === undefined)
-        return dependencies.signal;
-    return AbortSignal.any([dependencies.signal, timeoutSignal]);
-}
-async function discoverAutoModel(input) {
-    if (input.provider === "copilot")
-        return { ok: true, modelId: "auto" };
-    if (input.apiUrl === null || input.apiUrl.trim().length === 0 || input.apiKey === null || input.apiKey.length === 0) {
-        return { ok: false, error: { kind: "unsupported", provider: input.provider } };
-    }
-    const dependencies = input.dependencies ?? {};
-    const signal = discoverySignal(dependencies);
-    if (signal?.aborted === true)
-        return { ok: false, error: { kind: "aborted" } };
-    const headers = input.provider === "anthropic"
-        ? { accept: "application/json", "anthropic-version": "2023-06-01", "x-api-key": input.apiKey }
-        : { accept: "application/json", authorization: `Bearer ${input.apiKey}` };
-    let response;
-    try {
-        response = await (dependencies.fetchImpl ?? globalThis.fetch)(modelsUrl(input.apiUrl), {
-            method: "GET",
-            headers,
-            ...(signal === undefined ? {} : { signal }),
-        });
-    }
-    catch (error) {
-        return isAbortError(error)
-            ? { ok: false, error: { kind: "aborted" } }
-            : { ok: false, error: { kind: "network", reason: redactNetworkReason(error) } };
-    }
-    if (response.status === 401 || response.status === 403) {
-        return { ok: false, error: { kind: "unauthorized", status: response.status } };
-    }
-    if (!response.ok) {
-        return { ok: false, error: { kind: "network", reason: `model discovery returned HTTP ${response.status}` } };
-    }
-    let body;
-    try {
-        body = await response.json();
-    }
-    catch {
-        return { ok: false, error: { kind: "malformed", reason: "response body is not JSON" } };
-    }
-    const parsed = parseModelIds(body);
-    if (!parsed.ok)
-        return { ok: false, error: parsed.error };
-    const modelId = parsed.ids[0];
-    return modelId === undefined
-        ? { ok: false, error: { kind: "empty" } }
-        : { ok: true, modelId };
-}
-
 ;// CONCATENATED MODULE: ./src/config/prompt-files.ts
 
 
@@ -14446,7 +19162,7 @@ const nodePromptFileSystem = {
         return (0,promises_.realpath)(cwd);
     },
     async realpathWithinCwd(path, cwdReal, _self) {
-        const absolute = (0,external_node_path_namespaceObject.resolve)(cwdReal, path);
+        const absolute = (0,external_node_path_.resolve)(cwdReal, path);
         let real;
         try {
             real = await (0,promises_.realpath)(absolute);
@@ -14467,13 +19183,13 @@ function isWithinCwdReal(real, cwdReal) {
     if (process.platform === "win32") {
         const r = real.toLowerCase();
         const c = cwdReal.toLowerCase();
-        return r === c || r.startsWith(`${c}${external_node_path_namespaceObject.sep}`);
+        return r === c || r.startsWith(`${c}${external_node_path_.sep}`);
     }
     return real === cwdReal || real.startsWith(`${cwdReal}/`);
 }
 function isWithinCwdLexical(absolute, cwdReal) {
-    const rel = external_node_path_namespaceObject.posix.relative(toPosix(cwdReal), toPosix(absolute));
-    return rel !== "" && !rel.startsWith("..") && !external_node_path_namespaceObject.posix.isAbsolute(rel);
+    const rel = external_node_path_.posix.relative(toPosix(cwdReal), toPosix(absolute));
+    return rel !== "" && !rel.startsWith("..") && !external_node_path_.posix.isAbsolute(rel);
 }
 function toPosix(value) {
     return process.platform === "win32" ? value.replace(/\\/g, "/") : value;
@@ -14496,7 +19212,7 @@ async function readPromptFiles(paths, byteCap, options) {
         if (typeof rawPath !== "string" || rawPath.length === 0) {
             throw new PromptFileError(String(rawPath), "not-found");
         }
-        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
+        if ((0,external_node_path_.isAbsolute)(rawPath)) {
             throw new PromptFileError(rawPath, "outside-cwd");
         }
         const resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
@@ -14571,54 +19287,62 @@ async function readHumanConventionFiles(options) {
     const parts = [];
     let aggregateBytes = 0;
     for (const rawPath of HUMAN_CONVENTION_FILE_PATHS) {
-        if (typeof rawPath !== "string" || rawPath.length === 0) {
+        const loaded = await loadHumanFile(rawPath, cwdReal, fs, aggregateBytes);
+        if (loaded === null)
             continue;
-        }
-        if ((0,external_node_path_namespaceObject.isAbsolute)(rawPath)) {
-            continue;
-        }
-        let resolved;
-        try {
-            resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
-        }
-        catch {
-            continue;
-        }
-        if (!resolved.withinCwd) {
-            continue;
-        }
-        let stat;
-        try {
-            stat = await fs.stat(resolved.absolute);
-        }
-        catch {
-            continue;
-        }
-        if (!stat.isFile) {
-            continue;
-        }
-        if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
-            // Long READMEs / LICENSES are common; an over-cap human file
-            // must not abort the review — skip it instead of throwing.
-            continue;
-        }
-        if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
-            // Same rationale as the per-file cap: a single oversized entry
-            // must not consume the aggregate budget for the rest of the
-            // human-file load. Skip rather than throw.
-            continue;
-        }
-        let text;
-        try {
-            text = await fs.readFile(resolved.absolute);
-        }
-        catch {
-            continue;
-        }
-        parts.push(text);
-        aggregateBytes += stat.size;
+        parts.push(loaded.text);
+        aggregateBytes += loaded.size;
     }
     return parts.join(PROMPT_SEPARATOR);
+}
+/**
+ * Try to load one human-convention file. Returns `{ text, size }` on
+ * success or `null` when the file should be silently skipped (missing,
+ * outside-cwd, over the per-file cap, would exceed the aggregate cap,
+ * or read failed).
+ */
+async function loadHumanFile(rawPath, cwdReal, fs, aggregateBytes) {
+    if (typeof rawPath !== "string" || rawPath.length === 0)
+        return null;
+    if ((0,external_node_path_.isAbsolute)(rawPath))
+        return null;
+    let resolved;
+    try {
+        resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+    }
+    catch {
+        return null;
+    }
+    if (!resolved.withinCwd)
+        return null;
+    let stat;
+    try {
+        stat = await fs.stat(resolved.absolute);
+    }
+    catch {
+        return null;
+    }
+    if (!stat.isFile)
+        return null;
+    if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
+        // Long READMEs / LICENSES are common; an over-cap human file
+        // must not abort the review — skip it instead of throwing.
+        return null;
+    }
+    if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
+        // Same rationale as the per-file cap: a single oversized entry
+        // must not consume the aggregate budget for the rest of the
+        // human-file load. Skip rather than throw.
+        return null;
+    }
+    let text;
+    try {
+        text = await fs.readFile(resolved.absolute);
+    }
+    catch {
+        return null;
+    }
+    return { text, size: stat.size };
 }
 const HUMAN_CONVENTION_FILE_PATHS = [
     "README.md",
@@ -14829,49 +19553,83 @@ function isGlobPattern(pattern) {
  */
 function globToRegexSource(pattern) {
     let out = "";
-    for (let i = 0; i < pattern.length; i++) {
+    let i = 0;
+    while (i < pattern.length) {
         const ch = pattern[i];
-        if (ch === undefined)
+        if (ch === undefined) {
+            i += 1;
             continue;
+        }
         if (ch === "*") {
-            // `**` → match anything including `/`; `*` → match anything except `/`.
-            if (pattern[i + 1] === "*") {
-                out += ".*";
-                i++;
-                // Consume an immediately following `/` so `**/foo` and `foo/**/bar`
-                // both compile cleanly without an awkward `.*/foo` prefix.
-                if (pattern[i + 1] === "/")
-                    i++;
-            }
-            else {
-                out += "[^/]*";
-            }
+            const starResult = translateStar(pattern, i);
+            out += starResult.fragment;
+            // `nextIndex` skips past `**` or `**/`; the `+ 1` advances past
+            // the consumed fragment so the next iteration starts on the
+            // character after the matched metacharacter.
+            i = starResult.nextIndex + 1;
         }
         else if (ch === "?") {
             out += "[^/]";
+            i += 1;
         }
         else if (ch === "[") {
-            // Pass char class through verbatim up to the closing `]`.
-            const end = pattern.indexOf("]", i + 1);
-            if (end === -1) {
-                out += "\\[";
-            }
-            else {
-                out += pattern.slice(i, end + 1);
-                i = end;
-            }
+            const classResult = translateCharClass(pattern, i);
+            out += classResult.fragment;
+            // `nextIndex` points at the closing `]` (or the unmatched `[`
+            // itself); the `+ 1` advances past the consumed char class.
+            i = classResult.nextIndex + 1;
         }
         else {
             // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
             // break out. Brace-expansion patterns (`{a,b}`) are detected at
             // the gate but never expanded here — the braces are treated as
             // literal regex characters.
-            out += ch.replace(/[\\^$.+()|{}]/gu, "\\$&");
+            out += ch.replace(/[\\^$.+()|{}]/gu, String.raw `\$&`);
+            i += 1;
         }
     }
     return out;
 }
-function globToRegExp(pattern) {
+/**
+ * Translate a single `*` / `**` glob fragment at `pattern[i]`. Returns
+ * the regex fragment to append and the next index the caller should
+ * continue scanning from (the for-loop's natural `i++` will advance
+ * from there).
+ *
+ * Behavior:
+ *   `**` (with or without a trailing `/`) → `.*`
+ *   `*`                                   → `[^/]*`
+ */
+function translateStar(pattern, i) {
+    if (pattern[i + 1] !== "*") {
+        return { fragment: "[^/]*", nextIndex: i };
+    }
+    // `**` → match anything including `/`; consume an immediately
+    // following `/` so `**/foo` and `foo/**/bar` both compile cleanly
+    // without an awkward `.*/foo` prefix.
+    let nextIndex = i + 1;
+    if (pattern[nextIndex + 1] === "/")
+        nextIndex += 1;
+    return { fragment: ".*", nextIndex };
+}
+/**
+ * Translate a `[abc]` char-class fragment at `pattern[i]`. Returns
+ * the regex fragment to append and the next index the caller should
+ * continue scanning from. If the closing `]` is missing, the `[` is
+ * emitted as a literal regex-escaped bracket so the produced regex
+ * stays valid.
+ */
+function translateCharClass(pattern, i) {
+    const closeIdx = pattern.indexOf("]", i + 1);
+    if (closeIdx === -1) {
+        return { fragment: String.raw `\[`, nextIndex: i };
+    }
+    return {
+        fragment: pattern.slice(i, closeIdx + 1),
+        nextIndex: closeIdx,
+    };
+}
+function prompt_files_globToRegExp(pattern) {
     // Anchor to the whole string; the path is fully-resolved when we test it.
     return new RegExp(`^${globToRegexSource(pattern)}$`, "u");
 }
@@ -14897,7 +19655,7 @@ function globToRegExp(pattern) {
  */
 function resolveGlobs(paths, cwd) {
     const cwdReal = (0,external_node_fs_.realpathSync)(cwd);
-    const cwdRealWithSep = cwdReal.endsWith(external_node_path_namespaceObject.sep) ? cwdReal : cwdReal + external_node_path_namespaceObject.sep;
+    const cwdRealWithSep = cwdReal.endsWith(external_node_path_.sep) ? cwdReal : cwdReal + external_node_path_.sep;
     // Walk the cwd tree once. `readdirSync` with `recursive: true` returns
     // Dirent objects tagged with their parent path. `Dirent.parentPath` is
     // ABSOLUTE (not relative to the readdir root), so we strip the cwd
@@ -14905,7 +19663,7 @@ function resolveGlobs(paths, cwd) {
     // We use the unresolved `cwd` here (not `cwdReal`) because
     // `parentPath` was produced by the same kernel walk that produced
     // the entries — they share the same unresolved spelling.
-    const cwdWithSep = cwd.endsWith(external_node_path_namespaceObject.sep) ? cwd : cwd + external_node_path_namespaceObject.sep;
+    const cwdWithSep = cwd.endsWith(external_node_path_.sep) ? cwd : cwd + external_node_path_.sep;
     const entries = (0,external_node_fs_.readdirSync)(cwd, { recursive: true, withFileTypes: true });
     const out = [];
     for (const raw of paths) {
@@ -14913,340 +19671,62 @@ function resolveGlobs(paths, cwd) {
             out.push(raw);
             continue;
         }
-        const re = globToRegExp(raw);
+        const re = prompt_files_globToRegExp(raw);
         for (const entry of entries) {
-            if (!entry.isFile())
-                continue;
-            // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
-            // An entry whose parent is exactly `cwd` sits at the cwd root;
-            // anything deeper gets its cwd-prefix stripped.
-            const parent = entry.parentPath;
-            const rel = parent === undefined || parent === null || parent === cwd
-                ? entry.name
-                : parent.startsWith(cwdWithSep)
-                    ? `${parent.slice(cwdWithSep.length)}/${entry.name}`
-                    : null;
-            if (rel === null)
-                continue;
-            if (!re.test(rel))
-                continue;
-            // Realpath guard: skip anything that resolves outside cwd. We
-            // resolve against `cwdReal` (the symlink-free root) so that a
-            // symlink that points back into cwd is still accepted, matching
-            // the semantic `readPromptFiles` enforces.
-            const absolute = (0,external_node_path_namespaceObject.join)(cwdReal, rel);
-            let real;
-            try {
-                real = (0,external_node_fs_.realpathSync)(absolute);
-            }
-            catch {
-                continue;
-            }
-            if (!(real === cwdReal || real.startsWith(cwdRealWithSep)))
-                continue;
-            out.push(rel);
+            const rel = matchDirent(entry, re, cwd, cwdWithSep, cwdReal, cwdRealWithSep);
+            if (rel !== null)
+                out.push(rel);
         }
     }
     return out;
 }
-
-;// CONCATENATED MODULE: ./src/diff/filter-build-artifacts.ts
 /**
- * Centralized exclusion of build-artifact / generated paths from review diffs.
- *
- * Background — what this solves
- * -----------------------------
- * LLMs have strong training-data priors for paths like `dist/cli.js`,
- * `dist/index.js`, `build/`, `node_modules/`, and lockfiles. When a review
- * prompt carries these paths in the diff (or — worse — emits them in the
- * model's response), the model "recognizes" them from training and starts
- * fabricating content about what they contain, even when those paths are
- * not in the supplied diff. PR #56 surfaced this in production: an
- * `auto`-model review of a 122-line source-only diff still produced 8
- * findings citing `dist/cli.js:N` and `dist/index.js:N` line numbers.
- *
- * The production-tool survey (CodeRabbit, Sourcery, Greptile, Ellipsis)
- * converges on the same defense: strip these paths from the diff
- * upstream AND surface them as negative examples in the prompt.
- *
- * Why this lives in its own module
- * --------------------------------
- * Until now, exclusion happened in two places that could drift:
- *   1. `scripts/prepare-azure-pr-inputs.sh` — shell-side `':!dist'`
- *   2. `.github/workflows/self-review.yml` — no exclusion at all (REST diff)
- *
- * A single TypeScript filter applied uniformly:
- *   - on the GitHub REST-diff path (`src/platform/github/api.ts`)
- *   - on the Azure REST-reconstruction path (`src/platform/azure/api.ts`)
- *   - on the local `git diff` path (defense in depth, since the shell
- *     already excludes — the script's `':!dist'` and our filter should
- *     agree)
- *   - on the CLI `--diff <path>` reader (so a user-supplied diff that
- *     still contains dist/ — e.g. from a non-standard pipeline — gets
- *     filtered too)
- *
- * Patterns are minimatch-style globs (directory, wildcard, ext). They
- * match against the forward-slash normalized path so the filter is
- * OS-agnostic.
+ * Decide whether `entry` matches `re` (a compiled glob regex) AND
+ * resolves inside `cwd` after symlink-following. Returns the
+ * repo-relative path on success or `null` to skip the entry.
  */
-/** Build-artifact / generated path globs that should never enter a review prompt. */
-const DEFAULT_BUILD_ARTIFACT_PATTERNS = [
-    // Output directories (match the dir and anything under it)
-    "dist/",
-    "build/",
-    "out/",
-    "target/", // Rust/Java
-    "_build/", // Elixir
-    ".next/",
-    ".nuxt/",
-    ".output/",
-    // Compiled / minified / bundled (double-star so we match at any depth)
-    "**/*.min.js",
-    "**/*.min.css",
-    "**/*.bundle.js",
-    "**/*.bundle.css",
-    "**/*.chunk.js",
-    // Source maps (match at any depth)
-    "**/*.map",
-    // Test coverage
-    "coverage/",
-    ".nyc_output/",
-    // Dependencies
-    "node_modules/",
-    "vendor/",
-    // Lockfiles (match at any depth, including monorepo subdirs)
-    "**/package-lock.json",
-    "**/yarn.lock",
-    "**/pnpm-lock.yaml",
-    "**/bun.lockb",
-    "**/Gemfile.lock",
-    "**/Cargo.lock",
-    "**/poetry.lock",
-    "**/composer.lock",
-    // TypeScript build info (at any depth)
-    "**/*.tsbuildinfo",
-];
-/** Normalize a path to forward-slashes for matching. */
-function toPosixPath(path) {
-    return path.replace(/\\/gu, "/");
+function matchDirent(entry, re, cwd, cwdWithSep, cwdReal, cwdRealWithSep) {
+    if (!entry.isFile())
+        return null;
+    // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
+    // An entry whose parent is exactly `cwd` sits at the cwd root;
+    // anything deeper gets its cwd-prefix stripped.
+    const rel = direntRelPath(entry, cwd, cwdWithSep);
+    if (rel === null)
+        return null;
+    if (!re.test(rel))
+        return null;
+    // Realpath guard: skip anything that resolves outside cwd. We
+    // resolve against `cwdReal` (the symlink-free root) so that a
+    // symlink that points back into cwd is still accepted, matching
+    // the semantic `readPromptFiles` enforces.
+    const absolute = (0,external_node_path_.join)(cwdReal, rel);
+    let real;
+    try {
+        real = (0,external_node_fs_.realpathSync)(absolute);
+    }
+    catch {
+        return null;
+    }
+    if (!(real === cwdReal || real.startsWith(cwdRealWithSep)))
+        return null;
+    return rel;
 }
 /**
- * Convert a single minimatch-ish glob to a RegExp anchored at both ends.
- *
- * Supports:
- *   - directory pattern (ending in slash) — matches the dir itself or anything under it
- *   - double-star — matches any number of path segments
- *   - single-star — matches any number of non-slash characters
- *   - exact path — no wildcards, anchored match only
- *   - `*.ext`              — matches any path ending in `.ext`
- *   - `name.ext`           — exact match (no wildcards)
- *
- * Does NOT support full minimatch syntax — the goal is a small, predictable
- * filter, not a general-purpose matcher. Excluded files are an allowlist;
- * new patterns should be added to `DEFAULT_BUILD_ARTIFACT_PATTERNS` and
- * covered by tests in `test/unit/diff-filter.test.ts`.
+ * Compute the repo-relative path for a single `Dirent` walked by
+ * `resolveGlobs`. Returns `null` when the entry's parent path does
+ * not live under `cwd` (out-of-tree walks should be silently dropped
+ * — the caller treats `null` as "skip").
  */
-function filter_build_artifacts_globToRegExp(glob) {
-    // Build the RegExp by walking the glob character-by-character.
-    // The naive `.replace` approach had a subtle bug: escaping slashes
-    // and ordering `**` before `*` is easy to get wrong. The
-    // character-by-character walk is more verbose but unambiguous.
-    let pattern = "";
-    let i = 0;
-    while (i < glob.length) {
-        const ch = glob[i];
-        if (ch === "*") {
-            if (glob[i + 1] === "*") {
-                pattern += ".*";
-                i += 2;
-                continue;
-            }
-            pattern += "[^/]*";
-            i += 1;
-            continue;
-        }
-        if (ch === "?") {
-            pattern += "[^/]";
-            i += 1;
-            continue;
-        }
-        if (ch === "." || ch === "+" || ch === "(" || ch === ")" ||
-            ch === "|" || ch === "^" || ch === "$" || ch === "{" ||
-            ch === "}" || ch === "[" || ch === "]" || ch === "\\") {
-            pattern += `\\${ch}`;
-            i += 1;
-            continue;
-        }
-        pattern += ch;
-        i += 1;
+function direntRelPath(entry, cwd, cwdWithSep) {
+    const parent = entry.parentPath;
+    if (parent === undefined || parent === null || parent === cwd) {
+        return entry.name;
     }
-    if (glob.endsWith("/")) {
-        // Directory pattern (e.g. `dist/`, `node_modules/`).
-        // Strip the trailing `/` for matching: `dist/` becomes `dist`,
-        // then we match either the dir itself (`dist`) or the dir followed
-        // by `/<anything>` (`dist/cli.js`, `dist/nested/file.js`).
-        // For monorepo cases (`packages/api/dist/x.js`), we also match
-        // when the dir appears as a non-leading path segment.
-        const dirPattern = pattern.slice(0, -1);
-        return new RegExp(`(?:^${dirPattern}$|^${dirPattern}/|(?:^|.*/)${dirPattern}(?:/|$))`, "u");
+    if (!parent.startsWith(cwdWithSep)) {
+        return null;
     }
-    // For patterns like `**/*.map`, the leading `**/` should match zero
-    // or more path segments. The greedy `.*` does that for us, but
-    // anchored to start we need to also allow the prefix to be empty.
-    // E.g. `app.js.map` should match `**/*.map`. We replace the leading
-    // `^.*?/` with `^(?:.*/)?` to make the prefix optional.
-    const finalPattern = pattern.startsWith(".*/") ? `(?:.*/)?${pattern.slice(3)}` : pattern;
-    return new RegExp(`^${finalPattern}$`, "u");
-}
-/**
- * Check whether a path matches any of the given patterns.
- *
- * The path is normalized to forward-slashes before matching, so
- * Windows-style `dist\cli.js` and POSIX `dist/cli.js` are treated
- * identically.
- */
-function isBuildArtifactPath(path, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
-    const normalized = toPosixPath(path);
-    for (const pattern of patterns) {
-        if (filter_build_artifacts_globToRegExp(pattern).test(normalized)) {
-            return true;
-        }
-    }
-    return false;
-}
-function isExcludedPath(path) {
-    return isBuildArtifactPath(path);
-}
-/**
- * Strip every diff block for a path matching a build-artifact pattern.
- *
- * The input is expected to be a unified diff (`diff --git a/... b/...`
- * blocks separated by blank lines or file headers). Each block is dropped
- * entirely — including its `index` line, `--- a/`, `+++ b/`, hunks, and
- * any trailing context. Whitespace between blocks is preserved so the
- * remaining diff is still well-formed.
- *
- * Lines that are not part of any block (e.g. a leading comment or
- * garbage) are preserved verbatim. The function never throws on a
- * malformed input; if no `diff --git` headers are found, the input is
- * returned unchanged.
- */
-function filterBuildArtifacts(diffText, patterns = DEFAULT_BUILD_ARTIFACT_PATTERNS) {
-    if (diffText.length === 0) {
-        return diffText;
-    }
-    // Split into blocks on diff --git headers. We use `String.split` with
-    // a multiline regex rather than `String.match` because the latter
-    // pattern's `(?=^diff --git |$)` lookahead matches the end of every
-    // line (the `m` flag makes `$` mean end-of-line), which truncated
-    // each block at the first `--- a/...` line. Splitting on the header
-    // itself and prepending it to each subsequent piece is unambiguous.
-    const parts = diffText.split(/^diff --git /um);
-    if (parts.length <= 1) {
-        // No `diff --git ` headers — input is either empty or not a diff.
-        return diffText;
-    }
-    const blocks = parts.slice(1).map((p) => `diff --git ${p}`);
-    const retained = [];
-    let retainedBytes = 0;
-    let droppedBlocks = 0;
-    for (const block of blocks) {
-        const { a, b } = extractTargetPaths(block);
-        // Test the artifact filter against BOTH sides so renames across
-        // the filter boundary are caught. A file moved FROM dist/ TO
-        // src/ is reported by the `a` side as `dist/x.js`; a file moved
-        // FROM src/ TO dist/ is reported by the `b` side as `dist/x.js`.
-        // Either side matching means the block touches a build artifact.
-        const matchesArtifact = (a !== null && isBuildArtifactPath(a, patterns)) ||
-            (b !== null && isBuildArtifactPath(b, patterns));
-        if (matchesArtifact) {
-            droppedBlocks += 1;
-            continue;
-        }
-        retained.push(block);
-        retainedBytes += block.length;
-    }
-    // Avoid returning an empty string when every block was filtered; downstream
-    // callers (e.g. `parseDiffPositions`) treat empty diffs as "no review
-    // surface" and produce a parse-fail. Surface that with a one-line marker
-    // so the model at least sees something meaningful.
-    if (retained.length === 0) {
-        return "";
-    }
-    // Join with a single newline so consecutive `diff --git` blocks are
-    // separated. The split stripped the leading `diff --git ` marker from
-    // every block (we re-prepended it), but the inter-block separator
-    // (the trailing newline of the previous block) was discarded by
-    // String.split's separator semantics. Re-inserting `\n` here keeps
-    // the output parseable as a unified diff.
-    return retained.join("\n");
-}
-/**
- * Extract the target paths from a diff block. Returns both the
- * `a/` (old) and `b/` (new) sides so the caller can test the
- * artifact-pattern filter against BOTH paths of a rename. A file
- * moved across the filter boundary (e.g. `dist/x.js` → `src/x.js`)
- * is correctly filtered by testing the old path; a file moved INTO
- * a non-artifact path (e.g. `src/x.js` → `dist/x.js`) is correctly
- * filtered by testing the new path.
- *
- * Either side may be null (file add: only `b/`, file delete: only
- * `a/`, malformed: neither).
- */
-function extractTargetPaths(block) {
-    const lines = block.split(/\r?\n/u);
-    return {
-        a: readPathLine(lines, "--- "),
-        b: readPathLine(lines, "+++ "),
-    };
-}
-function readPathLine(lines, prefix) {
-    for (const line of lines) {
-        if (!line.startsWith(prefix)) {
-            continue;
-        }
-        const rawPath = line.slice(prefix.length).split("\t")[0]?.trim() ?? "";
-        if (rawPath === "" || rawPath === "/dev/null") {
-            return null;
-        }
-        return rawPath.startsWith("a/") || rawPath.startsWith("b/")
-            ? rawPath.slice(2)
-            : rawPath;
-    }
-    return null;
-}
-/**
- * Return the list of paths that appear in a diff (both `a/` and `b/`
- * sides, deduplicated, forward-slash normalized). Used by the prompt
- * builder to enumerate the diff's file list as a path enum in the
- * JSON-schema + system-prompt path.
- *
- * Skips `/dev/null` on either side (file adds/dels). Order matches
- * the diff's first appearance.
- */
-function listDiffPaths(diffText) {
-    const seen = new Set();
-    const ordered = [];
-    const lines = diffText.split(/\r?\n/u);
-    for (const line of lines) {
-        if (!line.startsWith("+++ ") && !line.startsWith("--- ")) {
-            continue;
-        }
-        const rawPath = line.slice(4).split("\t")[0]?.trim() ?? "";
-        if (rawPath === "" || rawPath === "/dev/null") {
-            continue;
-        }
-        const stripped = rawPath.startsWith("a/") || rawPath.startsWith("b/")
-            ? rawPath.slice(2)
-            : rawPath;
-        const normalized = toPosixPath(stripped);
-        if (seen.has(normalized)) {
-            continue;
-        }
-        seen.add(normalized);
-        ordered.push(normalized);
-    }
-    return ordered;
+    return `${parent.slice(cwdWithSep.length)}/${entry.name}`;
 }
 
 ;// CONCATENATED MODULE: ./src/review/verified-facts.ts
@@ -15302,7 +19782,7 @@ function listDiffPaths(diffText) {
  */
 function collectVerifiedFacts(diffText) {
     return {
-        filesInDiff: listDiffPaths(diffText),
+        filesInDiff: cli_listDiffPaths(diffText),
         packageJsonFiles: readPackageJsonFiles(diffText),
         packageJsonBin: readPackageJsonBin(diffText),
         packageJsonMain: readPackageJsonMain(diffText),
@@ -15956,6 +20436,24 @@ async function buildProviderPrompts(input) {
         `Platform: ${input.platform}`,
         additionalPrompt.length > 0 ? `Additional instructions:\n${additionalPrompt}` : "Additional instructions: none",
     ];
+    // Task 5 — when the orchestrator supplies typed context provenance,
+    // remember it for the artifact writer (test-only hook), and embed
+    // the rendered (typed) block + content-free manifest in the user
+    // message ABOVE the diff so the model sees the context overlay
+    // before it grounds citations. A render failure MUST NOT abort the
+    // review; we surface a fallback line and continue.
+    if (input.contextProvenance !== undefined) {
+        __setLastContextProvenanceForTests(input.contextProvenance);
+        try {
+            const { renderContextBlock } = await Promise.resolve(/* import() */).then(__nccwpck_require__.bind(__nccwpck_require__, 245));
+            const renderedBlock = renderContextBlock(input.contextProvenance);
+            const manifestBlock = renderContextBlock(input.contextProvenance, { asManifest: true });
+            userParts.push(...[renderedBlock.text, manifestBlock.text]);
+        }
+        catch {
+            userParts.push("Repository context: (unavailable — render failed; review continues without)");
+        }
+    }
     if (input.sonarContext !== undefined && input.sonarContext.length > 0) {
         userParts.push(input.sonarContext);
     }
@@ -16066,7 +20564,7 @@ function resolveDefaultPromptFilesOnce(cwd) {
     const out = [];
     for (const candidate of expanded) {
         try {
-            const s = (0,external_node_fs_.statSync)((0,external_node_path_namespaceObject.join)(cwd, candidate));
+            const s = (0,external_node_fs_.statSync)((0,external_node_path_.join)(cwd, candidate));
             if (!s.isFile())
                 continue;
             // Auto-discovery skips over-cap files silently: throwing here
@@ -16097,6 +20595,26 @@ function resolveDefaultPromptFilesOnce(cwd) {
  */
 function __resetDefaultPromptFilesCacheForTests() {
     DEFAULT_PROMPT_FILES_CACHE.clear();
+}
+/**
+ * Process-scoped memory for the last `contextProvenance` value passed
+ * to `buildProviderPrompts`. The artifact-writing path (Task 12) can
+ * observe this without growing the public `buildProviderPrompts`
+ * return shape or threading the value through every caller.
+ *
+ * Test-only entry points live here; production code should pass the
+ * result via `input.contextProvenance` and read it via the public
+ * API surface (no direct reads from production code).
+ */
+const LAST_CONTEXT_PROVENANCE = { value: null };
+function __setLastContextProvenanceForTests(next) {
+    LAST_CONTEXT_PROVENANCE.value = next;
+}
+function getLastContextProvenanceForTests() {
+    return LAST_CONTEXT_PROVENANCE.value;
+}
+function __resetLastContextProvenanceForTests() {
+    LAST_CONTEXT_PROVENANCE.value = null;
 }
 /**
  * Reset hook called by the CLI entry points (`runCli`, `runDryRun`,
@@ -16131,7 +20649,7 @@ function resetDefaultPromptFilesCache() {
  * both the model and the post-filter.
  */
 function buildFilesInDiffBlock(diffText) {
-    const paths = listDiffPaths(diffText);
+    const paths = cli_listDiffPaths(diffText);
     if (paths.length === 0) {
         return "Files in diff: (none — empty diff)";
     }
@@ -17325,7 +21843,11 @@ async function requestLiveReview(input) {
             verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
             confidenceFilter: verifyFilterResult.confidenceFilter,
         });
-        return { ...preVerifyOutcome, review: verifyFilterResult.review };
+        return {
+            ...preVerifyOutcome,
+            review: verifyFilterResult.review,
+            ...(result.usage !== undefined ? { usage: result.usage } : {}),
+        };
     }
     /**
      * Parse-failure path shared by all three provider families.
@@ -17444,7 +21966,7 @@ async function requestLiveReview(input) {
         // invisible-to-the-eye but logged for audit.
         const useAnthropicProtocol = looksLikeAnthropicEndpoint(openaiUrl);
         if (useAnthropicProtocol) {
-            process.stderr.write(`::notice::${BRAND_PREFIX}Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (regardless of --provider).\n`);
+            process.stderr.write(`::notice::${brand/* BRAND_PREFIX */.rc}Operator URL contains an /anthropic path segment; using the Anthropic Messages API client (regardless of --provider).\n`);
         }
         let result;
         if (useAnthropicProtocol) {
@@ -17624,13 +22146,14 @@ function normalizeProviderReview(payload, secrets) {
     };
 }
 function normalizeProviderComment(comment, secrets) {
-    return {
+    const sanitized = {
         path: comment.path,
         line: comment.line,
         body: sanitizeForPost(comment.body, secrets),
         severity: sanitizeForPost(comment.severity, secrets),
         category: sanitizeForPost(comment.category, secrets),
     };
+    return enrichWithDurableIdentity(sanitized);
 }
 function resolveProviderUrl(parsed, env) {
     if (parsed.provider === "copilot")
@@ -17715,7 +22238,7 @@ async function runWithCrossProtocolFallback(args) {
     // query string) so the notice identifies which URL produced the
     // fallback without leaking any `?token=`-style session id into
     // the persisted action log.
-    process.stderr.write(`::notice::${BRAND_PREFIX}Named provider "${args.namedProvider}" returned status=${args.namedResult.error.status} at ${redactUrlForLog(args.baseUrl)} — retrying with cross-protocol fallback "${args.fallbackProvider}".\n`);
+    process.stderr.write(`::notice::${brand/* BRAND_PREFIX */.rc}Named provider "${args.namedProvider}" returned status=${args.namedResult.error.status} at ${url_redactUrlForLog(args.baseUrl)} — retrying with cross-protocol fallback "${args.fallbackProvider}".\n`);
     // The named provider couldn't route at this base URL. Try the other
     // protocol at the SAME base URL — no URL transformation here, the
     // fallback provider's resolver (resolveProviderBaseUrlCandidates /
@@ -17769,7 +22292,7 @@ async function runWithCrossProtocolFallback(args) {
     // alone failed with 404" from "named AND fallback failed at this
     // URL" without needing to enable DEBUG mode.
     if (!fallbackResult.ok) {
-        process.stderr.write(`::notice::${BRAND_PREFIX}Cross-protocol fallback "${args.fallbackProvider}" returned status=${fallbackResult.error.status} at ${redactUrlForLog(args.baseUrl)} — surfacing named protocol's error.\n`);
+        process.stderr.write(`::notice::${brand/* BRAND_PREFIX */.rc}Cross-protocol fallback "${args.fallbackProvider}" returned status=${fallbackResult.error.status} at ${url_redactUrlForLog(args.baseUrl)} — surfacing named protocol's error.\n`);
     }
     return fallbackResult;
 }
@@ -17874,7 +22397,7 @@ async function runStandalone(input) {
         // wrapper-era assumption that the operator always has a diff to
         // review; in the CLI-only world the operator may just want to
         // confirm the CLI boots in their cwd.
-        const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+        const artifactPath = (0,external_node_path_.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
         const note = "No diff content was found; provider review was skipped.";
         const body = {
             mode: "standalone",
@@ -17895,11 +22418,11 @@ async function runStandalone(input) {
             generatedAt: new Date().toISOString(),
         };
         await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n` +
-            `${BRAND_PREFIX}no diff was supplied or none could be auto-derived (e.g. cwd is not a git repo with uncommitted changes or no diff was supplied). The CLI wrote a no-posting artifact instead of failing; supply --event and --diff, or run inside a git repo with uncommitted changes, or commit your changes first.\n`);
+        process.stdout.write(`${brand/* BRAND_PREFIX */.rc}standalone review (no diff) wrote ${artifactPath}\n` +
+            `${brand/* BRAND_PREFIX */.rc}no diff was supplied or none could be auto-derived (e.g. cwd is not a git repo with uncommitted changes or no diff was supplied). The CLI wrote a no-posting artifact instead of failing; supply --event and --diff, or run inside a git repo with uncommitted changes, or commit your changes first.\n`);
         return { kind: "ok", artifactPath, review: body.review };
     }
-    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+    const artifactPath = (0,external_node_path_.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
     const diffText = await (0,promises_.readFile)(input.parsed.diffPath, "utf8");
     const providerApiKey = input.parsed.apiKey ?? "";
     if (diffText.length === 0) {
@@ -17923,8 +22446,8 @@ async function runStandalone(input) {
             generatedAt: new Date().toISOString(),
         };
         await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-        process.stdout.write(`${BRAND_PREFIX}standalone review (no diff) wrote ${artifactPath}\n` +
-            `${BRAND_PREFIX}the supplied diff was empty; provider review was skipped. The CLI wrote a no-posting artifact instead of failing; check that --diff points to a non-empty unified diff, or run with --api-url / --api-key / --dry-run for a smoke test against the provider.\n`);
+        process.stdout.write(`${brand/* BRAND_PREFIX */.rc}standalone review (no diff) wrote ${artifactPath}\n` +
+            `${brand/* BRAND_PREFIX */.rc}the supplied diff was empty; provider review was skipped. The CLI wrote a no-posting artifact instead of failing; check that --diff points to a non-empty unified diff, or run with --api-url / --api-key / --dry-run for a smoke test against the provider.\n`);
         return { kind: "ok-no-diff", artifactPath, note };
     }
     let outcome;
@@ -17984,7 +22507,7 @@ async function runStandalone(input) {
         generatedAt: new Date().toISOString(),
     };
     await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
-    process.stdout.write(`${BRAND_PREFIX}standalone review wrote ${artifactPath}\n`);
+    process.stdout.write(`${brand/* BRAND_PREFIX */.rc}standalone review wrote ${artifactPath}\n`);
     return { kind: "ok", artifactPath, review };
 }
 
@@ -18078,7 +22601,7 @@ async function resolveGitDiffPath() {
     }
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        stream.warn(`git diff failed (${message}); no diff available, falling back to no-diff artifact.`);
+        await stream.warn(`git diff failed (${message}); no diff available, falling back to no-diff artifact.`);
         return null;
     }
     if (stdout.trim().length === 0) {
@@ -18177,7 +22700,7 @@ async function runAndHandle(parsed, diffText, apiKeyLocal) {
         await showSuccess(result, parsed, diffText);
         return { exit: true };
     }
-    stream.error(result.message);
+    await stream.error(result.message);
     const next = await dist_select({
         message: "Provider error",
         options: [
@@ -18237,7 +22760,7 @@ async function runWizardLoopIteration() {
         // a future provider bug throws, surface the message and return
         // to the hub instead of unwinding the whole TUI.
         const message = err instanceof Error ? err.message : String(err);
-        stream.error(message);
+        await stream.error(message);
         return { exit: true };
     }
     finally {
@@ -18485,6 +23008,9 @@ function emitJsonEnvelope(envelope, out = process.stdout) {
 
 
 
+
+
+
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
 const dispatch_execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_.execFile);
 function firstPositionalToken(argv) {
@@ -18524,7 +23050,7 @@ async function dispatch(argv) {
     // `firstPositionalToken(argv)` short-circuits on the flag presence
     // before any command routing.
     if (argv.includes("--show-config")) {
-        return runShowConfig();
+        return runShowConfig(process.cwd());
     }
     const command = firstPositionalToken(argv);
     if (command === null) {
@@ -18689,7 +23215,7 @@ function runFirstRunQuickstart() {
     // write directly to stdout so the live stream gets the bytes, and
     // return a minimal `{ exitCode }` result. Callers capture via
     // `process.stdout.write` interception (see test helpers).
-    process.stdout.write(`${BRAND_PREFIX}${FIRST_RUN_QUICKSTART}`);
+    process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${FIRST_RUN_QUICKSTART}`);
     return Promise.resolve({ exitCode: 0 });
 }
 /**
@@ -18723,12 +23249,13 @@ function renderLoadedConfigQuickstart(config) {
     ].join("\n");
 }
 function runLoadedConfigQuickstart(config, _path) {
-    process.stdout.write(`${BRAND_PREFIX}${renderLoadedConfigQuickstart(config)}`);
+    process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${renderLoadedConfigQuickstart(config)}`);
     return Promise.resolve({ exitCode: 0 });
 }
 /**
  * `umactually --show-config` — print the effective saved config and
- * exit 0. Read-only; never opens a network connection; never prompts.
+ * review policy, then exit 0. Read-only; never opens a network
+ * connection; never prompts.
  *
  * The output is a field-by-field rendered multiline string so future
  * secret fields on `SavedConfig` (the schema is intentionally future-
@@ -18738,33 +23265,74 @@ function runLoadedConfigQuickstart(config, _path) {
  * rule, which is exactly the trust-model property the S6 contract
  * requires.
  *
+ * Review-policy fields are rendered with sanitized path/hash/version
+ * so the operator can verify exactly which committed policy (if any)
+ * is in effect. The committed policy itself lives in
+ * `umactually.review.json` and is the team's documented source of
+ * truth for non-secret review rules.
+ *
  * Decision: lives at the dispatch layer (not under `umactually doctor`)
  * because every other "what's currently effective" tool (`kubectl
  * config view`, `aws configure get`, `git config --list --show-origin`)
  * is top-level, not under a verification subcommand. Operators look
  * for `--show-config` at the root.
  */
-function renderShowConfig(config, path) {
-    const lines = [
-        `saved config: ${path}`,
-        `  provider: ${config.provider}`,
-    ];
-    if (config.apiUrl !== undefined)
-        lines.push(`  apiUrl:   ${config.apiUrl}`);
-    lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
-    return lines.join("\n") + "\n";
+function renderSavedConfigSection(config, path) {
+    const lines = [];
+    if (config !== null) {
+        lines.push(...[
+            `saved config: ${path}`,
+            `  provider: ${config.provider}`,
+        ]);
+        if (config.apiUrl !== undefined)
+            lines.push(`  apiUrl:   ${config.apiUrl}`);
+        lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
+    }
+    else {
+        lines.push("saved config: none (run `umactually init` to create one)");
+    }
+    return lines;
 }
-function runShowConfig() {
-    const savedRead = tryReadSavedConfig();
+function pushFieldIfDefined(lines, value, label) {
+    if (value !== undefined) {
+        lines.push(`  ${label}: ${String(value)}`);
+    }
+}
+function renderPolicySection(policyResult) {
+    const lines = [];
+    if (policyResult.policy !== null) {
+        lines.push(`review policy: ${policyResult.path}`);
+        lines.push(`  schemaVersion: ${policyResult.policy.schemaVersion}`);
+        pushFieldIfDefined(lines, policyResult.hash, "hash          ");
+        pushFieldIfDefined(lines, policyResult.policy.effort, "effort        ");
+        pushFieldIfDefined(lines, policyResult.policy.minimumSeverity, "minimumSeverity");
+        pushFieldIfDefined(lines, policyResult.policy.gateMode, "gateMode      ");
+        pushFieldIfDefined(lines, policyResult.policy.suggestionMode, "suggestionMode");
+        pushFieldIfDefined(lines, policyResult.policy.reReviewCap, "reReviewCap   ");
+        pushFieldIfDefined(lines, policyResult.policy.triggers?.join(", "), "triggers      ");
+    }
+    else {
+        lines.push(`review policy: none (run \`umactually init --policy-template\` to create one)`);
+    }
+    return lines;
+}
+function renderShowConfig(config, path, policyResult) {
+    const savedLines = renderSavedConfigSection(config, path);
+    const policyLines = renderPolicySection(policyResult);
+    return [...savedLines, "", ...policyLines].join("\n") + "\n";
+}
+function runShowConfig(cwd) {
+    const savedRead = tryReadSavedConfig({ cwd });
+    const policyResult = loadReviewPolicy({ cwd });
     if (savedRead.warning !== null) {
         process.stderr.write(`umactually: ${savedRead.warning}\n`);
         return Promise.resolve({ exitCode: 1 });
     }
-    if (savedRead.config === null) {
-        process.stdout.write(`${BRAND_PREFIX}no saved config (run \`umactually init\` to create one)\n`);
-        return Promise.resolve({ exitCode: 0 });
+    if (policyResult.warning !== null) {
+        process.stderr.write(`umactually: ${policyResult.warning}\n`);
+        return Promise.resolve({ exitCode: 1 });
     }
-    process.stdout.write(renderShowConfig(savedRead.config, savedRead.path));
+    process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult));
     return Promise.resolve({ exitCode: 0 });
 }
 async function runReviewBranch(args) {
@@ -18786,7 +23354,7 @@ async function runJsonReview(argv) {
             resolvedConfig: result.resolvedConfig ?? {},
             outcome: {
                 ok: result.exitCode === 0,
-                ...(result.jsonOutcome ?? {}),
+                ...result.jsonOutcome,
             },
         };
         const envelope = createEnvelope("review", legacyData, { exitCode: result.exitCode });
@@ -18867,6 +23435,7 @@ async function runTuiBranch(args) {
 }
 async function runDoctorBranch(args) {
     const json = args.includes("--json");
+    const full = args.includes("--full");
     // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
     // filesystem and process.execPath is the real binary. In Node (npm install
     // or dev), process.execPath is the node binary itself, so use import.meta.url.
@@ -18876,17 +23445,39 @@ async function runDoctorBranch(args) {
     // undefined.
     const isCompiledBinary = typeof UMACTUALLY_VERSION === "string";
     const packageRoot = isCompiledBinary
-        ? (0,external_node_path_namespaceObject.dirname)(process.execPath)
-        : (0,external_node_path_namespaceObject.resolve)((0,external_node_path_namespaceObject.dirname)((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url)), "..");
+        ? (0,external_node_path_.dirname)(process.execPath)
+        : (0,external_node_path_.resolve)((0,external_node_path_.dirname)((0,external_node_url_namespaceObject.fileURLToPath)(import.meta.url)), "..");
+    const execFileFn = async (file, fileArgs, options) => {
+        const output = await dispatch_execFile(file, fileArgs, options);
+        return { stdout: output.stdout, stderr: output.stderr };
+    };
+    if (full) {
+        const fullResult = await runFullDoctor({
+            cwd: process.cwd(),
+            isTTY: process.stdout.isTTY === true,
+            env: process.env,
+            fsAdapter: { stat: promises_.stat },
+            fsAdapterSync: fs_atomic/* defaultFsAdapter */.aO,
+            execFile: execFileFn,
+            packageRoot,
+        });
+        let stdout;
+        if (json) {
+            const envelope = createEnvelope("doctor", fullResult.json, { exitCode: fullResult.exitCode });
+            stdout = `${JSON.stringify(envelope)}\n`;
+        }
+        else {
+            stdout = formatFullDoctorHuman(fullResult.checks);
+        }
+        process.stdout.write(stdout);
+        return { exitCode: fullResult.exitCode, stdout };
+    }
     const result = await runDoctor({
         cwd: process.cwd(),
         isTTY: process.stdout.isTTY === true,
         env: process.env,
         fsAdapter: { stat: promises_.stat },
-        execFile: async (file, fileArgs, options) => {
-            const output = await dispatch_execFile(file, fileArgs, options);
-            return { stdout: output.stdout, stderr: output.stderr };
-        },
+        execFile: execFileFn,
         packageRoot,
     });
     let stdout;
@@ -18899,6 +23490,9 @@ async function runDoctorBranch(args) {
     }
     process.stdout.write(stdout);
     return { exitCode: result.exitCode, stdout };
+}
+function formatFullDoctorHuman(checks) {
+    return formatCheckLines(checks, { emojiPrefix: false });
 }
 async function runUninstallBranch(args) {
     const { mode, errors, help, json } = parseUninstallArgs(args);
@@ -18915,7 +23509,7 @@ async function runUninstallBranch(args) {
     const deps = {
         isTTY: process.stdout.isTTY === true && !json,
         env: process.env,
-        fsAdapter: defaultFsAdapter,
+        fsAdapter: fs_atomic/* defaultFsAdapter */.aO,
         // No stdinReader injected — uninstall.ts falls back to its built-in
         // readline-based default, which is non-blocking and timeout-safe.
         execPath: process.execPath,
@@ -19041,7 +23635,7 @@ async function runInitBranch(args) {
             cwd: process.cwd(),
             homeDir: (0,external_node_os_namespaceObject.homedir)(),
             platform: process.platform,
-            packageVersion: process.env["UMACTUALLY_VERSION"] ?? "0.6.21",
+            packageVersion: readPackageVersion(),
         },
     });
     const stdout = json ? formatInitJson(result) : formatInitHuman(result);
@@ -19880,9 +24474,9 @@ function formatAnnotation(level, action, message) {
         // surface as a GitHub Actions check annotation. The brand prefix
         // is kept so test assertions that grep for `umactually: ...` still
         // match.
-        return `${BRAND_PREFIX}${actionPrefix}${message}\n`;
+        return `${brand/* BRAND_PREFIX */.rc}${actionPrefix}${message}\n`;
     }
-    return `::${level}::${BRAND_PREFIX}${actionPrefix}${message}\n`;
+    return `::${level}::${brand/* BRAND_PREFIX */.rc}${actionPrefix}${message}\n`;
 }
 function writeAnnotation(level, action, message) {
     const formatted = formatAnnotation(level, action, message);
@@ -19944,7 +24538,7 @@ function logNotice(action, message) {
  * `sonar/run-sonar-import.ts`, and `cli/sonar-context.ts`.
  */
 function writeBrandedAnnotation(level, message) {
-    process.stderr.write(`::${level}::${BRAND_PREFIX}${message}\n`);
+    process.stderr.write(`::${level}::${brand/* BRAND_PREFIX */.rc}${message}\n`);
 }
 
 ;// CONCATENATED MODULE: ./src/util/error.ts
@@ -21007,8 +25601,8 @@ async function readGithubPullRequestPayload(env) {
     const repository = context_readRecord(parsed, "repository");
     return {
         isDraft: readBoolean(pullRequest["draft"]),
-        title: readString(pullRequest["title"]),
-        body: readString(pullRequest["body"]),
+        title: context_readString(pullRequest["title"]),
+        body: context_readString(pullRequest["body"]),
         prNumber: readOptionalNumber(pullRequest["number"]),
         headSha: readSha(pullRequest, "head"),
         baseSha: readSha(pullRequest, "base"),
@@ -21050,7 +25644,7 @@ function context_readRecord(value, label) {
 function readBoolean(value) {
     return value === true;
 }
-function readString(value) {
+function context_readString(value) {
     return typeof value === "string" ? value : "";
 }
 
@@ -21072,7 +25666,6 @@ class GithubApiError extends PlatformApiError {
         super(code, status, message, options);
     }
 }
-const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 async function fetchGithubPrDiff(context, fetchImpl = fetch) {
     // GitHub's REST `/pulls/{n}` endpoint returns the server-side diff
@@ -21081,7 +25674,7 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
     // before they reach the LLM — see `src/diff/filter-build-artifacts.ts`
     // for the full rationale.
     const raw = await fetchTextOrThrow(fetchImpl, {
-        url: buildPullUrl(context),
+        url: buildPullUrl(context, buildGithubApiBaseFromEnv()),
         headers: {
             ...githubHeaders(context.token),
             Accept: PULL_DIFF_MEDIA_TYPE,
@@ -21105,9 +25698,8 @@ async function fetchGithubPrDiff(context, fetchImpl = fetch) {
     }
     return filtered;
 }
-function buildPullUrl(context) {
-    const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
-    return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
+function buildPullUrl(context, base) {
+    return buildGithubRestUrl(base, `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}`);
 }
 /**
  * Fetch the contents of instruction files from the PR's base branch.
@@ -21123,7 +25715,8 @@ async function fetchGithubPrInstructions(context, paths, fetchImpl = fetch) {
     return fetchPlatformInstructionFiles(paths, fetchImpl, (path, impl) => fetchGithubPrInstruction(context, path, impl));
 }
 async function fetchGithubPrInstruction(context, path, fetchImpl) {
-    const url = `${GITHUB_API_BASE_URL}/repos/${context.repo.owner}/${context.repo.name}/contents/${path}?ref=${context.baseSha}`;
+    const pathSegment = `/repos/${context.repo.owner}/${context.repo.name}/contents/${path}`;
+    const url = `${buildGithubRestUrl(buildGithubApiBaseFromEnv(), pathSegment)}?ref=${context.baseSha}`;
     const response = await fetchImpl(url, {
         method: "GET",
         headers: githubHeaders(context.token),
@@ -21611,8 +26204,8 @@ async function postAzureStatus(input) {
             state: input.state,
             description: safeDescription,
             context: {
-                name: AZURE_STATUS_CONTEXT_NAME,
-                genre: AZURE_STATUS_CONTEXT_GENRE,
+                name: brand/* AZURE_STATUS_CONTEXT_NAME */.Z7,
+                genre: brand/* AZURE_STATUS_CONTEXT_GENRE */.PS,
             },
         }),
     });
@@ -21756,9 +26349,9 @@ function findLatestStatusByContext(entries, name, genre) {
 function findAllCliStatusIdsByContext(entries) {
     const ids = [];
     for (const entry of entries) {
-        if (entry.context.genre !== AZURE_STATUS_CONTEXT_GENRE)
+        if (entry.context.genre !== brand/* AZURE_STATUS_CONTEXT_GENRE */.PS)
             continue;
-        if (entry.context.name === AZURE_STATUS_CONTEXT_NAME
+        if (entry.context.name === brand/* AZURE_STATUS_CONTEXT_NAME */.Z7
             || entry.context.name === "UmActually") {
             ids.push(entry.id);
         }
@@ -21825,8 +26418,8 @@ async function surfaceAzureHttpError(input) {
  * helpers without going through the full `runAzureLive` orchestration.
  */
 const UMACTUALLY_STATUS_CONTEXT = {
-    name: AZURE_STATUS_CONTEXT_NAME,
-    genre: AZURE_STATUS_CONTEXT_GENRE,
+    name: brand/* AZURE_STATUS_CONTEXT_NAME */.Z7,
+    genre: brand/* AZURE_STATUS_CONTEXT_GENRE */.PS,
 };
 /**
  * Make a string safe to send as the `description` field on the ADO Pull
@@ -22079,7 +26672,6 @@ async function fetchSonarPrIssues(input) {
 
 
 
-const live_github_GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 async function runGithubLive(input) {
     const { context, diffText, provider, parsed, fetchImpl } = input;
     // Fetch SonarCloud PR issues (when the flag is set) directly from the
@@ -22235,7 +26827,7 @@ async function runGithubLive(input) {
     };
 }
 async function findExistingMarkerReview(context, fetchImpl) {
-    const response = await fetchImpl(githubReviewsUrl(context), {
+    const response = await fetchImpl(githubReviewsUrl(context, buildGithubApiBaseFromEnv()), {
         method: "GET",
         headers: githubHeaders(context.token),
     });
@@ -22254,7 +26846,7 @@ async function findExistingMarkerReview(context, fetchImpl) {
 }
 async function updateExistingReview(input) {
     try {
-        const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+        const response = await input.fetchImpl(`${githubReviewsUrl(input.context, buildGithubApiBaseFromEnv())}/${input.review.id}`, {
             method: "PUT",
             headers: githubHeaders(input.context.token),
             body: JSON.stringify({ body: input.body }),
@@ -22271,7 +26863,7 @@ async function updateExistingReview(input) {
     }
 }
 async function deleteExistingReview(input) {
-    const response = await input.fetchImpl(`${githubReviewsUrl(input.context)}/${input.review.id}`, {
+    const response = await input.fetchImpl(`${githubReviewsUrl(input.context, buildGithubApiBaseFromEnv())}/${input.review.id}`, {
         method: "DELETE",
         headers: githubHeaders(input.context.token),
     });
@@ -22287,7 +26879,7 @@ async function createGithubReview(input) {
         event: input.event,
         comments: input.comments,
     };
-    const response = await input.fetchImpl(githubReviewsUrl(input.context), {
+    const response = await input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
         method: "POST",
         headers: githubHeaders(input.context.token),
         body: JSON.stringify(request),
@@ -22309,10 +26901,8 @@ function parseExistingReview(value) {
     }
     return null;
 }
-function githubReviewsUrl(context) {
-    const owner = encodeURIComponent(context.repo.owner);
-    const repo = encodeURIComponent(context.repo.name);
-    return `${live_github_GITHUB_API_BASE_URL}/repos/${owner}/${repo}/pulls/${context.prNumber}/reviews`;
+function githubReviewsUrl(context, base) {
+    return buildGithubRestUrl(base, `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}/reviews`);
 }
 
 ;// CONCATENATED MODULE: ./src/cli/live-merge.ts
@@ -22617,7 +27207,7 @@ async function readLiveSonarReport(parsed, fetchImpl) {
         sonarTimeoutSeconds: parsed.sonarTimeoutSeconds ?? 300,
         fetchImpl: fetchImpl,
     });
-    process.stdout.write(`${BRAND_PREFIX}sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`);
+    process.stdout.write(`${brand/* BRAND_PREFIX */.rc}sonar quality gate ${sonarReport.qualityGateStatus} (${sonarReport.importedFindingCount} findings, waited=${sonarReport.waitedForTerminalQualityGate})${sonarReport.timeoutHandled ? " [timeout handled]" : ""}\n`);
     if (sonarReport.errorMessage !== undefined) {
         writeBrandedAnnotation("warning", sonarReport.errorMessage);
     }
@@ -22631,75 +27221,6 @@ function formatSonarContext(report) {
         `Waited for terminal quality gate: ${report.waitedForTerminalQualityGate}`,
         `Timeout handled: ${report.timeoutHandled}`,
     ].join("\n");
-}
-
-;// CONCATENATED MODULE: ./src/review/diff-line-utils.ts
-
-/**
- * Walk the diff text and return the raw line content for the first
- * `+` or ` ` row at the given right-side position. Falls back to an empty
- * string when the diff has no hunk header reachable for the file path.
- *
- * Exposed so the simulated-findings fixture can build context-aware bodies
- * that reference a representative token from the actual diff line.
- */
-function readDiffLine(diffText, position) {
-    const targetPath = `b/${position.path}`;
-    const diffLines = diffText.split(/\r?\n/u);
-    let currentPath = null;
-    let nextNewLine = null;
-    for (const rawLine of diffLines) {
-        if (rawLine.startsWith("diff --git ")) {
-            currentPath = null;
-            nextNewLine = null;
-            continue;
-        }
-        if (currentPath === null) {
-            const parsedPath = parseNewFilePath(rawLine);
-            if (parsedPath !== null) {
-                currentPath = parsedPath === position.path ? targetPath : parsedPath;
-            }
-            continue;
-        }
-        if (currentPath !== targetPath) {
-            continue;
-        }
-        if (rawLine.startsWith("@@ ")) {
-            const start = parseHunkStart(rawLine);
-            nextNewLine = start;
-            continue;
-        }
-        if (nextNewLine === null) {
-            continue;
-        }
-        if (rawLine.startsWith("+") || rawLine.startsWith(" ")) {
-            if (nextNewLine === position.line) {
-                return rawLine.slice(1).trim();
-            }
-            nextNewLine += 1;
-        }
-    }
-    return "";
-}
-/**
- * Pull a meaningful token out of the diff line for context-aware bodies.
- * Falls back to a path-derived identifier when the line is blank.
- */
-function extractRepresentativeToken(lineContent, path) {
-    const identifierMatch = lineContent.match(/\b([A-Za-z_$][\w$]*)\s*\(/u);
-    if (identifierMatch !== null && identifierMatch[1] !== undefined) {
-        return identifierMatch[1];
-    }
-    const declarationMatch = lineContent.match(/\b(?:const|let|var|function|class|interface|type|export)\s+([A-Za-z_$][\w$]*)/u);
-    if (declarationMatch !== null && declarationMatch[1] !== undefined) {
-        return declarationMatch[1];
-    }
-    const genericMatch = lineContent.match(/\b([A-Za-z_$][\w$]{3,})\b/u);
-    if (genericMatch !== null && genericMatch[1] !== undefined) {
-        return genericMatch[1];
-    }
-    const fallback = path.replace(/[^\w]+/gu, "_").replace(/^_+|_+$/gu, "");
-    return fallback.length > 0 ? fallback : "this change";
 }
 
 ;// CONCATENATED MODULE: ./src/review/simulated-findings.ts
@@ -22893,7 +27414,7 @@ function applySimulateFindings(input) {
     const liveSuppressedCount = input.outcome.review.suppressedComments.length;
     const isStructurallyEmpty = liveCommentCount === 0 && liveSuppressedCount === 0;
     if (!isStructurallyEmpty) {
-        const message = `${BRAND_PREFIX}--simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
+        const message = `${brand/* BRAND_PREFIX */.rc}--simulate-findings set but ignored (live result has ${liveCommentCount} inline, ${liveSuppressedCount} suppressed). Live findings always win.`;
         const sanitized = sanitizeForPost(message, input.secrets);
         process.stderr.write(`::notice::${sanitized}\n`);
         return input.outcome;
@@ -22934,7 +27455,451 @@ function sanitizeComments(comments, secrets) {
     }));
 }
 
+;// CONCATENATED MODULE: ./src/cli/review-metrics.ts
+// SPDX-License-Identifier: MIT
+//
+// Task 7 — Local-only review audit and cost metrics.
+//
+// The module owns the artifact-side data model for the Wave-2 observability
+// surface (per the `first-class-product` plan, Task 7 § Acceptance criteria):
+//
+//   * Monotonic phase durations (context, provider, verification, posting, total).
+//   * Provider usage + round-trip counts on BOTH successful and failed paths.
+//     Absent usage is OMITTED — never zero-invented.
+//   * Considered / kept / downgraded / suppressed / off-diff counts and a
+//     closed reason-histogram enum so the artifact shape stays bounded.
+//   * Full / incremental decision and policy / context hashes for cross-run
+//     auditability.
+//   * Optional local cost estimates ONLY from explicit user-configured
+//     per-token prices. Absent price yields no cost field. Configured
+//     price yields an exact decimal estimate marked `estimated` with
+//     currency + source. Pricing is NEVER inferred from the model name.
+//   * Additive JSON envelope versioning: the audit block carries its own
+//     `auditSchemaVersion: 2` discriminator so existing v1 readers
+//     (whose envelopes have `schemaVersion: 1`) keep parsing unchanged.
+//   * Redaction: secrets and URLs (query string + fragment stripped) are
+//     scrubbed from the serialized artifact. No telemetry is sent.
+//
+// The module is intentionally pure (no I/O, no clock side-effects) so
+// tests can drive every code path with deterministic inputs and no
+// real wall-clock measurement.
+
+
+const REASON_KIND_VALUES = [
+    "off-diff",
+    "truncation",
+    "parse-failure",
+    "budget-exhausted",
+    "secret-bearing",
+    "unsupported-language",
+    "parse-failed",
+    "below-threshold",
+    "carried-over",
+    "unchanged",
+    "manual-full",
+];
+const ALL_REASON_KINDS = (/* unused pure expression or super */ null && (REASON_KIND_VALUES));
+/** Return a fresh histogram object with every reason set to zero. */
+function emptyReasonHistogram() {
+    const h = {
+        "off-diff": 0,
+        "truncation": 0,
+        "parse-failure": 0,
+        "budget-exhausted": 0,
+        "secret-bearing": 0,
+        "unsupported-language": 0,
+        "parse-failed": 0,
+        "below-threshold": 0,
+        "carried-over": 0,
+        "unchanged": 0,
+        "manual-full": 0,
+    };
+    return h;
+}
+/** Empty counts (all zeros) — useful as a default and in tests. */
+function emptyConsideredCounts() {
+    return { considered: 0, kept: 0, downgraded: 0, suppressed: 0, offDiff: 0 };
+}
+/**
+ * Translate a wire-shape `ProviderUsage` into the audit-side
+ * camelCase `ProviderUsageRecord`. The `roundTrips` field is the
+ * orchestrator-side count, not a wire field — the caller passes it
+ * in explicitly so this helper stays purely declarative.
+ *
+ * Round-trip propagation rule:
+ *   - Provider emitted a wire usage block → caller has likely
+ *     incremented `recordRoundTrip()` at the provider boundary.
+ *     Pass that count in so the final audit record carries the
+ *     observed HTTP round-trip count even if the provider's wire
+ *     usage block was empty.
+ *   - No wire usage block → caller still passes the round-trip
+ *     count so the audit can attribute the round-trip separately.
+ */
+function normalizeProviderUsage(wire, roundTrips) {
+    const out = { roundTrips };
+    if (wire === undefined)
+        return out;
+    if (typeof wire.input_tokens === "number")
+        out.inputTokens = wire.input_tokens;
+    if (typeof wire.output_tokens === "number")
+        out.outputTokens = wire.output_tokens;
+    if (typeof wire.total_tokens === "number")
+        out.totalTokens = wire.total_tokens;
+    return out;
+}
+// ---------------------------------------------------------------------------
+// Envelope versioning
+// ---------------------------------------------------------------------------
+/**
+ * Additive audit schema version. The audit block lives under
+ * `envelope.data.audit` (or `envelope.audit` for the live-artifact
+ * writer — see the artifact adapter). v1 readers that do not know
+ * about the audit block keep parsing the v1 envelope unchanged;
+ * v2 readers (this module's consumers) get the additional fields.
+ *
+ * Bumping this number is a deliberate decision: it means the audit
+ * shape has changed incompatibly. Additive field additions stay
+ * under v2; breaking renames or removals require a new version.
+ */
+const AUDIT_SCHEMA_VERSION = 2;
+/**
+ * Build a fresh review-metrics builder. The builder is single-use: once
+ * `finalize` is called the captured state freezes and any subsequent
+ * call to a `begin*` / `end*` / `set*` method becomes a no-op. This
+ * matches the "one metrics object per run" contract the orchestrator
+ * relies on.
+ */
+function buildReviewMetrics(opts = {}) {
+    const now = opts.now ?? (() => Date.now());
+    const state = {
+        phaseStartedAt: { context: null, provider: null, verification: null, posting: null },
+        phaseEndedAt: { context: null, provider: null, verification: null, posting: null },
+        runStartedAt: now(),
+        counts: emptyConsideredCounts(),
+        reasons: emptyReasonHistogram(),
+        usage: undefined,
+        pricing: undefined,
+        decision: undefined,
+        policyHash: undefined,
+        contextHash: undefined,
+        secrets: [],
+        urls: [],
+        roundTrips: 0,
+    };
+    let finalized = false;
+    const guard = () => {
+        if (finalized)
+            return false;
+        return true;
+    };
+    const stamp = (which, end) => {
+        if (!guard())
+            return;
+        const bucket = (end ? state.phaseEndedAt : state.phaseStartedAt);
+        bucket[which] = now();
+    };
+    const builder = {
+        beginContext: () => stamp("context", false),
+        endContext: () => stamp("context", true),
+        beginProvider: () => stamp("provider", false),
+        endProvider: () => stamp("provider", true),
+        beginVerification: () => stamp("verification", false),
+        endVerification: () => stamp("verification", true),
+        beginPosting: () => stamp("posting", false),
+        endPosting: () => stamp("posting", true),
+        setUsage: (usage) => {
+            if (!guard())
+                return;
+            state.usage = usage;
+        },
+        recordRoundTrip: () => {
+            if (!guard())
+                return;
+            state.roundTrips += 1;
+        },
+        setCounts: (counts) => {
+            if (!guard())
+                return;
+            state.counts = counts;
+        },
+        incrementReason: (kind, by = 1) => {
+            if (!guard())
+                return;
+            if (!REASON_KIND_VALUES.includes(kind)) {
+                // Defensive: an unknown reason must NEVER silently grow the
+                // histogram. The contract is that the histogram is closed.
+                // Throwing here surfaces the offending call site loudly.
+                throw new RangeError(`incrementReason: unknown kind "${kind}". Expected one of: ${REASON_KIND_VALUES.join(", ")}`);
+            }
+            const current = state.reasons[kind] ?? 0;
+            const next = {
+                "off-diff": state.reasons["off-diff"],
+                "truncation": state.reasons["truncation"],
+                "parse-failure": state.reasons["parse-failure"],
+                "budget-exhausted": state.reasons["budget-exhausted"],
+                "secret-bearing": state.reasons["secret-bearing"],
+                "unsupported-language": state.reasons["unsupported-language"],
+                "parse-failed": state.reasons["parse-failed"],
+                "below-threshold": state.reasons["below-threshold"],
+                "carried-over": state.reasons["carried-over"],
+                "unchanged": state.reasons["unchanged"],
+                "manual-full": state.reasons["manual-full"],
+            };
+            next[kind] = current + by;
+            state.reasons = next;
+        },
+        setDecision: (decision) => {
+            if (!guard())
+                return;
+            state.decision = decision;
+        },
+        setPolicyHash: (hash) => {
+            if (!guard())
+                return;
+            state.policyHash = hash;
+        },
+        setContextHash: (hash) => {
+            if (!guard())
+                return;
+            state.contextHash = hash;
+        },
+        setPricing: (pricing) => {
+            if (!guard())
+                return;
+            state.pricing = pricing;
+        },
+        recordSecret: (secret) => {
+            if (!guard())
+                return;
+            if (secret.length > 0 && !state.secrets.includes(secret)) {
+                state.secrets.push(secret);
+            }
+        },
+        recordUrl: (url) => {
+            if (!guard())
+                return;
+            if (url.length > 0 && !state.urls.includes(url)) {
+                state.urls.push(url);
+            }
+        },
+        finalize: () => {
+            finalized = true;
+            return finalizeFromState(state, now());
+        },
+    };
+    return builder;
+}
+/**
+ * Freeze the builder's captured state into a `ReviewMetrics` record.
+ * Performs the duration arithmetic, the cost estimate (if applicable),
+ * and the OMIT-when-absent contract.
+ */
+function finalizeReviewMetrics(builder) {
+    return builder.finalize();
+}
+/**
+ * Build a `ReviewMetrics` record from a pre-validated internal state.
+ * Public so tests and the live orchestrator can produce the same
+ * record directly without going through the builder's `begin*` /
+ * `end*` lifecycle (e.g. when reading a pre-captured metrics object
+ * off the wire).
+ */
+function durationMs(started, ended) {
+    if (started === null || ended === null)
+        return 0;
+    return Math.max(0, ended - started);
+}
+function computePhaseDurations(state) {
+    return {
+        contextMs: durationMs(state.phaseStartedAt.context, state.phaseEndedAt.context),
+        providerMs: durationMs(state.phaseStartedAt.provider, state.phaseEndedAt.provider),
+        verificationMs: durationMs(state.phaseStartedAt.verification, state.phaseEndedAt.verification),
+        postingMs: durationMs(state.phaseStartedAt.posting, state.phaseEndedAt.posting),
+    };
+}
+function isValidPricing(pricing) {
+    return typeof pricing.inputPricePer1kTokens === "number" &&
+        typeof pricing.outputPricePer1kTokens === "number" &&
+        Number.isFinite(pricing.inputPricePer1kTokens) &&
+        Number.isFinite(pricing.outputPricePer1kTokens) &&
+        pricing.inputPricePer1kTokens >= 0 &&
+        pricing.outputPricePer1kTokens >= 0;
+}
+function computeCostEstimate(usage, pricing) {
+    if (usage === undefined || pricing === undefined || !isValidPricing(pricing))
+        return undefined;
+    const inputTokens = usage.inputTokens;
+    const outputTokens = usage.outputTokens;
+    if (typeof inputTokens !== "number" || typeof outputTokens !== "number")
+        return undefined;
+    const total = (inputTokens / 1000) * pricing.inputPricePer1kTokens +
+        (outputTokens / 1000) * pricing.outputPricePer1kTokens;
+    if (!Number.isFinite(total))
+        return undefined;
+    return { total, currency: pricing.currency, source: pricing.source, estimate: "estimated" };
+}
+function finalizeFromState(state, nowMs) {
+    const phaseDurations = computePhaseDurations(state);
+    // totalMs is anchored on run start (captured at `buildReviewMetrics`
+    // time) and `now`. This guarantees totalMs >= sum of phases even
+    // when the orchestrator's pre/post timing diverges from a
+    // per-phase begin/end pair.
+    const totalMs = Math.max(0, nowMs - state.runStartedAt);
+    // The provider usage record carries the round-trip count even when
+    // the provider emitted no usage block. We split the two so callers
+    // can read round-trips on the failed-path even if `usage` itself is
+    // undefined.
+    const usage = state.usage;
+    const roundTrips = state.roundTrips + (usage?.roundTrips ?? 0);
+    const cost = computeCostEstimate(usage, state.pricing);
+    const out = {
+        durations: { ...phaseDurations, totalMs },
+        counts: state.counts,
+        reasons: state.reasons,
+        ...(usage !== undefined
+            ? { usage: { ...usage, roundTrips } }
+            : {}),
+        ...(roundTrips > 0 ? { usageRoundTrips: roundTrips } : {}),
+        ...(cost !== undefined ? { cost } : {}),
+        ...(state.decision !== undefined ? { decision: state.decision } : {}),
+        ...(state.policyHash !== undefined ? { policyHash: state.policyHash } : {}),
+        ...(state.contextHash !== undefined ? { contextHash: state.contextHash } : {}),
+        redactions: {
+            secrets: state.secrets.length,
+            urls: state.urls.length,
+        },
+    };
+    return out;
+}
+// ---------------------------------------------------------------------------
+// Hashing — policy + context
+// ---------------------------------------------------------------------------
+/**
+ * Stable canonicalization for JSON object inputs: sort keys
+ * deterministically. Recurses into nested objects and arrays. Used by
+ * the policy + context hashers so two callers that build the same
+ * logical policy in different property-order produce the same hash.
+ */
+function canonicalizeJson(value) {
+    if (value === null || typeof value !== "object")
+        return value;
+    if (Array.isArray(value))
+        return value.map(canonicalizeJson);
+    const obj = value;
+    const sorted = {};
+    for (const k of Object.keys(obj).sort((a, b) => a.localeCompare(b))) {
+        sorted[k] = canonicalizeJson(obj[k]);
+    }
+    return sorted;
+}
+/**
+ * Redact every secret the operator asked us to remember, AND strip
+ * any URL query string + fragment, before hashing. This is the
+ * "no token leaks into the audit hash" guarantee: even if the
+ * caller accidentally passes a struct that contains
+ * `{ token: "abc" }` or `"https://x?token=abc"`, the hash is taken
+ * over the redacted form so a leak in one run does not propagate
+ * to all downstream comparison consumers.
+ */
+function redactForHash(value) {
+    if (typeof value === "string") {
+        return redactUrlForLog(value);
+    }
+    if (Array.isArray(value)) {
+        return value.map(redactForHash);
+    }
+    if (value !== null && typeof value === "object") {
+        const obj = value;
+        const out = {};
+        for (const k of Object.keys(obj)) {
+            out[k] = redactForHash(obj[k]);
+        }
+        return out;
+    }
+    return value;
+}
+/**
+ * SHA-256 hex digest of the canonicalized + redacted JSON of the
+ * policy. Two policies with the same logical contents (modulo key
+ * order, secret literals, or query-string parameters) hash equal.
+ *
+ * Format: lowercase hex, 64 chars.
+ */
+function computePolicyHash(policy) {
+    const redacted = redactForHash(policy);
+    const canonical = JSON.stringify(canonicalizeJson(redacted));
+    return createHash("sha256").update(canonical).digest("hex");
+}
+/** Same contract as `computePolicyHash`, applied to the context input. */
+function computeContextHash(context) {
+    const redacted = redactForHash(context);
+    const canonical = JSON.stringify(canonicalizeJson(redacted));
+    return createHash("sha256").update(canonical).digest("hex");
+}
+// ---------------------------------------------------------------------------
+// Redaction
+// ---------------------------------------------------------------------------
+/**
+ * Redact a URL's query string and fragment. Thin re-export of the
+ * canonical URL redaction helper in `src/util/url.ts` so audit-block
+ * consumers do not have to import the URL utility directly.
+ *
+ * Always returns a string; never throws. Unparseable input is
+ * substring-stripped, never silently accepted.
+ */
+function redactUrl(value) {
+    return redactUrlForLog(value);
+}
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
+/**
+ * Serialize a `ReviewMetrics` record to a single-line JSON string.
+ * Performs the secret + URL redaction pass before stringifying so the
+ * artifact never contains a token, query string, or fragment.
+ *
+ * The audit block carries its own `auditSchemaVersion: 2` marker so
+ * v1 readers can detect "this is the new audit format" without
+ * breaking on unknown top-level fields.
+ *
+ * Callers that want a stable, byte-for-byte artifact (e.g. evidence
+ * snapshots) should use this helper rather than `JSON.stringify` so
+ * the redaction pass is not bypassed.
+ */
+function serializeReviewAudit(metrics) {
+    return JSON.stringify(wrapAuditEnvelope(metrics));
+}
+// ---------------------------------------------------------------------------
+// Audit envelope wrapping
+// ---------------------------------------------------------------------------
+/**
+ * Wrap a `ReviewMetrics` record under the additive `audit` envelope
+ * shape that gets attached to either the v1 CLI envelope's `data`
+ * block or the live-artifact body's `audit` field. The wrapper is
+ * additive: existing envelope consumers that do not know about the
+ * audit block ignore it; new consumers that do can detect the
+ * schema version from `auditSchemaVersion`.
+ */
+function wrapAuditEnvelope(metrics) {
+    return {
+        audit: {
+            auditSchemaVersion: AUDIT_SCHEMA_VERSION,
+            durations: metrics.durations,
+            counts: metrics.counts,
+            reasons: metrics.reasons,
+            ...(metrics.usage !== undefined ? { usage: metrics.usage } : {}),
+            ...(metrics.usageRoundTrips !== undefined ? { usageRoundTrips: metrics.usageRoundTrips } : {}),
+            ...(metrics.cost !== undefined ? { cost: metrics.cost } : {}),
+            ...(metrics.decision !== undefined ? { decision: metrics.decision } : {}),
+            ...(metrics.policyHash !== undefined ? { policyHash: metrics.policyHash } : {}),
+            ...(metrics.contextHash !== undefined ? { contextHash: metrics.contextHash } : {}),
+            redactions: metrics.redactions,
+        },
+    };
+}
+
 ;// CONCATENATED MODULE: ./src/cli/orchestrator.ts
+
 
 
 
@@ -23074,10 +28039,16 @@ async function runLive(input) {
     const env = input.env ?? process.env;
     const fetchImpl = input.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const platform = detectLivePlatform(env);
+    // The metrics builder is created up-front so every pre-review
+    // exit path (missing platform, missing config) can still freeze
+    // a partial record for the artifact writer. Frozen records on a
+    // failed pre-review path carry zeros for every phase + the
+    // redaction summary the operator recorded via `metrics.recordSecret`.
+    const metrics = buildReviewMetrics();
     if (platform === null) {
         const message = "Live review requires GitHub Actions (GITHUB_ACTIONS=true) or Azure Pipelines (TF_BUILD=True).";
-        process.stdout.write(`${BRAND_PREFIX}${message}\n`);
-        return failedResult(message);
+        process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${message}\n`);
+        return { ...failedResult(message), metrics: finalizeReviewMetrics(metrics) };
     }
     // Copilot + Anthropic-native providers don't need UMACTUALLY_API_URL:
     //   - Copilot uses the GitHub Copilot token exchange endpoint.
@@ -23100,9 +28071,9 @@ async function runLive(input) {
             // it tells the operator exactly how to set the env var / flag and
             // points to --dry-run as an escape hatch when they want to verify
             // the CLI without contacting the provider.
-            const hintLine = error.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${error.hint}`;
-            process.stdout.write(`${BRAND_PREFIX}${message}${hintLine}\n`);
-            return failedResult(message);
+            const hintLine = error.hint === undefined ? "" : `\n${brand/* BRAND_PREFIX */.rc}hint: ${error.hint}`;
+            process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${message}${hintLine}\n`);
+            return { ...failedResult(message), metrics: finalizeReviewMetrics(metrics) };
         }
         throw error;
     }
@@ -23135,6 +28106,7 @@ async function runLive(input) {
             env,
             fetchImpl: countingFetch,
             ...(sonarContext !== undefined ? { sonarContext } : {}),
+            metrics,
         });
     }
     catch (error) {
@@ -23155,13 +28127,25 @@ async function runLive(input) {
         else if (error instanceof AzureContextError || error instanceof GithubContextError) {
             hint = buildPlatformContextHint(error);
         }
-        const hintLine = hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${hint}`;
-        process.stdout.write(`${BRAND_PREFIX}${sanitized}${hintLine}\n`);
-        return failedResult(sanitized);
+        const hintLine = hint === undefined ? "" : `\n${brand/* BRAND_PREFIX */.rc}hint: ${hint}`;
+        process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${sanitized}${hintLine}\n`);
+        metrics.endContext();
+        const frozen = finalizeReviewMetrics(metrics);
+        return { ...failedResult(sanitized), metrics: frozen };
     }
     if (result.posted) {
-        process.stdout.write(`${BRAND_PREFIX}${result.message}\n`);
+        process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${result.message}\n`);
     }
+    // Mark the verification phase. The provider phase ended inside
+    // `dispatchLivePlatform` so the round-trip duration is scoped to
+    // the actual provider call window. Verification is a no-op slot
+    // in the current architecture (the verified-facts and confidence
+    // filters run inline with the provider call). The posting phase
+    // was also started/ended inside `dispatchLivePlatform` so the
+    // platform round-trip duration is captured there.
+    metrics.beginVerification();
+    metrics.endVerification();
+    const frozenMetrics = finalizeReviewMetrics(metrics);
     // Attach scope-limited telemetry for the artifact writer. Failed
     // pre-review paths return early via failedResult, so they never
     // reach this point — the suspicious-signal guard only fires on
@@ -23171,6 +28155,7 @@ async function runLive(input) {
         ...result,
         providerRoundTrips: counter.providerRoundTrips,
         reviewDurationMs: Date.now() - startedAt,
+        metrics: frozenMetrics,
     };
 }
 /**
@@ -23183,7 +28168,11 @@ async function runLive(input) {
  * off-diff count regardless of what the live API actually returned.
  */
 async function dispatchLivePlatform(input) {
-    const { platform, parsed, cwd, env, fetchImpl, sonarContext } = input;
+    const { platform, parsed, cwd, env, fetchImpl, sonarContext, metrics } = input;
+    // The "context" phase covers every pre-provider call: PR / diff /
+    // instruction-file fetch, leak-gate, SonarQube wait, and the
+    // platform-context read. End the phase just before `requestLiveReview`.
+    metrics.beginContext();
     switch (platform) {
         case "github": {
             const context = await readGithubContext(env);
@@ -23201,8 +28190,11 @@ async function dispatchLivePlatform(input) {
             });
             if (!leakGate.ok) {
                 logError("", leakGate.message);
-                return failedResult(leakGate.message);
+                metrics.endContext();
+                return { ...failedResult(leakGate.message), metrics: finalizeReviewMetrics(metrics) };
             }
+            metrics.endContext();
+            metrics.beginProvider();
             const liveOutcome = await requestLiveReview({
                 parsed,
                 cwd,
@@ -23214,6 +28206,8 @@ async function dispatchLivePlatform(input) {
                 ...(instructionFilesByBaseBranch !== undefined ? { instructionFilesByBaseBranch } : {}),
                 ...(sonarContext !== undefined ? { sonarContext } : {}),
             });
+            metrics.endProvider();
+            attachUsageToMetrics(metrics, liveOutcome);
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
                 simulateFindings: parsed.simulateFindings === true,
@@ -23223,13 +28217,17 @@ async function dispatchLivePlatform(input) {
                 diffText,
                 secrets: [context.token],
             });
-            return runGithubLive({
+            attachConsideredCountsToMetrics(metrics, finalOutcome);
+            metrics.beginPosting();
+            const result = await runGithubLive({
                 context,
                 diffText,
                 provider: finalOutcome,
                 parsed,
                 fetchImpl,
             });
+            metrics.endPosting();
+            return result;
         }
         case "azure": {
             // Forward --pr-number (when supplied) to the Azure context reader so
@@ -23280,8 +28278,10 @@ async function dispatchLivePlatform(input) {
             });
             if (!leakGate.ok) {
                 logError("", leakGate.message);
-                return failedResult(leakGate.message);
+                metrics.endContext();
+                return { ...failedResult(leakGate.message), metrics: finalizeReviewMetrics(metrics) };
             }
+            metrics.endContext();
             // Gate the live review on the configured file count. The default
             // 200-file cap is a quality choice: chunked LLM reviews of an
             // arbitrarily-large initial-import diff produce hallucinated
@@ -23290,8 +28290,9 @@ async function dispatchLivePlatform(input) {
             const reviewFileLimit = parsed.reviewFileLimit ?? DEFAULT_REVIEW_FILE_LIMIT;
             const fileCount = countDiffFiles(diffText);
             let liveOutcome;
+            metrics.beginProvider();
             if (reviewFileLimit > 0 && fileCount > reviewFileLimit) {
-                process.stdout.write(`${BRAND_PREFIX}skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
+                process.stdout.write(`${brand/* BRAND_PREFIX */.rc}skipping live review — PR changes ${fileCount} files, exceeds --review-file-limit=${reviewFileLimit}. Use --review-file-limit 0 to disable.\n`);
                 liveOutcome = {
                     review: buildTooLargeFallback({
                         fileCount,
@@ -23310,6 +28311,7 @@ async function dispatchLivePlatform(input) {
                     verifiedFactsFilter: { kept: [], downgraded: [], downgradeReasons: [] },
                     confidenceFilter: { kept: [], downgraded: [], reasons: [] },
                 };
+                metrics.endProvider();
             }
             else {
                 const chunks = chunkDiffByFile(diffText);
@@ -23333,7 +28335,7 @@ async function dispatchLivePlatform(input) {
                     // Chunked path: feed each per-file chunk to the provider in
                     // parallel (bounded by DEFAULT_CHUNK_CONCURRENCY) and merge
                     // the per-chunk outcomes into a single LiveProviderOutcome.
-                    process.stdout.write(`${BRAND_PREFIX}chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
+                    process.stdout.write(`${brand/* BRAND_PREFIX */.rc}chunking large PR diff into ${chunks.length} provider requests (max concurrency ${DEFAULT_CHUNK_CONCURRENCY}).\n`);
                     liveOutcome = await requestChunkedLiveReview({
                         parsed,
                         cwd,
@@ -23346,7 +28348,9 @@ async function dispatchLivePlatform(input) {
                         ...(sonarContext !== undefined ? { sonarContext } : {}),
                     });
                 }
+                metrics.endProvider();
             }
+            attachUsageToMetrics(metrics, liveOutcome);
             const finalOutcome = applySimulateFindings({
                 outcome: liveOutcome,
                 simulateFindings: parsed.simulateFindings === true,
@@ -23356,16 +28360,52 @@ async function dispatchLivePlatform(input) {
                 diffText,
                 secrets: [context.token],
             });
-            return runAzureLive({
+            attachConsideredCountsToMetrics(metrics, finalOutcome);
+            metrics.beginPosting();
+            const azureResult = await runAzureLive({
                 context,
                 diffText,
                 provider: finalOutcome,
                 parsed,
                 fetchImpl,
             });
+            metrics.endPosting();
+            return azureResult;
         }
         default:
             return orchestrator_assertNever(platform);
+    }
+}
+/**
+ * Attach the provider's `usage` block (when present) to the metrics
+ * builder. NEUTRAL on absence: the builder simply leaves `usage`
+ * undefined so the final record omits the field entirely (the
+ * NEVER-zero-invented contract).
+ */
+function attachUsageToMetrics(metrics, outcome) {
+    if (outcome.usage !== undefined) {
+        metrics.setUsage({ ...outcome.usage, roundTrips: 0 });
+    }
+}
+/**
+ * Translate the `LiveProviderOutcome`'s considered/kept/downgraded/
+ * suppressed/off-diff counts into the closed-enum reason histogram
+ * so the audit artifact can render "this review suppressed N
+ * findings because of M reason-K" without re-plumbing the parser.
+ */
+function attachConsideredCountsToMetrics(metrics, outcome) {
+    const considered = outcome.review.comments.length;
+    const suppressed = outcome.review.suppressedComments.length;
+    const offDiff = outcome.parseWarnings.length;
+    const downgraded = (outcome.verifiedFactsFilter?.downgraded.length ?? 0)
+        + (outcome.confidenceFilter?.downgraded.length ?? 0);
+    const kept = Math.max(0, considered - downgraded - offDiff - suppressed);
+    metrics.setCounts({ considered, kept, downgraded, suppressed, offDiff });
+    if (offDiff > 0) {
+        metrics.incrementReason("off-diff", offDiff);
+    }
+    if (outcome.review.parseFailed === true) {
+        metrics.incrementReason("parse-failed", 1);
     }
 }
 function detectLivePlatform(env) {
@@ -23452,6 +28492,7 @@ function buildPlatformContextHint(error) {
 
 
 
+
 const DEFAULT_AZURE_ARTIFACT = "artifacts/manual/s4-azure-mocked-run.json";
 const DEFAULT_REDACTION_REPORT = "artifacts/manual/s5-redaction-report.json";
 const DEFAULT_SONAR_REPORT = "artifacts/manual/s6-sonar-mocked-run.json";
@@ -23470,9 +28511,9 @@ async function runDryRun(parsed, cwd, platform) {
     const envSources = readEnvSources(process.env);
     const artifactBody = await buildDryRunArtifact(parsed, platform, cwd);
     mergeEnvDiagnostics(artifactBody, envSources);
-    await (0,promises_.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
+    await (0,promises_.mkdir)((0,external_node_path_.dirname)(artifactPath), { recursive: true });
     await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(artifactBody, null, 2)}\n`, "utf8");
-    process.stdout.write(`${BRAND_PREFIX}dry-run wrote ${artifactPath}\n`);
+    process.stdout.write(`${brand/* BRAND_PREFIX */.rc}dry-run wrote ${artifactPath}\n`);
     return { exitCode: 0 };
 }
 /**
@@ -23568,12 +28609,12 @@ function buildSecretsDetected(env) {
 }
 function resolveArtifactPath(outputArtifact, platform, cwd) {
     if (outputArtifact !== null) {
-        return (0,external_node_path_namespaceObject.isAbsolute)(outputArtifact) ? outputArtifact : (0,external_node_path_namespaceObject.resolve)(cwd, outputArtifact);
+        return (0,external_node_path_.isAbsolute)(outputArtifact) ? outputArtifact : (0,external_node_path_.resolve)(cwd, outputArtifact);
     }
     const defaultRelative = platform === "github"
         ? "artifacts/manual/s1-github-self-review.md"
         : DEFAULT_AZURE_ARTIFACT;
-    return (0,external_node_path_namespaceObject.resolve)(cwd, defaultRelative);
+    return (0,external_node_path_.resolve)(cwd, defaultRelative);
 }
 async function buildDryRunArtifact(parsed, platform, cwd) {
     if (platform === "github") {
@@ -23717,7 +28758,7 @@ async function maybeMergeSonarReport(parsed, body) {
     body["sonarReport"] = report;
 }
 async function readRequiredFile(path, cwd, label) {
-    const absolute = (0,external_node_path_namespaceObject.isAbsolute)(path) ? path : (0,external_node_path_namespaceObject.resolve)(cwd, path);
+    const absolute = (0,external_node_path_.isAbsolute)(path) ? path : (0,external_node_path_.resolve)(cwd, path);
     try {
         return await (0,promises_.readFile)(absolute, "utf8");
     }
@@ -23772,12 +28813,12 @@ function validateLiveArtifact(artifactPath, reviewExitCode) {
     // path: surface advisory warnings on stderr so a local operator
     // sees suspicious telemetry without needing to parse CI annotations.
     for (const warning of classification.warnings) {
-        process.stderr.write(`${BRAND_PREFIX}warning: ${warning}\n`);
+        process.stderr.write(`${brand/* BRAND_PREFIX */.rc}warning: ${warning}\n`);
     }
     if (classification.ok) {
         return reviewExitCode;
     }
-    process.stderr.write(`${BRAND_PREFIX}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`);
+    process.stderr.write(`${brand/* BRAND_PREFIX */.rc}${artifactPath}: ${classification.reason ?? "invalid review artifact"}\n`);
     return 1;
 }
 /**
@@ -23814,7 +28855,16 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
     // via the GitHub/Azure API leaves no local trace and the guard sees
     // an empty artifact directory.
     const artifactPath = resolveArtifactPath(parsed.outputArtifact, platform, cwd);
-    await (0,promises_.mkdir)((0,external_node_path_namespaceObject.dirname)(artifactPath), { recursive: true });
+    await (0,promises_.mkdir)((0,external_node_path_.dirname)(artifactPath), { recursive: true });
+    // Wrap the optional metrics record under the additive `audit`
+    // envelope. The wrapper is versioned (`auditSchemaVersion: 2`) so
+    // existing v1 readers that look at the top-level fields keep
+    // parsing the artifact unchanged. The audit block is the single
+    // place that carries the local review metrics (durations, usage,
+    // reason histogram, decision, hashes, cost estimate, redactions).
+    const auditEnvelope = result.metrics !== undefined
+        ? { audit: wrapAuditEnvelope(result.metrics).audit }
+        : {};
     if (!result.posted) {
         const body = {
             artifactPath,
@@ -23825,6 +28875,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
             suppressedCommentCount: 0,
             blockedRawOutput: false,
             parseFailed: true,
+            ...auditEnvelope,
             note: "Live review did not post anything via the GitHub/Azure API. Inspect the action log for the underlying parser/network error.",
         };
         await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
@@ -23848,6 +28899,7 @@ async function writeLiveArtifact(parsed, cwd, platform, result) {
         ...(result.verdict !== undefined ? { verdict: result.verdict } : {}),
         ...(result.reviewDurationMs !== undefined ? { reviewDurationMs: result.reviewDurationMs } : {}),
         ...(result.providerRoundTrips !== undefined ? { providerRoundTrips: result.providerRoundTrips } : {}),
+        ...auditEnvelope,
         note: "Live review posted successfully; counts reflect what the GitHub/Azure API saw.",
     };
     await (0,promises_.writeFile)(artifactPath, `${JSON.stringify(body, null, 2)}\n`, "utf8");
@@ -23891,8 +28943,6 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
     await (0,promises_.writeFile)(path, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }
 
-;// CONCATENATED MODULE: external "node:crypto"
-const external_node_crypto_namespaceObject = __WEBPACK_EXTERNAL_createRequire(import.meta.url)("node:crypto");
 ;// CONCATENATED MODULE: ./src/cli/local-files-run.ts
 /**
  * Runs a provider-only review over local files/directories for the
@@ -23921,14 +28971,14 @@ function reasonFor(error) {
     return error instanceof Error ? error.message : String(error);
 }
 async function candidatePaths(inputPath, cwd) {
-    const absolute = (0,external_node_path_namespaceObject.resolve)(cwd, inputPath);
+    const absolute = (0,external_node_path_.resolve)(cwd, inputPath);
     let info;
     try {
         info = await promises_.lstat(absolute);
     }
     catch (error) {
         // eslint-disable-next-line no-console -- surface skipped local paths to CLI users
-        console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
+        console.error(`${brand/* BRAND_PREFIX */.rc}--files: skipped ${inputPath} (${reasonFor(error)})`);
         return [];
     }
     if (info.isSymbolicLink()) {
@@ -23941,11 +28991,11 @@ async function candidatePaths(inputPath, cwd) {
         const entries = await promises_.readdir(absolute, { recursive: true, withFileTypes: true });
         return entries
             .filter((entry) => entry.isFile() && !entry.isSymbolicLink())
-            .map((entry) => (0,external_node_path_namespaceObject.resolve)(entry.parentPath, entry.name));
+            .map((entry) => (0,external_node_path_.resolve)(entry.parentPath, entry.name));
     }
     catch (error) {
         // eslint-disable-next-line no-console -- surface skipped directory scans to CLI users
-        console.error(`${BRAND_PREFIX}--files: skipped ${inputPath} (${reasonFor(error)})`);
+        console.error(`${brand/* BRAND_PREFIX */.rc}--files: skipped ${inputPath} (${reasonFor(error)})`);
         return [];
     }
 }
@@ -23973,8 +29023,8 @@ async function collectFiles(paths, cwd) {
     const candidates = (await Promise.all(paths.map((path) => candidatePaths(path, cwd)))).flat();
     const unique = new Set();
     for (const absolute of candidates) {
-        const relativePath = (0,external_node_path_namespaceObject.relative)(cwd, absolute).replaceAll("\\", "/");
-        if (isExcludedPath(relativePath)) {
+        const relativePath = (0,external_node_path_.relative)(cwd, absolute).replaceAll("\\", "/");
+        if (cli_isExcludedPath(relativePath)) {
             continue;
         }
         let binary = false;
@@ -23983,12 +29033,12 @@ async function collectFiles(paths, cwd) {
         }
         catch (error) {
             // eslint-disable-next-line no-console -- surface unreadable local files to CLI users
-            console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (${reasonFor(error)})`);
+            console.error(`${brand/* BRAND_PREFIX */.rc}--files: skipped ${relativePath} (${reasonFor(error)})`);
             continue;
         }
         if (binary) {
             // eslint-disable-next-line no-console -- explain binary-file exclusions to CLI users
-            console.error(`${BRAND_PREFIX}--files: skipped ${relativePath} (binary)`);
+            console.error(`${brand/* BRAND_PREFIX */.rc}--files: skipped ${relativePath} (binary)`);
             continue;
         }
         unique.add((0,external_node_fs_.realpathSync)(absolute));
@@ -24019,7 +29069,7 @@ async function synthesize(files, cwd) {
     const blocks = [];
     for (const absolute of files) {
         const content = truncate(await promises_.readFile(absolute, "utf8"));
-        const relativePath = (0,external_node_path_namespaceObject.relative)(cwd, absolute).replaceAll("\\", "/");
+        const relativePath = (0,external_node_path_.relative)(cwd, absolute).replaceAll("\\", "/");
         blocks.push(diffBlock(relativePath, content));
     }
     return blocks.join("\n");
@@ -24027,8 +29077,8 @@ async function synthesize(files, cwd) {
 async function runLocalFilesReview(input) {
     const paths = splitPaths(input.parsed.files);
     const files = await collectFiles(paths, input.cwd);
-    const diffPath = (0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx", `local-files-${input.parsed.dryRun ? "dry-run" : (0,external_node_crypto_namespaceObject.randomUUID)()}.diff`);
-    const artifactPath = (0,external_node_path_namespaceObject.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
+    const diffPath = (0,external_node_path_.join)(input.cwd, ".umactually-auto-ctx", `local-files-${input.parsed.dryRun ? "dry-run" : (0,external_node_crypto_.randomUUID)()}.diff`);
+    const artifactPath = (0,external_node_path_.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
     if (files.length === 0) {
         return { kind: "ok-no-files", artifactPath, note: "no files matched (excluded or non-existent)" };
     }
@@ -24036,7 +29086,7 @@ async function runLocalFilesReview(input) {
     if (input.parsed.dryRun) {
         return { kind: "ok", artifactPath: diffPath, review: { comments: [], verdict: "COMMENT", summary: "local-files dry run" } };
     }
-    await promises_.mkdir((0,external_node_path_namespaceObject.join)(input.cwd, ".umactually-auto-ctx"), { recursive: true });
+    await promises_.mkdir((0,external_node_path_.join)(input.cwd, ".umactually-auto-ctx"), { recursive: true });
     await promises_.writeFile(diffPath, diffText, "utf8");
     const result = await runStandalone({
         parsed: { ...input.parsed, diffPath, files: null }, cwd: input.cwd, env: input.env,
@@ -24159,7 +29209,7 @@ function writeSyntheticEventJson(filePath, args) {
  * recursive remove. The directory is created lazily on first write.
  */
 function tempDirPath(cwd) {
-    return (0,external_node_path_namespaceObject.join)(cwd, ".umactually-auto-ctx");
+    return (0,external_node_path_.join)(cwd, ".umactually-auto-ctx");
 }
 /** True when the named local branch ref resolves. */
 function localBranchExists(cwd, branch) {
@@ -24238,10 +29288,10 @@ function deriveContextFromGit(input) {
     const tempDir = tempDirPath(cwd);
     const diffPath = diffOverride !== undefined && diffOverride !== null
         ? diffOverride
-        : (0,external_node_path_namespaceObject.join)(tempDir, "diff.patch");
+        : (0,external_node_path_.join)(tempDir, "diff.patch");
     const eventPath = eventOverride !== undefined && eventOverride !== null
         ? eventOverride
-        : (0,external_node_path_namespaceObject.join)(tempDir, "event.json");
+        : (0,external_node_path_.join)(tempDir, "event.json");
     // 6. write the generated files (only if not overridden). Do NOT throw
     // if the diff is empty — that's fine for smoke tests on the default branch.
     if (diffOverride === undefined || diffOverride === null) {
@@ -24388,6 +29438,7 @@ function maybeOverride(current, field, value, path) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli.ts
+
 
 
 
@@ -24627,7 +29678,7 @@ function runVersion(_argv) {
             // because runVersion returns and the auto-invoke will exit
             // the process, which flushes the stream. The 'error' listener
             // above catches the worst-case early-close case.
-            void process.stdout.once?.("drain", () => undefined);
+            process.stdout.once?.("drain", () => undefined);
         }
         if (tier3Error === null) {
             written = true;
@@ -24635,7 +29686,12 @@ function runVersion(_argv) {
     }
     return { exitCode: 0, stdout };
 }
-function buildSanitizedResolvedConfig(resolved) {
+const cli_DEFAULT_REVIEW_POLICY = {
+    path: null,
+    hash: null,
+    schemaVersion: null,
+};
+function buildSanitizedResolvedConfig(resolved, reviewPolicy = cli_DEFAULT_REVIEW_POLICY) {
     return {
         platform: resolved.platform,
         dryRun: resolved.dryRun,
@@ -24675,6 +29731,7 @@ function buildSanitizedResolvedConfig(resolved) {
         promptPresent: resolved.prompt !== null && resolved.prompt.length > 0,
         additionalPromptPresent: resolved.additionalPrompt !== null && resolved.additionalPrompt.length > 0,
         sources: resolved.fieldProvenance,
+        reviewPolicy,
     };
 }
 /**
@@ -24735,7 +29792,7 @@ async function cleanupGeneratedArtifacts(generatedArtifacts, cwd) {
     if (generatedArtifacts.length === 0) {
         return;
     }
-    const tempDir = (0,external_node_path_namespaceObject.join)(cwd, ".umactually-auto-ctx");
+    const tempDir = (0,external_node_path_.join)(cwd, ".umactually-auto-ctx");
     try {
         await (0,promises_.rm)(tempDir, { recursive: true, force: true });
     }
@@ -24794,6 +29851,21 @@ async function runCli(args, cwd) {
     const { resolved: savedResolved } = applySavedConfig(envResolved, savedRead.config, savedRead.path);
     // Stage 3: resolve missing flags from cwd (when applicable).
     const { resolved, generatedArtifacts } = resolveContext(savedResolved, cwd, process.env);
+    // Stage 3.5: load committed review policy for the sanitized config
+    // envelope. The policy is OPTIONAL — a missing/corrupt policy does
+    // not abort the review; the warning is captured for the envelope.
+    // Strict validation already ran inside loadReviewPolicy, so any
+    // failure means the file is untrusted and we drop it silently (the
+    // defaults layer applies). Surface the warning when present.
+    const policyRead = loadReviewPolicy({ cwd });
+    if (policyRead.warning !== null) {
+        process.stderr.write(`umactually: ${policyRead.warning}\n`);
+    }
+    const policyMeta = {
+        path: policyRead.policy !== null ? policyRead.path : null,
+        hash: policyRead.policy !== null ? policyRead.hash : null,
+        schemaVersion: policyRead.policy !== null ? policyRead.policy.schemaVersion : null,
+    };
     try {
         // Stage 4: validate the resolved (post-derivation) args.
         let errors = collectValidationErrors(resolved);
@@ -24807,67 +29879,100 @@ async function runCli(args, cwd) {
         // The interactive prompt is opt-in: set UMACTUALLY_INTERACTIVE=1.
         // The old default (prompt on any TTY) froze the install smoke-test
         // waiting for stdin that never came.
-        if (errors.length > 0 &&
-            canPromptInteractively() &&
-            !resolved.dryRun &&
-            everyErrorIsApiConfig(errors) &&
-            process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined &&
-            process.env["UMACTUALLY_INTERACTIVE"] === "1") {
-            const promptForUrl = errors.some((e) => e.flag === "--api-url");
-            const prompted = await smartPromptForApiConfig({ promptForUrl });
-            // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
-            // applyPromptedConfig helper works on both.
-            const augmented = applyPromptedConfig(resolved, prompted);
-            errors = collectValidationErrors(augmented);
-            if (errors.length === 0) {
-                // Validation now passes — re-resolve and proceed without
-                // printing the bare-invocation modes banner (the operator
-                // clearly knows the standalone shape; they just needed
-                // credentials).
-                process.stdout.write(`${BRAND_PREFIX}received credentials from interactive prompt; continuing.\n`);
-                return await runAfterValidation({
-                    resolved: augmented,
-                    cwd,
-                    env: process.env,
-                    generatedArtifacts,
-                });
-            }
-            // Some required values still missing after the prompt. Re-render
-            // the structured errors below so the operator sees what's still
-            // outstanding. Falls through to the standard error path.
-            process.stderr.write(renderValidationErrors(errors));
-            return {
-                exitCode: 2,
-                resolvedConfig: buildSanitizedResolvedConfig(augmented),
-            };
+        if (shouldOfferInteractiveCredentials(resolved, errors)) {
+            const recovery = await tryInteractiveCredentialsRecovery(resolved, errors, cwd, generatedArtifacts, policyMeta);
+            if (recovery !== null)
+                return recovery;
+            // Recovery failed to satisfy validation — fall through to the
+            // standard error path below.
         }
         if (errors.length > 0) {
-            process.stderr.write(renderValidationErrors(errors));
-            // Bare-invocation banner: when the operator ran the CLI with no
-            // provider flags AND validation rejected because of missing
-            // --api-url/--api-key, the actionable next step is "pick a mode"
-            // rather than reading --help. Print the modes banner so the
-            // user can copy-paste the right invocation.
-            if (args.length === 0 &&
-                !envResolved.dryRun &&
-                errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")) {
-                process.stderr.write(`\n${BRAND_PREFIX}pick a mode:\n\n${CLI_MODES_TEXT}`);
-            }
-            return {
-                exitCode: 2,
-                resolvedConfig: buildSanitizedResolvedConfig(resolved),
-            };
+            return renderValidationErrorFallback(resolved, errors, args, envResolved, policyMeta);
         }
         return await runAfterValidation({
             resolved,
             cwd,
             env: process.env,
             generatedArtifacts,
+            policyMeta,
         });
     }
     finally {
         await cleanupGeneratedArtifacts(generatedArtifacts, cwd);
     }
+}
+/**
+ * Gate for the interactive-credentials safety net. True when:
+ *   - validation produced at least one error
+ *   - we're attached to a TTY (not piped stdin / CI)
+ *   - dry-run is NOT set (the prompt is wasted on a dry-run)
+ *   - every error is an api-config error (NOT a usage / arg error)
+ *   - operator has NOT opted out via UMACTUALLY_NO_INTERACTIVE
+ *   - operator has explicitly opted in via UMACTUALLY_INTERACTIVE=1
+ */
+function shouldOfferInteractiveCredentials(resolved, errors) {
+    return (errors.length > 0 &&
+        canPromptInteractively() &&
+        !resolved.dryRun &&
+        everyErrorIsApiConfig(errors) &&
+        process.env["UMACTUALLY_NO_INTERACTIVE"] === undefined &&
+        process.env["UMACTUALLY_INTERACTIVE"] === "1");
+}
+/**
+ * Try to recover from missing api-url/api-key by prompting
+ * interactively. Returns a fully-formed `CliExecutionResult` on
+ * success OR when the prompt collected values that still failed
+ * validation; returns `null` when the safety-net gate was not met
+ * (caller falls back to the standard error path).
+ */
+async function tryInteractiveCredentialsRecovery(resolved, initialErrors, cwd, generatedArtifacts, policyMeta) {
+    const promptForUrl = initialErrors.some((e) => e.flag === "--api-url");
+    const prompted = await smartPromptForApiConfig({ promptForUrl });
+    // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
+    // applyPromptedConfig helper works on both.
+    const augmented = applyPromptedConfig(resolved, prompted);
+    const errorsAfter = collectValidationErrors(augmented);
+    if (errorsAfter.length === 0) {
+        // Validation now passes — re-resolve and proceed without
+        // printing the bare-invocation modes banner (the operator
+        // clearly knows the standalone shape; they just needed
+        // credentials).
+        process.stdout.write(`${brand/* BRAND_PREFIX */.rc}received credentials from interactive prompt; continuing.\n`);
+        return await runAfterValidation({
+            resolved: augmented,
+            cwd,
+            env: process.env,
+            generatedArtifacts,
+            policyMeta,
+        });
+    }
+    // Some required values still missing after the prompt. Re-render
+    // the structured errors so the operator sees what's still
+    // outstanding.
+    process.stderr.write(renderValidationErrors(errorsAfter));
+    return {
+        exitCode: 2,
+        resolvedConfig: buildSanitizedResolvedConfig(augmented, policyMeta),
+    };
+}
+/**
+ * Render the standard validation-error envelope. When the operator
+ * ran the CLI with no provider flags AND validation rejected because
+ * of missing --api-url/--api-key, the actionable next step is "pick a
+ * mode" rather than reading --help — print the modes banner so the
+ * user can copy-paste the right invocation.
+ */
+function renderValidationErrorFallback(resolved, errors, args, envResolved, policyMeta) {
+    process.stderr.write(renderValidationErrors(errors));
+    if (args.length === 0 &&
+        !envResolved.dryRun &&
+        errors.some((e) => e.flag === "--api-url" || e.flag === "--api-key")) {
+        process.stderr.write(`\n${brand/* BRAND_PREFIX */.rc}pick a mode:\n\n${CLI_MODES_TEXT}`);
+    }
+    return {
+        exitCode: 2,
+        resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
+    };
 }
 /**
  * Dispatch the post-validation run path. Extracted so the smart-prompt
@@ -24877,7 +29982,7 @@ async function runCli(args, cwd) {
  * config so callers can inspect what the operator actually provided.
  */
 async function runAfterValidation(input) {
-    const { resolved, cwd, env } = input;
+    const { resolved, cwd, env, policyMeta } = input;
     if (resolved.files !== null) {
         const result = await runLocalFilesReview({
             parsed: resolved,
@@ -24889,20 +29994,20 @@ async function runAfterValidation(input) {
             case "ok":
                 return {
                     exitCode: 0,
-                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
                 };
             case "ok-no-files":
-                process.stdout.write(`${BRAND_PREFIX}${result.note}\n`);
+                process.stdout.write(`${brand/* BRAND_PREFIX */.rc}${result.note}\n`);
                 return {
                     exitCode: 0,
-                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
                 };
             case "provider-error": {
-                const hintLine = result.hint === undefined ? "" : `\n${BRAND_PREFIX}hint: ${result.hint}`;
+                const hintLine = result.hint === undefined ? "" : `\n${brand/* BRAND_PREFIX */.rc}hint: ${result.hint}`;
                 process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
                 return {
                     exitCode: 1,
-                    resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                    resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
                 };
             }
             default: {
@@ -24918,17 +30023,17 @@ async function runAfterValidation(input) {
         const result = await runStandalone({ parsed: resolved, cwd, env });
         if (result.kind === "provider-error") {
             const hintLine = "hint" in result && typeof result.hint === "string"
-                ? `\n${BRAND_PREFIX}hint: ${result.hint}`
+                ? `\n${brand/* BRAND_PREFIX */.rc}hint: ${result.hint}`
                 : "";
             process.stdout.write(`${result.sanitizedForLog}${hintLine}\n`);
             return {
                 exitCode: 1,
-                resolvedConfig: buildSanitizedResolvedConfig(resolved),
+                resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
             };
         }
         return {
             exitCode: 0,
-            resolvedConfig: buildSanitizedResolvedConfig(resolved),
+            resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
         };
     }
     const result = resolved.dryRun
@@ -24936,7 +30041,7 @@ async function runAfterValidation(input) {
         : await dispatchLive(resolved, cwd, env);
     return {
         ...result,
-        resolvedConfig: buildSanitizedResolvedConfig(resolved),
+        resolvedConfig: buildSanitizedResolvedConfig(resolved, policyMeta),
     };
 }
 /**
@@ -25174,6 +30279,7 @@ var __webpack_exports__buildSanitizedResolvedConfig = __webpack_exports__.WB;
 var __webpack_exports__isVersionFlag = __webpack_exports__.bV;
 var __webpack_exports__main = __webpack_exports__.iW;
 var __webpack_exports__parseCliArgs = __webpack_exports__.hT;
+var __webpack_exports__readPackageVersion = __webpack_exports__.ts;
 var __webpack_exports__runCli = __webpack_exports__.ak;
 var __webpack_exports__runVersion = __webpack_exports__.yh;
-export { __webpack_exports__CliUsageError as CliUsageError, __webpack_exports__buildSanitizedResolvedConfig as buildSanitizedResolvedConfig, __webpack_exports__isVersionFlag as isVersionFlag, __webpack_exports__main as main, __webpack_exports__parseCliArgs as parseCliArgs, __webpack_exports__runCli as runCli, __webpack_exports__runVersion as runVersion };
+export { __webpack_exports__CliUsageError as CliUsageError, __webpack_exports__buildSanitizedResolvedConfig as buildSanitizedResolvedConfig, __webpack_exports__isVersionFlag as isVersionFlag, __webpack_exports__main as main, __webpack_exports__parseCliArgs as parseCliArgs, __webpack_exports__readPackageVersion as readPackageVersion, __webpack_exports__runCli as runCli, __webpack_exports__runVersion as runVersion };

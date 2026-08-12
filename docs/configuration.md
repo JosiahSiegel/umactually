@@ -15,6 +15,31 @@ The runtime resolves configurable review options through a four-tier precedence 
 
 The `apiKey` field is deliberately omitted from tiers 3 and 4 — the [S6 contract](#api-key-handling) bans persisting secrets to disk. It always comes from tier 1 (`--api-key`) or tier 2 (`UMACTUALLY_API_KEY`); if both are missing the CLI surfaces a `cli: --api-key is required` validation error with an S6-compliant remediation hint, never writes the key to disk. The saved config is loaded via `readSavedConfig()` in `src/config/saved-config.ts` and overlaid on the resolved schema via `applySavedConfig()` (`src/cli/apply-saved-config.ts`). Empty-string env is treated as missing so operators can `unset` a setting without deleting the file. See [docs/security.md#trust-model-init](security.md#trust-model-init) for what is and isn't persisted.
 
+## Committed review policy (separate surface)
+
+`umactually.review.json` is the committed team-policy surface, **separate from** `umactually.config.json`. The two files are a security boundary: `umactually.config.json` is for non-secret provider connection defaults; `umactually.review.json` is for non-secret review-behavior rules committed alongside the rest of the team's source.
+
+Fields accepted: `schemaVersion` (must be `1`), `pathRules` (array of `{ pattern, effort? }`), `excludes`, `effort` (`low|medium|high`), `triggers` (`opened|synchronize|reopened`), `reReviewCap`, `budgets` (`{ contextTokens, maxOutputTokens, latencyMs }`), `minimumSeverity` (`info|warning|error`), `suggestionMode` (`off|validated`), `gateMode` (`off|warn|block`).
+
+Validation runs BEFORE any provider or platform call and refuses:
+
+- Unknown keys (e.g. a typo'd `efort`)
+- Unsupported `schemaVersion` values (future versions)
+- Duplicate or conflicting path rule patterns
+- Invalid globs (unbalanced braces / brackets / parens)
+- Unsafe paths (absolute paths or any `..` segment)
+- Secret-shaped literals (API keys, GitHub tokens, etc.) — the same `SECRET_REGEX` used by the saved-config scanner
+
+A failing validation returns exit code `2` and writes no files. The error message is redacted (the literal value is never echoed).
+
+The policy is OPT-IN. `umactually init` never creates or overwrites `umactually.review.json`. To materialize one explicitly, run:
+
+```bash
+umactually init --policy-template
+```
+
+The template is rendered as a JSON document with comments disabled (the JSON spec doesn't allow comments) and the canonical defaults; it contains no secrets.
+
 Inspect what the loader actually resolved at runtime:
 
 ```bash
@@ -22,6 +47,8 @@ umactually --show-config
 ```
 
 Prints `provider`, optional `apiUrl?`, optional `model?`, the file path the loader used, and the schema version. Field-by-field rendered (not JSON) so adding a future secret field to `SavedConfig` would not silently leak it through `--show-config`. Read-only; never opens a network connection; never prompts; exits 0 (or 1 with a stderr warning if the file is corrupt). Matches the convention of `kubectl config view`, `aws configure get`, and `git config --list --show-origin`.
+
+When `umactually.review.json` is present, the output also prints the policy path, `schemaVersion`, and a `sha256` hash of the canonical serialized bytes so you can verify which committed policy was in effect for the run.
 
 The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Invalid values fail configuration with a redacted error: secret values are never echoed.
 
@@ -46,7 +73,7 @@ CLI flag names are the kebab-case form of the option column (for example, `api-u
 | `model` | `UMACTUALLY_MODEL` | `""` (resolved at review time) | Any opaque model id, or `review-model-synthetic` for fixtures and deterministic tests | `review-model-synthetic` is intended for fixtures and deterministic tests. When omitted, Copilot uses its provider-native `auto` sentinel; OpenAI-compatible and Anthropic perform authenticated `GET /v1/models` discovery and select the single valid opaque model id, or fail with a `--model` remediation hint when the catalog is empty/ambiguous/unauthorized — see [`docs/providers.md`](providers.md#model-resolution). Set a literal model name to override. |
 | `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Reasoning effort hint. Forwarded as `reasoning.effort` to providers that support it. |
 | `provider` | `UMACTUALLY_PROVIDER` | `openai-compatible` | `openai-compatible`, `copilot`, `anthropic` | Provider family. See [`docs/providers.md`](providers.md) for the wire-shape contract per family and the cross-protocol dispatcher that handles dual-protocol gateways. |
-| `github-api-base` | `UMACTUALLY_GITHUB_API_BASE` | `""` | HTTPS URL | GitHub API base URL for Copilot token exchange. Set to `https://<tenant>.ghe.com` for GitHub Enterprise Server. |
+| `github-api-base` | `UMACTUALLY_GITHUB_API_BASE` | `""` | HTTPS URL | GitHub API base URL for the `--provider copilot` token-exchange flow. Set to `https://<tenant>.ghe.com[/api/v3]` for GitHub Enterprise Server. The runner-provided `GITHUB_API_URL` is honored for the review-platform REST + GraphQL endpoints independently of this flag — see [`docs/gh-actions.md`](gh-actions.md#github-enterprise-server). |
 | `github-token` | `GITHUB_TOKEN` (or `GH_TOKEN` runner alias) | `""` | Secret string | GitHub token used by the `--provider copilot` token-exchange flow and by live GitHub posting in CI. The CLI accepts `--github-token=<value>` or `--github-token <value>` (single-token equals form); when reading from an env var (`GITHUB_TOKEN` / `GH_TOKEN`) the CLI never logs or echoes the value. Always source the secret from a secret store (GitHub Actions secret, Azure Pipelines variable group, or shell `export`) — never paste it into workflow YAML literals or commit history. |
 | `review-timeout-seconds` | `UMACTUALLY_REVIEW_TIMEOUT_SECONDS` | `300` | Positive integer seconds | Overall review wall-clock budget. |
 | `stall-seconds` | `UMACTUALLY_STALL_SECONDS` | `270` | Positive integer seconds | Provider-output stall budget. |
@@ -95,6 +122,7 @@ Synthesized diff format. For each non-excluded, non-binary file, the CLI writes 
 | Env var | Platform | Required | Default/source | Purpose |
 | --- | --- | --- | --- | --- |
 | `GITHUB_TOKEN` | GitHub Actions | Yes for posting reviews | Automatically provided when permissions allow | Authenticates review creation and PR metadata reads. Requires `contents: read` and `pull-requests: write`. |
+| `GITHUB_API_URL` | GitHub Actions (GHES) | No | `https://api.github.com` | Review-platform API base. On GitHub Enterprise Server runners, the runner sets this to the GHES host (typically `https://<host>/api/v3`). The CLI rejects non-HTTPS, credentialed, and query/fragment URLs at the base-resolution boundary. See [`docs/gh-actions.md`](gh-actions.md#github-enterprise-server). |
 | `GITHUB_EVENT_PATH` | GitHub Actions | Yes | Automatically provided | Points to the pull request event JSON. |
 | `GITHUB_REPOSITORY` | GitHub Actions | Yes | Automatically provided | Owner/repository, e.g. `${{ github.repository }}`. |
 | `GITHUB_SHA` | GitHub Actions | Usually | Automatically provided | Current workflow commit SHA, used for diagnostics and request context. |

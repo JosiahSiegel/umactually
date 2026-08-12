@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 import { readFileSync } from "node:fs";
+import { ARTIFACT_SCHEMA_VERSION } from "../review/artifact-schema.js";
 
 const PARSE_FAIL_MARKERS = [
   "Provider response did not contain a valid JSON review payload",
@@ -80,6 +81,15 @@ export function classifyReviewArtifact(path: string): ReviewArtifactClassificati
 
   if (!isRecord(parsed)) {
     return { ok: false, reason: "invalid artifact: expected a JSON object", warnings: [] };
+  }
+
+  const rawSchemaVersion = parsed["schemaVersion"];
+  if (typeof rawSchemaVersion === "number" && rawSchemaVersion > ARTIFACT_SCHEMA_VERSION) {
+    return {
+      ok: false,
+      reason: `unsupported-schema-version: artifact declares schemaVersion ${rawSchemaVersion}, supported max is ${ARTIFACT_SCHEMA_VERSION}`,
+      warnings: [],
+    };
   }
 
   const event = stringField(parsed, "event");

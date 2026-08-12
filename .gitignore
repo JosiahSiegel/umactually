@@ -1,6 +1,12 @@
 .omo
 .reference
-node_modules/
+# Root-anchored: matches only the repo's dev dependency tree, NOT the
+# vendored `dist/node_modules/typescript/` that `scripts/post-bundle.mjs`
+# copies in for the bundled CLI. The leading slash is load-bearing — an
+# unanchored `node_modules/` would silently ignore any nested copy too
+# (PR #209 ci failure: tarball shipped without the runtime, `--version`
+# blew up with `ERR_MODULE_NOT_FOUND`).
+/node_modules/
 # Local review/eval artifacts produced by manual runs, e2e harnesses, and
 # the post-release canary. None of these ever need to land in git — every
 # path under artifacts/ is regenerated on demand by the script that wrote

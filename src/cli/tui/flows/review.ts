@@ -110,7 +110,7 @@ async function resolveGitDiffPath(): Promise<string | null> {
     stdout = output.stdout;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    stream.warn(`git diff failed (${message}); no diff available, falling back to no-diff artifact.`);
+    await stream.warn(`git diff failed (${message}); no diff available, falling back to no-diff artifact.`);
     return null;
   }
   if (stdout.trim().length === 0) {
@@ -231,7 +231,7 @@ async function runAndHandle(
     await showSuccess(result, parsed, diffText);
     return { exit: true };
   }
-  stream.error(result.message);
+  await stream.error(result.message);
   const next = await select({
     message: "Provider error",
     options: [
@@ -287,7 +287,7 @@ async function runWizardLoopIteration(): Promise<RunOutcome> {
     // a future provider bug throws, surface the message and return
     // to the hub instead of unwinding the whole TUI.
     const message = err instanceof Error ? err.message : String(err);
-    stream.error(message);
+    await stream.error(message);
     return { exit: true };
   } finally {
     apiKeyLocal = null;

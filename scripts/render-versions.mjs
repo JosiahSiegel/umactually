@@ -134,6 +134,13 @@ function renderText(text, tagValue, dotValue, warnings) {
     if (warnings) warnings.push(match);
     return tagValue;
   });
+  const npmPinRegex = /\bumactually@\d+\.\d+\.\d+(?![-+0-9A-Za-z.])/g;
+  next = next.replace(npmPinRegex, (match) => {
+    const expectedPin = `umactually@${dotValue}`;
+    if (match === expectedPin) return match;
+    if (warnings) warnings.push(match);
+    return expectedPin;
+  });
   // Second pass: rewrite our OWN release-tag URLs to the current version.
   //
   // The bare-literal regex above correctly avoids `semver.org/spec/v2.0.0.html`

@@ -9,12 +9,15 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { BRAND_PREFIX } from "../util/brand.js";
-import { runCli, runVersion } from "../cli.js";
+import { readPackageVersion, runCli, runVersion } from "../cli.js";
 import { classifyReviewArtifact } from "./check-review-artifact.js";
 import { formatDoctorHuman, formatDoctorJson, runDoctor } from "./doctor.js";
+import { runFullDoctor, type DoctorCheckResult } from "./doctor-full.js";
+import { formatCheckLines } from "../util/check-format.js";
 import { type HelpCommand, printContextualHelp, renderCommandsTable } from "./help.js";
 import { tryReadSavedConfig } from "./load-saved-config.js";
 import type { SavedConfig } from "../config/saved-config.js";
+import { loadReviewPolicy } from "../config/review-policy.js";
 import {
   formatInitHuman,
   formatInitJson,
@@ -97,7 +100,7 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
   // `firstPositionalToken(argv)` short-circuits on the flag presence
   // before any command routing.
   if (argv.includes("--show-config")) {
-    return runShowConfig();
+    return runShowConfig(process.cwd());
   }
 
   const command = firstPositionalToken(argv);
@@ -319,7 +322,8 @@ function runLoadedConfigQuickstart(
 
 /**
  * `umactually --show-config` — print the effective saved config and
- * exit 0. Read-only; never opens a network connection; never prompts.
+ * review policy, then exit 0. Read-only; never opens a network
+ * connection; never prompts.
  *
  * The output is a field-by-field rendered multiline string so future
  * secret fields on `SavedConfig` (the schema is intentionally future-
@@ -329,37 +333,88 @@ function runLoadedConfigQuickstart(
  * rule, which is exactly the trust-model property the S6 contract
  * requires.
  *
+ * Review-policy fields are rendered with sanitized path/hash/version
+ * so the operator can verify exactly which committed policy (if any)
+ * is in effect. The committed policy itself lives in
+ * `umactually.review.json` and is the team's documented source of
+ * truth for non-secret review rules.
+ *
  * Decision: lives at the dispatch layer (not under `umactually doctor`)
  * because every other "what's currently effective" tool (`kubectl
  * config view`, `aws configure get`, `git config --list --show-origin`)
  * is top-level, not under a verification subcommand. Operators look
  * for `--show-config` at the root.
  */
-function renderShowConfig(config: SavedConfig, path: string): string {
-  const lines: string[] = [
-    `saved config: ${path}`,
-    `  provider: ${config.provider}`,
-  ];
-  if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
-  lines.push(
-    `  model:    ${config.model ?? "auto (resolved at review time)"}`,
-  );
-  return lines.join("\n") + "\n";
+function renderSavedConfigSection(
+  config: SavedConfig | null,
+  path: string,
+): string[] {
+  const lines: string[] = [];
+  if (config !== null) {
+    lines.push(
+      ...[
+        `saved config: ${path}`,
+        `  provider: ${config.provider}`,
+      ],
+    );
+    if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
+    lines.push(
+      `  model:    ${config.model ?? "auto (resolved at review time)"}`,
+    );
+  } else {
+    lines.push("saved config: none (run `umactually init` to create one)");
+  }
+  return lines;
 }
 
-function runShowConfig(): Promise<DispatchResult> {
-  const savedRead = tryReadSavedConfig();
+function pushFieldIfDefined<T>(lines: string[], value: T | undefined, label: string): void {
+  if (value !== undefined) {
+    lines.push(`  ${label}: ${String(value)}`);
+  }
+}
+
+function renderPolicySection(
+  policyResult: ReturnType<typeof loadReviewPolicy>,
+): string[] {
+  const lines: string[] = [];
+  if (policyResult.policy !== null) {
+    lines.push(`review policy: ${policyResult.path}`);
+    lines.push(`  schemaVersion: ${policyResult.policy.schemaVersion}`);
+    pushFieldIfDefined(lines, policyResult.hash, "hash          ");
+    pushFieldIfDefined(lines, policyResult.policy.effort, "effort        ");
+    pushFieldIfDefined(lines, policyResult.policy.minimumSeverity, "minimumSeverity");
+    pushFieldIfDefined(lines, policyResult.policy.gateMode, "gateMode      ");
+    pushFieldIfDefined(lines, policyResult.policy.suggestionMode, "suggestionMode");
+    pushFieldIfDefined(lines, policyResult.policy.reReviewCap, "reReviewCap   ");
+    pushFieldIfDefined(lines, policyResult.policy.triggers?.join(", "), "triggers      ");
+  } else {
+    lines.push(`review policy: none (run \`umactually init --policy-template\` to create one)`);
+  }
+  return lines;
+}
+
+function renderShowConfig(
+  config: SavedConfig | null,
+  path: string,
+  policyResult: ReturnType<typeof loadReviewPolicy>,
+): string {
+  const savedLines = renderSavedConfigSection(config, path);
+  const policyLines = renderPolicySection(policyResult);
+  return [...savedLines, "", ...policyLines].join("\n") + "\n";
+}
+
+function runShowConfig(cwd: string): Promise<DispatchResult> {
+  const savedRead = tryReadSavedConfig({ cwd });
+  const policyResult = loadReviewPolicy({ cwd });
   if (savedRead.warning !== null) {
     process.stderr.write(`umactually: ${savedRead.warning}\n`);
     return Promise.resolve({ exitCode: 1 });
   }
-  if (savedRead.config === null) {
-    process.stdout.write(
-      `${BRAND_PREFIX}no saved config (run \`umactually init\` to create one)\n`,
-    );
-    return Promise.resolve({ exitCode: 0 });
+  if (policyResult.warning !== null) {
+    process.stderr.write(`umactually: ${policyResult.warning}\n`);
+    return Promise.resolve({ exitCode: 1 });
   }
-  process.stdout.write(renderShowConfig(savedRead.config, savedRead.path));
+  process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult));
   return Promise.resolve({ exitCode: 0 });
 }
 
@@ -386,7 +441,7 @@ export async function runJsonReview(argv: readonly string[]): Promise<DispatchRe
       resolvedConfig: result.resolvedConfig ?? {},
       outcome: {
         ok: result.exitCode === 0,
-        ...(result.jsonOutcome ?? {}),
+        ...result.jsonOutcome,
       },
     };
     const envelope = createEnvelope("review", legacyData, { exitCode: result.exitCode });
@@ -474,6 +529,7 @@ async function runTuiBranch(args: readonly string[]): Promise<DispatchResult> {
 
 async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult> {
   const json = args.includes("--json");
+  const full = args.includes("--full");
   // In a Bun --compile binary, import.meta.url resolves to Bun's virtual
   // filesystem and process.execPath is the real binary. In Node (npm install
   // or dev), process.execPath is the node binary itself, so use import.meta.url.
@@ -485,15 +541,42 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
   const packageRoot = isCompiledBinary
     ? dirname(process.execPath)
     : resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const execFileFn = async (file: string, fileArgs: readonly string[], options: { readonly cwd: string }) => {
+    const output = await execFile(file, fileArgs, options);
+    return { stdout: output.stdout, stderr: output.stderr };
+  };
+
+  if (full) {
+    const fullResult = await runFullDoctor({
+      cwd: process.cwd(),
+      isTTY: process.stdout.isTTY === true,
+      env: process.env,
+      fsAdapter: { stat },
+      fsAdapterSync: defaultFsAdapter,
+      execFile: execFileFn,
+      packageRoot,
+    });
+    let stdout: string;
+    if (json) {
+      const envelope = createEnvelope(
+        "doctor",
+        fullResult.json as unknown as EnvelopeData,
+        { exitCode: fullResult.exitCode },
+      );
+      stdout = `${JSON.stringify(envelope)}\n`;
+    } else {
+      stdout = formatFullDoctorHuman(fullResult.checks);
+    }
+    process.stdout.write(stdout);
+    return { exitCode: fullResult.exitCode, stdout };
+  }
+
   const result = await runDoctor({
     cwd: process.cwd(),
     isTTY: process.stdout.isTTY === true,
     env: process.env,
     fsAdapter: { stat },
-    execFile: async (file, fileArgs, options) => {
-      const output = await execFile(file, fileArgs, options);
-      return { stdout: output.stdout, stderr: output.stderr };
-    },
+    execFile: execFileFn,
     packageRoot,
   });
   let stdout: string;
@@ -509,6 +592,10 @@ async function runDoctorBranch(args: readonly string[]): Promise<DispatchResult>
   }
   process.stdout.write(stdout);
   return { exitCode: result.exitCode, stdout };
+}
+
+function formatFullDoctorHuman(checks: readonly DoctorCheckResult[]): string {
+  return formatCheckLines(checks, { emojiPrefix: false });
 }
 
 async function runUninstallBranch(args: readonly string[]): Promise<DispatchResult> {
@@ -657,7 +744,7 @@ async function runInitBranch(args: readonly string[]): Promise<DispatchResult> {
       cwd: process.cwd(),
       homeDir: homedir(),
       platform: process.platform,
-      packageVersion: process.env["UMACTUALLY_VERSION"] ?? "0.6.21",
+      packageVersion: readPackageVersion(),
     },
   });
   const stdout = json ? formatInitJson(result) : formatInitHuman(result);

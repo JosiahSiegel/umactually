@@ -8,7 +8,11 @@ import {
   fetchPlatformInstructionFiles,
   parsePlatformJsonBody,
 } from "../../util/platform-instructions.js";
-import { DEFAULT_GITHUB_API_BASE } from "../../util/provider-defaults.js";
+import {
+  buildGithubApiBaseFromEnv,
+  buildGithubRestUrl,
+  type GithubApiBase,
+} from "./api-base.js";
 
 /**
  * API-layer error for the GitHub platform adapter. Inherits the
@@ -29,7 +33,6 @@ export class GithubApiError extends PlatformApiError<"GITHUB_FETCH_FAILED" | "GI
   }
 }
 
-const GITHUB_API_BASE_URL = process.env["GITHUB_API_URL"]?.replace(/\/$/u, "") || DEFAULT_GITHUB_API_BASE;
 const PULL_DIFF_MEDIA_TYPE = "application/vnd.github.v3.diff";
 
 export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: FetchImpl = fetch): Promise<string> {
@@ -41,7 +44,7 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
   const raw = await fetchTextOrThrow(
     fetchImpl,
     {
-      url: buildPullUrl(context),
+      url: buildPullUrl(context, buildGithubApiBaseFromEnv()),
       headers: {
         ...githubHeaders(context.token),
         Accept: PULL_DIFF_MEDIA_TYPE,
@@ -72,9 +75,8 @@ export async function fetchGithubPrDiff(context: GithubContext, fetchImpl: Fetch
   return filtered;
 }
 
-function buildPullUrl(context: GithubContext): string {
-  const repositorySegment = `${context.repo.owner}/${context.repo.name}`;
-  return `${GITHUB_API_BASE_URL}/repos/${repositorySegment}/pulls/${context.prNumber}`;
+function buildPullUrl(context: GithubContext, base: GithubApiBase): string {
+  return buildGithubRestUrl(base, `/repos/${context.repo.owner}/${context.repo.name}/pulls/${context.prNumber}`);
 }
 
 /**
@@ -102,7 +104,8 @@ async function fetchGithubPrInstruction(
   path: string,
   fetchImpl: FetchImpl,
 ): Promise<string | null> {
-  const url = `${GITHUB_API_BASE_URL}/repos/${context.repo.owner}/${context.repo.name}/contents/${path}?ref=${context.baseSha}`;
+  const pathSegment = `/repos/${context.repo.owner}/${context.repo.name}/contents/${path}`;
+  const url = `${buildGithubRestUrl(buildGithubApiBaseFromEnv(), pathSegment)}?ref=${context.baseSha}`;
   const response = await fetchImpl(url, {
     method: "GET",
     headers: githubHeaders(context.token),

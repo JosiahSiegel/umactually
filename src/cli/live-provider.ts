@@ -27,6 +27,7 @@ import { requireLiveConfig } from "../util/required-config.js";
 import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
 import {
   buildMalformedProviderFallback,
+  enrichWithDurableIdentity,
   LiveReviewError,
   sanitizeForPost,
   type FetchImpl,
@@ -155,7 +156,7 @@ export async function requestLiveReview(input: {
    * regardless of provider.
    */
   function handleSuccess(
-    result: { readonly ok: true; readonly endpoint: string; readonly review: ProviderReviewPayload },
+    result: { readonly ok: true; readonly endpoint: string; readonly review: ProviderReviewPayload; readonly usage?: import("../provider/provider-error.js").ProviderUsage },
     providerName: string,
   ): LiveProviderOutcome {
     const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
@@ -184,7 +185,11 @@ export async function requestLiveReview(input: {
       verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
       confidenceFilter: verifyFilterResult.confidenceFilter,
     });
-    return { ...preVerifyOutcome, review: verifyFilterResult.review };
+    return {
+      ...preVerifyOutcome,
+      review: verifyFilterResult.review,
+      ...(result.usage !== undefined ? { usage: result.usage } : {}),
+    };
   }
 
   /**
@@ -554,13 +559,14 @@ function normalizeProviderComment(
   comment: ProviderReviewPayload["comments"][number],
   secrets: readonly string[],
 ): LiveReviewComment {
-  return {
+  const sanitized: LiveReviewComment = {
     path: comment.path,
     line: comment.line,
     body: sanitizeForPost(comment.body, secrets),
     severity: sanitizeForPost(comment.severity, secrets),
     category: sanitizeForPost(comment.category, secrets),
   };
+  return enrichWithDurableIdentity(sanitized);
 }
 
 function resolveProviderUrl(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string | null {
@@ -912,6 +918,7 @@ export type DispatchProviderResult =
     readonly endpoint: ProviderEndpoint;
     readonly review: ProviderReviewPayload;
     readonly requestId: string;
+    readonly usage?: import("../provider/provider-error.js").ProviderUsage;
   }
   | {
     readonly ok: false;
@@ -932,7 +939,7 @@ export function dispatchProviderResult(
   maxOutputTokens: number | null,
   ctx: {
     readonly handleSuccess: (
-      result: { readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload },
+      result: { readonly ok: true; readonly endpoint: ProviderEndpoint; readonly review: ProviderReviewPayload; readonly usage?: import("../provider/provider-error.js").ProviderUsage },
       providerName: string,
     ) => LiveProviderOutcome;
     readonly handleParse: (

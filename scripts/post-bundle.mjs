@@ -24,17 +24,152 @@
 //   { name, version, type, main, dependencies }.
 // We rewrite to exactly that set so a future ncc change can't quietly
 // reintroduce any of the stripped fields.
+//
+// Re-bundle with `--external typescript` so the TypeScript compiler API is
+// loaded at runtime instead of being inlined into dist/cli.js. NCC bundles
+// the full ~10MB compiler when src/cli/context-provenance.ts statically
+// imports `typescript`, and that inlined compiler references `__filename`
+// from CJS scope, which is undefined inside the ESM output that
+// `dist/package.json` declares (`"type": "module"`). The bin shim
+// (`bin/umactually.mjs`) fails to load dist/cli.js with:
+//   "__filename is not defined in ES module scope"
+// until the compiler is externalized. The npm build script cannot pass
+// `--external` itself, so this script re-runs ncc with the flag and
+// discards the initial fully-bundled output.
 
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  cpSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
 const distDir = join(packageRoot, "dist");
 const rootPkg = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+const requireHere = createRequire(import.meta.url);
+
+// Resolve the path to the npm CLI script that ships with the active Node.
+// When this script is invoked through `npm run ...`, npm sets
+// `process.env.npm_execpath` to e.g. `/usr/lib/node_modules/npm/bin/npm-cli.js`
+// (Linux) or `C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js`
+// (Windows). Executing `node` directly on that script lets us dispatch
+// `npm exec --no-install ... ncc ...` without depending on whether `npx`
+// or `npx.cmd` is on PATH — the prior `execFileSync("npx", ...)` form
+// failed on Windows with `spawnSync npx ENOENT` because Windows only
+// surfaces `npx.cmd` via cmd.exe and the bare token `npx` has no
+// extensionless binary on PATH. Falling back to `createRequire().resolve`
+// handles the rare case where this script is invoked outside of npm
+// (e.g. `node scripts/post-bundle.mjs` directly) — Node can still
+// execute npm-cli.js on every platform because it is a JS file, not
+// a shell script that needs a shebang interpreter.
+const npmCli = process.env.npm_execpath
+  ?? requireHere.resolve("npm/bin/npm-cli.js");
+
+function rebuildWithExternal() {
+  // Remove every artifact emitted by the first ncc run so the rebuild
+  // produces a clean dist/ rather than mixing two bundles' outputs.
+  let priorEntries = [];
+  try {
+    priorEntries = readdirSync(distDir);
+  } catch {
+    priorEntries = [];
+  }
+  for (const name of priorEntries) {
+    rmSync(join(distDir, name), { force: true, recursive: true });
+  }
+  execFileSync(
+    // Invoke npm directly via the CLI script that ships with Node.
+    // On Windows this avoids the `spawnSync npx ENOENT` failure mode
+    // where cmd.exe cannot locate a bare `npx` (only `npx.cmd` exists).
+    // On Linux/macOS the same code path still works because Node can
+    // execute the JS file regardless of platform — no `npx` binary
+    // lookup happens at all.
+    process.execPath,
+    [
+      npmCli,
+      "exec",
+      "--no-install",
+      "--",
+      "ncc",
+      "build",
+      "src/cli.ts",
+      "-o",
+      distDir,
+      "--external",
+      "typescript",
+      "--no-cache",
+      "-q",
+    ],
+    { cwd: packageRoot, stdio: "inherit" },
+  );
+}
+
+// Vendor the TypeScript compiler into dist/node_modules so that the
+// bundled CLI's runtime `import * as ts from "typescript"` resolves
+// without requiring the consumer's `npm install` to surface a runtime
+// `typescript` dependency. The root `package.json` keeps typescript as
+// a devDependency (its sole use at build time is feeding `ncc`'s
+// TypeScript loader); promoting it to a runtime dependency would force
+// every `npm install -g umactually` consumer to fetch ~23MB of compiler
+// internals they will never touch. Vendoring keeps the install surface
+// to just the bundled `cli.js` plus the dist-shadowed typescript tree,
+// and lets Node's ESM resolver find it at
+// `<installed-pkg>/dist/node_modules/typescript/` from
+// `<installed-pkg>/dist/cli.js`.
+//
+// We copy the existing `node_modules/typescript` (the version `ncc` used
+// at build time, and which the bundler therefore referenced). If the
+// project ever changes its TypeScript version, this copy picks it up
+// automatically — no separate version string to keep in sync.
+function vendorTypescript() {
+  const src = join(packageRoot, "node_modules", "typescript");
+  if (!existsSync(src)) {
+    throw new Error(
+      `post-bundle: expected typescript at ${src} (devDep that ncc loaded). Run \`npm ci\` first.`,
+    );
+  }
+  const dest = join(distDir, "node_modules", "typescript");
+  cpSync(src, dest, { recursive: true });
+}
+
+// Remove ncc-emitted debug artifacts. ncc occasionally writes hashed
+// `dist/<hash>.ts` files alongside the main bundle. These are referenced
+// from `dist/cli.js` only as URL strings for the webpack public-path
+// computation (`__webpack_require__.p + "<hash>.ts"` is fed into
+// `new URL(...)` as a relative path; the actual file is never imported
+// or executed). Shipping them would bloat the tarball and pollute the
+// git history with hash-named files that change on every rebuild. The
+// `chore(dist): untrack ncc debug .ts artifacts` commit established this
+// policy; we enforce it here so the rule can never be silently regressed
+// by a future ncc version.
+function pruneNccDebugArtifacts() {
+  let entries = [];
+  try {
+    entries = readdirSync(distDir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (/\.ts$/u.test(name)) {
+      rmSync(join(distDir, name), { force: true });
+    }
+  }
+}
 
 function main() {
+  rebuildWithExternal();
+  pruneNccDebugArtifacts();
+  vendorTypescript();
+
   const indexPath = join(distDir, "index.js");
   if (!existsSync(indexPath)) {
     throw new Error("post-bundle: expected index.js inside dist/ after ncc build");

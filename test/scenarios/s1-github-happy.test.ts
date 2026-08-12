@@ -1,35 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { runReview } from "../../src/review/run-review.js";
 import { REVIEW_MARKER } from "../../src/util/marker.js";
 
-type GithubReviewContract = {
-  readonly platform: "github";
-  readonly eventJson: string;
-  readonly diffText: string;
-  readonly providerReviewJson: string;
-  readonly expectedArtifact: "artifacts/manual/s1-github-self-review.md";
-};
-
-type PostedGithubReview = {
-  readonly artifactPath: string;
-  readonly event: "COMMENT";
-  readonly marker: typeof REVIEW_MARKER;
-  readonly inlineThreadCount: number;
-  readonly suppressedCommentCount: number;
-};
-
-type RunReview = (contract: GithubReviewContract) => Promise<PostedGithubReview>;
-
-const runReviewModule = "../../src/review/run-review.js";
-const runReviewPath = "src/review/run-review.ts";
-
-function isRunReview(value: unknown): value is RunReview {
-  return typeof value === "function";
-}
-
-describe("S1 GitHub self-review RED contract", () => {
+describe("S1 GitHub self-review contract", () => {
   it("does not re-export REVIEW_MARKER from the review runner", async () => {
     // Given / When: the review runner module is loaded.
     const reviewModule = await import("../../src/review/run-review.js");
@@ -47,11 +22,7 @@ describe("S1 GitHub self-review RED contract", () => {
     expect(diffText).toContain("sk_test_synthetic_fixture_value_do_not_use");
     expect(providerReviewJson).toContain("suppressed_comments");
 
-    // When: the future review runner processes the GitHub fixture in dry-run mode.
-    const runReview = await expectNotImplementedExport(runReviewModule, runReviewPath, "runReview");
-    if (!isRunReview(runReview)) {
-      expect.fail("RED: src/review/run-review.ts must export runReview(contract)");
-    }
+    // When: the review runner processes the GitHub fixture in dry-run mode.
     const result = await runReview({
       platform: "github",
       eventJson,

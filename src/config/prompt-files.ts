@@ -161,52 +161,61 @@ export async function readHumanConventionFiles(
   let aggregateBytes = 0;
 
   for (const rawPath of HUMAN_CONVENTION_FILE_PATHS) {
-    if (typeof rawPath !== "string" || rawPath.length === 0) {
-      continue;
-    }
-    if (isAbsolute(rawPath)) {
-      continue;
-    }
-    let resolved: { readonly absolute: string; readonly withinCwd: boolean };
-    try {
-      resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
-    } catch {
-      continue;
-    }
-    if (!resolved.withinCwd) {
-      continue;
-    }
-    let stat: { readonly isFile: boolean; readonly size: number };
-    try {
-      stat = await fs.stat(resolved.absolute);
-    } catch {
-      continue;
-    }
-    if (!stat.isFile) {
-      continue;
-    }
-    if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
-      // Long READMEs / LICENSES are common; an over-cap human file
-      // must not abort the review — skip it instead of throwing.
-      continue;
-    }
-    if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
-      // Same rationale as the per-file cap: a single oversized entry
-      // must not consume the aggregate budget for the rest of the
-      // human-file load. Skip rather than throw.
-      continue;
-    }
-    let text: string;
-    try {
-      text = await fs.readFile(resolved.absolute);
-    } catch {
-      continue;
-    }
-    parts.push(text);
-    aggregateBytes += stat.size;
+    const loaded = await loadHumanFile(rawPath, cwdReal, fs, aggregateBytes);
+    if (loaded === null) continue;
+    parts.push(loaded.text);
+    aggregateBytes += loaded.size;
   }
 
   return parts.join(PROMPT_SEPARATOR);
+}
+
+/**
+ * Try to load one human-convention file. Returns `{ text, size }` on
+ * success or `null` when the file should be silently skipped (missing,
+ * outside-cwd, over the per-file cap, would exceed the aggregate cap,
+ * or read failed).
+ */
+async function loadHumanFile(
+  rawPath: string,
+  cwdReal: string,
+  fs: PromptFileSystem,
+  aggregateBytes: number,
+): Promise<{ readonly text: string; readonly size: number } | null> {
+  if (typeof rawPath !== "string" || rawPath.length === 0) return null;
+  if (isAbsolute(rawPath)) return null;
+  let resolved: { readonly absolute: string; readonly withinCwd: boolean };
+  try {
+    resolved = await fs.realpathWithinCwd(rawPath, cwdReal, fs);
+  } catch {
+    return null;
+  }
+  if (!resolved.withinCwd) return null;
+  let stat: { readonly isFile: boolean; readonly size: number };
+  try {
+    stat = await fs.stat(resolved.absolute);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile) return null;
+  if (stat.size > DEFAULT_HUMAN_FILE_BYTE_CAP) {
+    // Long READMEs / LICENSES are common; an over-cap human file
+    // must not abort the review — skip it instead of throwing.
+    return null;
+  }
+  if (aggregateBytes + stat.size > DEFAULT_PROMPT_BYTE_CAP) {
+    // Same rationale as the per-file cap: a single oversized entry
+    // must not consume the aggregate budget for the rest of the
+    // human-file load. Skip rather than throw.
+    return null;
+  }
+  let text: string;
+  try {
+    text = await fs.readFile(resolved.absolute);
+  } catch {
+    return null;
+  }
+  return { text, size: stat.size };
 }
 
 const HUMAN_CONVENTION_FILE_PATHS: readonly string[] = [
@@ -424,40 +433,85 @@ function isGlobPattern(pattern: string): boolean {
  */
 function globToRegexSource(pattern: string): string {
   let out = "";
-  for (let i = 0; i < pattern.length; i++) {
+  let i = 0;
+  while (i < pattern.length) {
     const ch = pattern[i];
-    if (ch === undefined) continue;
+    if (ch === undefined) {
+      i += 1;
+      continue;
+    }
     if (ch === "*") {
-      // `**` → match anything including `/`; `*` → match anything except `/`.
-      if (pattern[i + 1] === "*") {
-        out += ".*";
-        i++;
-        // Consume an immediately following `/` so `**/foo` and `foo/**/bar`
-        // both compile cleanly without an awkward `.*/foo` prefix.
-        if (pattern[i + 1] === "/") i++;
-      } else {
-        out += "[^/]*";
-      }
+      const starResult = translateStar(pattern, i);
+      out += starResult.fragment;
+      // `nextIndex` skips past `**` or `**/`; the `+ 1` advances past
+      // the consumed fragment so the next iteration starts on the
+      // character after the matched metacharacter.
+      i = starResult.nextIndex + 1;
     } else if (ch === "?") {
       out += "[^/]";
+      i += 1;
     } else if (ch === "[") {
-      // Pass char class through verbatim up to the closing `]`.
-      const end = pattern.indexOf("]", i + 1);
-      if (end === -1) {
-        out += "\\[";
-      } else {
-        out += pattern.slice(i, end + 1);
-        i = end;
-      }
+      const classResult = translateCharClass(pattern, i);
+      out += classResult.fragment;
+      // `nextIndex` points at the closing `]` (or the unmatched `[`
+      // itself); the `+ 1` advances past the consumed char class.
+      i = classResult.nextIndex + 1;
     } else {
       // Regex-escape any literal so `.`, `+`, `(`, `{`, etc. don't
       // break out. Brace-expansion patterns (`{a,b}`) are detected at
       // the gate but never expanded here — the braces are treated as
       // literal regex characters.
-      out += ch.replace(/[\\^$.+()|{}]/gu, "\\$&");
+      out += ch.replace(/[\\^$.+()|{}]/gu, String.raw`\$&`);
+      i += 1;
     }
   }
   return out;
+}
+
+/**
+ * Translate a single `*` / `**` glob fragment at `pattern[i]`. Returns
+ * the regex fragment to append and the next index the caller should
+ * continue scanning from (the for-loop's natural `i++` will advance
+ * from there).
+ *
+ * Behavior:
+ *   `**` (with or without a trailing `/`) → `.*`
+ *   `*`                                   → `[^/]*`
+ */
+function translateStar(
+  pattern: string,
+  i: number,
+): { readonly fragment: string; readonly nextIndex: number } {
+  if (pattern[i + 1] !== "*") {
+    return { fragment: "[^/]*", nextIndex: i };
+  }
+  // `**` → match anything including `/`; consume an immediately
+  // following `/` so `**/foo` and `foo/**/bar` both compile cleanly
+  // without an awkward `.*/foo` prefix.
+  let nextIndex = i + 1;
+  if (pattern[nextIndex + 1] === "/") nextIndex += 1;
+  return { fragment: ".*", nextIndex };
+}
+
+/**
+ * Translate a `[abc]` char-class fragment at `pattern[i]`. Returns
+ * the regex fragment to append and the next index the caller should
+ * continue scanning from. If the closing `]` is missing, the `[` is
+ * emitted as a literal regex-escaped bracket so the produced regex
+ * stays valid.
+ */
+function translateCharClass(
+  pattern: string,
+  i: number,
+): { readonly fragment: string; readonly nextIndex: number } {
+  const closeIdx = pattern.indexOf("]", i + 1);
+  if (closeIdx === -1) {
+    return { fragment: String.raw`\[`, nextIndex: i };
+  }
+  return {
+    fragment: pattern.slice(i, closeIdx + 1),
+    nextIndex: closeIdx,
+  };
 }
 
 function globToRegExp(pattern: string): RegExp {
@@ -505,33 +559,65 @@ export function resolveGlobs(paths: readonly string[], cwd: string): readonly st
     }
     const re = globToRegExp(raw);
     for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
-      // An entry whose parent is exactly `cwd` sits at the cwd root;
-      // anything deeper gets its cwd-prefix stripped.
-      const parent = entry.parentPath;
-      const rel =
-        parent === undefined || parent === null || parent === cwd
-          ? entry.name
-          : parent.startsWith(cwdWithSep)
-            ? `${parent.slice(cwdWithSep.length)}/${entry.name}`
-            : null;
-      if (rel === null) continue;
-      if (!re.test(rel)) continue;
-      // Realpath guard: skip anything that resolves outside cwd. We
-      // resolve against `cwdReal` (the symlink-free root) so that a
-      // symlink that points back into cwd is still accepted, matching
-      // the semantic `readPromptFiles` enforces.
-      const absolute = pathJoin(cwdReal, rel);
-      let real: string;
-      try {
-        real = fsRealpathSync(absolute);
-      } catch {
-        continue;
-      }
-      if (!(real === cwdReal || real.startsWith(cwdRealWithSep))) continue;
-      out.push(rel);
+      const rel = matchDirent(entry, re, cwd, cwdWithSep, cwdReal, cwdRealWithSep);
+      if (rel !== null) out.push(rel);
     }
   }
   return out;
+}
+
+/**
+ * Decide whether `entry` matches `re` (a compiled glob regex) AND
+ * resolves inside `cwd` after symlink-following. Returns the
+ * repo-relative path on success or `null` to skip the entry.
+ */
+function matchDirent(
+  entry: { readonly name: string; readonly parentPath: string | null | undefined; readonly isFile: () => boolean },
+  re: RegExp,
+  cwd: string,
+  cwdWithSep: string,
+  cwdReal: string,
+  cwdRealWithSep: string,
+): string | null {
+  if (!entry.isFile()) return null;
+  // `Dirent.parentPath` is absolute (e.g. `/repo/.cursor/rules`).
+  // An entry whose parent is exactly `cwd` sits at the cwd root;
+  // anything deeper gets its cwd-prefix stripped.
+  const rel = direntRelPath(entry, cwd, cwdWithSep);
+  if (rel === null) return null;
+  if (!re.test(rel)) return null;
+  // Realpath guard: skip anything that resolves outside cwd. We
+  // resolve against `cwdReal` (the symlink-free root) so that a
+  // symlink that points back into cwd is still accepted, matching
+  // the semantic `readPromptFiles` enforces.
+  const absolute = pathJoin(cwdReal, rel);
+  let real: string;
+  try {
+    real = fsRealpathSync(absolute);
+  } catch {
+    return null;
+  }
+  if (!(real === cwdReal || real.startsWith(cwdRealWithSep))) return null;
+  return rel;
+}
+
+/**
+ * Compute the repo-relative path for a single `Dirent` walked by
+ * `resolveGlobs`. Returns `null` when the entry's parent path does
+ * not live under `cwd` (out-of-tree walks should be silently dropped
+ * — the caller treats `null` as "skip").
+ */
+function direntRelPath(
+  entry: { readonly name: string; readonly parentPath: string | null | undefined },
+  cwd: string,
+  cwdWithSep: string,
+): string | null {
+  const parent = entry.parentPath;
+  if (parent === undefined || parent === null || parent === cwd) {
+    return entry.name;
+  }
+  if (!parent.startsWith(cwdWithSep)) {
+    return null;
+  }
+  return `${parent.slice(cwdWithSep.length)}/${entry.name}`;
 }

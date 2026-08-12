@@ -189,6 +189,25 @@ describe("README quickstart freshness", () => {
     expect(readme).toMatch(/docs\/configuration\.md/u);
   });
 
+  it("README-FRESHNESS R-16: README exposes auditable trust and scope documentation", () => {
+    const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
+    for (const path of ["docs/benchmark.md", "docs/architecture.md", "docs/security.md", "SECURITY.md", "CONTRIBUTING.md"]) {
+      expect(readme, `README must link to ${path}`).toContain(path);
+    }
+    expect(readme).toMatch(/GitLab|Bitbucket/u);
+    expect(readme).toMatch(/hosted control plane/u);
+    expect(readme).toMatch(/privacy/u);
+  });
+
+  it("README-FRESHNESS R-17: comparative claims have local evidence and deferred work is explicit", () => {
+    const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
+    expect(readme).toContain("Benchmark methodology and results");
+    expect(readme).toContain("schema-versioned");
+    expect(readme).toMatch(/exact reproduction command/u);
+    expect(readme).toMatch(/opaque learning/u);
+    expect(readme).toMatch(/auto-commit/u);
+  });
+
   it("README-FRESHNESS: example files are well-formed CI workflows", () => {
     // Each canonical example file is a self-contained, semantically parseable
     // workflow. This is the strong form of the old freshness check: the

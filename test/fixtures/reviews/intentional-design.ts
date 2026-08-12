@@ -42,5 +42,14 @@ export const intentionalDesignFixture: ReviewFixture = {
     maxFabricationRate: 0.5,
     mustNotContain: ["remove this intentional fallback", "legacy compatibility is unnecessary"],
     mustNotFabricatePath: "dist/",
+    forbiddenPathPrefixes: ["dist/", "build/", "node_modules/"],
+    hardInvariants: ["identity-fields-present", "surviving-fabrication-zero"],
+    mockReviewOverride: {
+      review: {
+        summary: "Diff is annotated as intentional. Confidence filter must downgrade criticism if the model emits any.",
+        verdict: "comment",
+        comments: [],
+      },
+    },
   },
 };

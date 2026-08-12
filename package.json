@@ -50,6 +50,7 @@
     "test:scenario": "vitest --project scenario",
     "test:e2e": "vitest --run --project e2e",
     "test:post-release": "node test/post-release/run-e2e.mjs",
+    "test:review-eval": "node scripts/run-review-eval.mjs",
     "test:config": "vitest --run --project unit test/unit/config-extended.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "lint": "eslint . --max-warnings=0",
@@ -60,7 +61,7 @@
     "render-docs:check": "node scripts/render-versions.mjs --check",
     "check:version-alignment": "node scripts/check-version-alignment.mjs",
     "check:dist-freshness": "node scripts/check-dist-freshness.mjs",
-    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run bundle && npm run render-docs && npm run check:version-alignment && npm run check:dist-freshness",
+    "prepublishOnly": "npm run typecheck && npm test -- --run && npm run test:review-eval && npm run bundle && npm run render-docs && npm run check:version-alignment && npm run check:dist-freshness",
     "build:sea": "node scripts/build-sea.mjs",
     "build:sea:all": "node scripts/build-sea.mjs all"
   },

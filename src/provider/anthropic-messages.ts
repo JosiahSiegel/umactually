@@ -71,6 +71,14 @@ type ProviderCallSuccess = {
   readonly endpoint: ProviderEndpoint;
   readonly review: ProviderReviewPayload;
   readonly requestId: string;
+  /**
+   * Token usage block the provider emitted on the response. Surfaced
+   * to the local audit artifact (Task 7) so a downstream consumer
+   * can compute cost estimates from explicit per-token prices.
+   * NEVER zero-invented: when the provider did not emit a usage
+   * block, this field is omitted entirely.
+   */
+  readonly usage?: { readonly input_tokens?: number; readonly output_tokens?: number; readonly total_tokens?: number };
 };
 
 type ProviderCallFailure = {
@@ -416,7 +424,22 @@ async function runOnce(
 
   const review = parseReviewPayload(textPayload);
   if (isNonEmptyReview(review)) {
-    return { ok: true, endpoint: ENDPOINT, review, requestId };
+    // Try to read usage from the response body even on the success
+    // path so the local audit artifact can compute cost estimates.
+    let successUsage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
+    try {
+      const parsedRaw: unknown = JSON.parse(rawText);
+      successUsage = readUsage(parsedRaw);
+    } catch {
+      // rawText wasn't JSON; no usage to surface.
+    }
+    return {
+      ok: true,
+      endpoint: ENDPOINT,
+      review,
+      requestId,
+      ...(successUsage !== undefined ? { usage: successUsage } : {}),
+    };
   }
 
   // Empty JSON or "truncated stream" parse-fail path. We check

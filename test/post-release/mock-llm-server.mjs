@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-// Unified mock LLM server for post-release end-to-end tests.
+// Unified mock LLM server for post-release end-to-end tests + hermetic
+// review-eval gate.
 //
 // Handles BOTH provider wire formats umactually supports:
 //   - OpenAI Chat Completions: POST /v1/chat/completions
@@ -10,20 +11,29 @@
 // targeting a path that is in the test fixture (so the orchestrator
 // doesn't drop them during diff-scope filtering).
 //
+// The review-eval gate drives this server via the `X-Mock-Fixture`
+// request header: when the header is present, the server returns the
+// canned review JSON file at `${MOCK_REVIEW_DIR}/${fixture}.json`
+// instead of the default canary review. The fixture-rigged body lets
+// the gate exercise the full prompt → provider transport → parser →
+// verification/filter → durable-finding pipeline against deterministic
+// inputs without needing a real provider.
+//
 // Usage:
 //   node test/post-release/mock-llm-server.mjs
 //   PORT=18123 MOCK_LABEL=osx node test/post-release/mock-llm-server.mjs
 //
 // Defaults to a random free port. Stdout prints the chosen port so the
 // caller can capture it.
-//
-// The server is intentionally tiny (no deps) and runs as a long-lived
-// background process during a workflow job or a local test run.
 
 import { createServer } from "node:http";
+import { readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 
 const PORT = Number(process.env.PORT ?? 0);
 const LABEL = process.env.MOCK_LABEL ?? "mock-llm";
+const MOCK_REVIEW_DIR = process.env.MOCK_REVIEW_DIR ?? "";
+const MOCK_VERSION = process.env.MOCK_VERSION ?? "1.0.0";
 
 // The fixture file the test harness commits to the throwaway branch.
 // Comments intentionally target this path with TWO line numbers
@@ -73,8 +83,65 @@ function logRequest(req, model, extra) {
   );
 }
 
+/**
+ * Resolve the canned review body for an inbound request. When the
+ * request carries an X-Mock-Fixture header AND MOCK_REVIEW_DIR is set,
+ * the server returns the matching fixture file (used by the hermetic
+ * review-eval gate). Otherwise it returns the legacy default review
+ * so the post-release e2e harness keeps working unchanged.
+ *
+ * Returns `{ body: string, parseFail: "truncated" | "malformed" | null }`
+ * so the wire-format wrapper can short-circuit malformed bodies to a
+ * parse-failure response. Files prefixed with `__PARSE_FAIL__` are
+ * treated as malformed JSON; `__TRUNCATED__` files are intentionally
+ * truncated JSON.
+ */
+function resolveCannedReview(fixtureHeader) {
+  if (fixtureHeader === null || fixtureHeader === undefined || fixtureHeader.length === 0) {
+    return { body: JSON.stringify(cannedReview), parseFail: null };
+  }
+  if (MOCK_REVIEW_DIR.length === 0) {
+    return { body: JSON.stringify(cannedReview), parseFail: null };
+  }
+  const filePath = join(MOCK_REVIEW_DIR, `${fixtureHeader}.json`);
+  try {
+    const stat = statSync(filePath);
+    if (!stat.isFile()) {
+      return { body: JSON.stringify(cannedReview), parseFail: null };
+    }
+    const text = readFileSync(filePath, "utf8");
+    if (text.startsWith("__PARSE_FAIL__")) {
+      const malformed = text.slice("__PARSE_FAIL__".length);
+      return { body: malformed, parseFail: "malformed" };
+    }
+    if (text.startsWith("__TRUNCATED__")) {
+      // Already pre-truncated by the runner.
+      return { body: text.slice("__TRUNCATED__".length), parseFail: "truncated" };
+    }
+    return { body: text, parseFail: null };
+  } catch {
+    return { body: JSON.stringify(cannedReview), parseFail: null };
+  }
+}
+
 const server = createServer(async (req, res) => {
   const ts = new Date().toISOString();
+
+  // Health probe used by the test harness to know the server is ready.
+  if (req.method === "GET" && (req.url === "/health" || req.url === "/")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, label: LABEL, ts }));
+    return;
+  }
+
+  // Version probe used by the runner to capture the mock-server
+  // version alongside its hash. Lets a snapshot reject a run whose
+  // server version drifted from the captured snapshot.
+  if (req.method === "GET" && req.url === "/version") {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ version: MOCK_VERSION, label: LABEL }));
+    return;
+  }
 
   // Anthropic Messages: POST {baseUrl}/v1/messages
   if (req.method === "POST" && req.url.includes("/v1/messages")) {
@@ -86,20 +153,21 @@ const server = createServer(async (req, res) => {
       /* ignore */
     }
     const model = parsed?.model ?? "unknown";
-    // Never log the raw x-api-key (the binary may forward a real
-    // one in some setups). Show only a short fingerprint so a
-    // reader can correlate "this request came from caller X" without
-    // exposing the secret.
     const xapi = req.headers["x-api-key"]?.toString() ?? "none";
     const fingerprint = xapi === "none" ? "none" : `${xapi.slice(0, 4)}…(len=${xapi.length})`;
     const ver = req.headers["anthropic-version"] ?? "none";
+    const fixtureHeader = req.headers["x-mock-fixture"]?.toString() ?? null;
     logRequest(req, model, `x-api-key=${fingerprint} anthropic-version=${ver}`);
+    const canned = resolveCannedReview(fixtureHeader);
+    const textContent = canned.parseFail !== null
+      ? `__PARSE_FAIL__${canned.body}`
+      : canned.body;
     const response = {
       id: `msg_${Date.now()}`,
       type: "message",
       role: "assistant",
       model,
-      content: [{ type: "text", text: JSON.stringify(cannedReview) }],
+      content: [{ type: "text", text: textContent }],
       stop_reason: "end_turn",
       stop_sequence: null,
       usage: { input_tokens: 1234, output_tokens: 200 },
@@ -119,7 +187,12 @@ const server = createServer(async (req, res) => {
       /* ignore */
     }
     const model = parsed?.model ?? "unknown";
+    const fixtureHeader = req.headers["x-mock-fixture"]?.toString() ?? null;
     logRequest(req, model);
+    const canned = resolveCannedReview(fixtureHeader);
+    const content = canned.parseFail !== null
+      ? canned.body
+      : canned.body;
     const completion = {
       id: `chatcmpl-${Date.now()}`,
       object: "chat.completion",
@@ -130,7 +203,7 @@ const server = createServer(async (req, res) => {
           index: 0,
           message: {
             role: "assistant",
-            content: JSON.stringify(cannedReview),
+            content,
           },
           finish_reason: "stop",
         },
@@ -152,7 +225,10 @@ const server = createServer(async (req, res) => {
       /* ignore */
     }
     const model = parsed?.model ?? "unknown";
+    const fixtureHeader = req.headers["x-mock-fixture"]?.toString() ?? null;
     logRequest(req, model);
+    const canned = resolveCannedReview(fixtureHeader);
+    const textContent = canned.body;
     const response = {
       id: `resp_${Date.now()}`,
       object: "response",
@@ -162,20 +238,13 @@ const server = createServer(async (req, res) => {
         {
           type: "message",
           role: "assistant",
-          content: [{ type: "output_text", text: JSON.stringify(cannedReview) }],
+          content: [{ type: "output_text", text: textContent }],
         },
       ],
       usage: { input_tokens: 1234, output_tokens: 200, total_tokens: 1434 },
     };
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(response));
-    return;
-  }
-
-  // Health probe used by the test harness to know the server is ready.
-  if (req.method === "GET" && (req.url === "/health" || req.url === "/")) {
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, label: LABEL, ts }));
     return;
   }
 

@@ -41,6 +41,14 @@ When you come back to the codebase after time away, read in this order:
 - `CHANGELOG.md` — read the recent `[Unreleased]` entries to understand current direction.
 - `src/util/url.ts`, `src/cli/live-provider.ts`, `src/provider/anthropic-messages.ts` — the URL layer, dispatcher, and third provider client.
 
+## Architecture and ownership map
+
+[`docs/architecture.md`](docs/architecture.md) maps the CLI, configuration/policy, platform context, provider, review-contract, posting, distribution, and proof layers to their source and test paths. Start there before making cross-layer changes. Schema changes require compatibility and rollback notes; comparative product copy requires a reproducible artifact and an entry in [`docs/benchmark.md#claims-inventory`](docs/benchmark.md#claims-inventory).
+
+## Dependency-update policy
+
+Dependabot proposes weekly npm and GitHub Actions updates under `.github/dependabot.yml`. A dependency PR must explain runtime/security impact, preserve Node.js 24 support, update every rendered/versioned surface when applicable, and pass the same full verification as a feature PR. Review lockfile changes as resolver output; never hand-edit them. Treat a `0.x` minor bump as potentially breaking, read upstream release notes, and keep action references immutable. Do not add a dependency when the platform, standard library, or an existing dependency already owns the contract.
+
 ## Local development
 
 ```bash

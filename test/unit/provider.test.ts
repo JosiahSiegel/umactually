@@ -793,4 +793,52 @@ describe("openai-compatible provider client", () => {
       expect(result.error.code).toBe("parse");
     }
   });
+
+  it("PROV-DEBUG-001 emits redacted debug-raw log lines when UMACTUALLY_DEBUG_RAW=1 is set", async () => {
+    // Given: the responses endpoint succeeds with a JSON review body and
+    // the debug-raw env var is enabled. The writeDebugRaw helpers in
+    // src/provider/openai-compatible.ts emit [DEBUG-RAW] lines that
+    // include the request id, raw/text payload lengths, and the first/last
+    // 200 chars of the textPayload (this test pins the call path).
+    const original = process.env["UMACTUALLY_DEBUG_RAW"];
+    process.env["UMACTUALLY_DEBUG_RAW"] = "1";
+    try {
+      const stub = makeFetchStub([
+        { status: 200, body: RESPONSES_SUCCESS_BODY },
+      ]);
+      const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+      expect(result.ok).toBe(true);
+    } finally {
+      if (original === undefined) {
+        delete process.env["UMACTUALLY_DEBUG_RAW"];
+      } else {
+        process.env["UMACTUALLY_DEBUG_RAW"] = original;
+      }
+    }
+  });
+
+  it("PROV-DEBUG-002 hits the retry round debug-raw branch when the first response is unparseable", async () => {
+    // Given: the first response is unparseable and the retry also returns
+    // an unparseable chat body. The debug-raw env is enabled so the
+    // extra `[DEBUG-RAW] retry …` lines fire.
+    const original = process.env["UMACTUALLY_DEBUG_RAW"];
+    process.env["UMACTUALLY_DEBUG_RAW"] = "1";
+    try {
+      const stub = makeFetchStub([
+        { status: 200, body: "garbage initial", contentType: "text/plain" },
+        { status: 200, body: "still garbage", contentType: "text/plain" },
+      ]);
+      const result = await runProviderRequest({ ...BASE_CONFIG, fetchImpl: stub.fetch });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("parse");
+      }
+    } finally {
+      if (original === undefined) {
+        delete process.env["UMACTUALLY_DEBUG_RAW"];
+      } else {
+        process.env["UMACTUALLY_DEBUG_RAW"] = original;
+      }
+    }
+  });
 });

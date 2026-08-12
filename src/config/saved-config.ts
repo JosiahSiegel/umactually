@@ -76,7 +76,7 @@ export const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
  * pattern.
  */
 export const SECRET_REGEX: RegExp =
-  /gh[pousr]_[A-Za-z0-9]+|glpat-[A-Za-z0-9]+|s\.r[A-Za-z0-9]+|sk-[A-Za-z0-9]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/gu;
+  /gh[pousr]_\w+|glpat-\w+|s\.r\w+|sk-\w+|eyJ[\w-]+\.[\w-]+/gu;
 
 export const VALID_PROVIDERS: ReadonlySet<SavedConfigProvider> = new Set([
   "openai-compatible",
@@ -139,55 +139,93 @@ export function readSavedConfig(deps: ReadSavedConfigDeps): ReadSavedConfigResul
   const fs = deps.fs ?? defaultFsAdapter;
   for (const candidate of [SAVED_CONFIG_REPO_PATH(deps.cwd), SAVED_CONFIG_GLOBAL_PATH(deps.homeDir)]) {
     if (!fs.exists(candidate)) continue;
-
-    if (fs.isSymlink(candidate)) {
-      return {
-        ok: false,
-        path: candidate,
-        exitCode: 1,
-        message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
-      };
-    }
-    if (!fs.isFile(candidate)) {
-      return {
-        ok: false,
-        path: candidate,
-        exitCode: 1,
-        message: `refusing to read saved config: ${candidate} is not a regular file`,
-      };
-    }
-
-    let raw: string;
-    try {
-      raw = fs.readFile(candidate);
-    } catch (err) {
-      return {
-        ok: false,
-        path: candidate,
-        exitCode: 2,
-        message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
-      };
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      return {
-        ok: false,
-        path: candidate,
-        exitCode: 2,
-        message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
-      };
-    }
-
-    const validated = validateSavedConfig(parsed, candidate);
-    if (!validated.ok) return validated;
-
-    return { ok: true, config: validated.config, path: candidate };
+    const result = readCandidate(candidate, fs);
+    if (result !== null) return result;
   }
-
   return { ok: true, config: null, path: SAVED_CONFIG_GLOBAL_PATH(deps.homeDir) };
+}
+
+/**
+ * Try to read and validate one candidate saved-config path. Returns
+ * `null` when the candidate is missing (the caller advances to the
+ * next candidate) and a fully-formed `ReadSavedConfigResult`
+ * otherwise (success OR hard failure).
+ */
+function readCandidate(candidate: string, fs: FsAdapter): ReadSavedConfigResult | null {
+  if (!fs.exists(candidate)) return null;
+  if (fs.isSymlink(candidate)) return readSymlinkFail(candidate);
+  if (!fs.isFile(candidate)) return readNotFileFail(candidate);
+  const raw = readCandidateRaw(candidate, fs);
+  if ("ok" in raw) return raw;
+  const parsed = parseCandidateJson(candidate, raw.value);
+  if ("ok" in parsed) return parsed;
+  const validated = validateSavedConfig(parsed.value, candidate);
+  if (!validated.ok) return validated;
+  return { ok: true, config: validated.config, path: candidate };
+}
+
+/**
+ * Read the raw bytes of one candidate file; wraps the IO failure
+ * in the canonical `corrupt saved config` envelope.
+ */
+function readCandidateRaw(
+  candidate: string,
+  fs: FsAdapter,
+): { readonly value: string } | ReadSavedConfigResult {
+  try {
+    return { value: fs.readFile(candidate) };
+  } catch (err) {
+    return {
+      ok: false,
+      path: candidate,
+      exitCode: 2,
+      message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+    };
+  }
+}
+
+/**
+ * Parse one candidate file's raw bytes as JSON; wraps the parse
+ * failure in the canonical `corrupt saved config` envelope.
+ */
+function parseCandidateJson(
+  candidate: string,
+  raw: string,
+): { readonly value: unknown } | ReadSavedConfigResult {
+  try {
+    return { value: JSON.parse(raw) };
+  } catch (err) {
+    return {
+      ok: false,
+      path: candidate,
+      exitCode: 2,
+      message: `corrupt saved config at ${candidate}: ${err instanceof Error ? err.message : String(err)}; rm ${candidate} and re-run init to recover`,
+    };
+  }
+}
+
+/**
+ * Build the "refusing to read saved config: symlink" envelope.
+ */
+function readSymlinkFail(candidate: string): ReadSavedConfigResult {
+  return {
+    ok: false,
+    path: candidate,
+    exitCode: 1,
+    message: `refusing to read saved config: ${candidate} is a symlink; remove it and re-run init`,
+  };
+}
+
+/**
+ * Build the "refusing to read saved config: not a regular file" envelope.
+ */
+function readNotFileFail(candidate: string): ReadSavedConfigResult {
+  return {
+    ok: false,
+    path: candidate,
+    exitCode: 1,
+    message: `refusing to read saved config: ${candidate} is not a regular file`,
+  };
 }
 
 type ValidatedSavedConfig =
@@ -302,226 +340,338 @@ export async function writeSavedConfig(
     ? SAVED_CONFIG_REPO_PATH(deps.cwd)
     : SAVED_CONFIG_GLOBAL_PATH(deps.homeDir);
   const targetDir = deps.scope === "repo" ? deps.cwd : SAVED_CONFIG_GLOBAL_DIR(deps.homeDir);
-
-  // -- Acquire flock (advisory; non-blocking) -----------------------------
   const lockPath = SAVED_CONFIG_GLOBAL_LOCK(deps.homeDir);
+
   let lockFd: number | null = null;
   try {
-    if (isPosix) {
-      // Ensure the lock dir exists so we can open the lock file even on a
-      // first-run machine. mkdirSync is a no-op if the dir already exists.
-      try {
-        mkdirSync(SAVED_CONFIG_GLOBAL_DIR(deps.homeDir), { recursive: true, mode: 0o700 });
-      } catch {
-        // mkdir failure here will resurface at the target-dir ensure below.
-      }
-      // Open the lock file (creates it if missing) so flock(1) has a real
-      // inode to lock against — the file itself carries no payload, only
-      // the inode carries the lock.
-      try {
-        lockFd = openSync(lockPath, "w");
-      } catch {
-        return {
-          ok: false,
-          exitCode: 1,
-          message: `cannot acquire init lock at ${lockPath}; another init may be in progress; rm ${lockPath} if stale`,
-        };
-      }
-      // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
-      // the PATH (not the fd number — see saved-config-flock.ts for why
-      // the fd-number form silently no-ops in vite-node / CI sandboxes).
-      //
-      // Flock availability:
-      //   - flock(1) is in coreutils on every Linux and macOS (via brew
-      //     install coreutils). When it is present, status=0 means lock
-      //     acquired; status≠0 means another init holds it (contention).
-      //   - On hosts without flock(1) (macOS without coreutils, alpine
-      //     without busybox flock, restricted CI sandboxes), the wrapper
-      //     throws `FlockUnavailableError`. We MUST surface this so the
-      //     operator knows the init-time concurrency lock is NOT
-      //     enforced: writes can still race. The atomic-rename primitive
-      //     keeps the file corruption-safe (last-writer-wins on a per-
-      //     inode basis), but a parallel `umactually init` could clobber
-      //     a half-written sibling temp file if the lock is genuinely
-      //     missing. The check below records the unavailability; the
-      //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
-      //     so the wizard can emit a hint to the user.
-      let flockResult = true;
-      let lockUnavailable = false;
-      try {
-        flockResult = tryFlockNonBlocking(lockPath);
-      } catch (err) {
-        if (err instanceof FlockUnavailableError) {
-          // flock(1) is missing on this host. Atomic-rename still prevents
-          // file corruption; we lose only the "second init declines"
-          // guarantee. Surface a hint to the operator so they understand
-          // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
-          lockUnavailable = true;
-        } else {
-          throw err;
-        }
-      }
-      if (!flockResult) {
-        try {
-          closeSync(lockFd);
-          lockFd = null;
-        } catch {
-          // ignore
-        }
-        return {
-          ok: false,
-          exitCode: 1,
-          message: `another init is in progress; rm ${lockPath} if stale`,
-          lockUnavailable: false,
-        };
-      }
-      // Stash `lockUnavailable` on the active function scope — the
-      // success-return branch below reads it. We use a tiny mutable
-      // holder rather than a let inside the try block so the success
-      // path at the end of writeSavedConfig() can read it without
-      // threading it through every early return.
-      writeSavedConfigFlockUnavailable.flag = lockUnavailable;
-    }
-    // Windows: best-effort serialization via shared-lock semantics on the
-    // lock file's existence + the atomic-rename primitive. Documented above.
+    const lock = acquireInitLock({
+      isPosix,
+      homeDir: deps.homeDir,
+      lockPath,
+    });
+    if ("error" in lock) return lock.error;
+    lockFd = lock.fd;
+    writeSavedConfigFlockUnavailable.flag = lock.lockUnavailable;
 
-    // -- Ensure target directory + 0o700 on POSIX ------------------------
-    try {
-      mkdirSync(targetDir, { recursive: true, mode: 0o700 });
-      if (isPosix && deps.scope === "global") {
-        // Re-stat the directory; root + restrictive umask can mask the mode
-        // arg. Best-effort: chmod and swallow the error (E-⚠8).
-        try {
-          const st = statSync(targetDir);
-          if ((st.mode & 0o777) !== 0o700) {
-            setMode(targetDir, 0o700);
-          }
-        } catch {
-          // ignore — chmod failure on a dir the user can already write to
-          // is non-fatal; we still chmod the FILE to 0o600 below.
-        }
-      }
-    } catch (err) {
-      return {
-        ok: false,
-        exitCode: 1,
-        message: `cannot create saved-config directory ${targetDir}: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
+    const dirErr = ensureTargetDir(targetDir, isPosix, deps.scope);
+    if (dirErr !== null) return dirErr;
 
-    // -- Refuse symlinks at the target -----------------------------------
     if (fs.isSymlink(targetPath)) {
-      return {
-        ok: false,
-        exitCode: 1,
-        message: `refusing to overwrite: ${targetPath} is a symlink; remove it and re-run init`,
-      };
+      return targetSymlinkFail(targetPath);
     }
 
-    // -- Existing-file handling ------------------------------------------
-    if (fs.exists(targetPath) && !fs.isSymlink(targetPath)) {
-      let existingIsCorrupt = false;
-      try {
-        const existingRaw = fs.readFile(targetPath);
-        JSON.parse(existingRaw); // throws on malformed JSON
-      } catch {
-        existingIsCorrupt = true;
-      }
+    const existingErr = await handleExistingTarget(targetPath, fs, deps);
+    if (existingErr !== null) return existingErr;
 
-      if (existingIsCorrupt) {
-        // Corrupt JSON: move aside instead of clobbering. The backup
-        // preserves operator history for forensics; the wizard surfaces
-        // the backup path in its C-7 envelope.
-        const mtime = (deps.now ?? Date.now)();
-        const backupPath = `${targetPath}.bak-${Math.floor(mtime)}`;
-        try {
-          renameSync(targetPath, backupPath);
-        } catch (err) {
-          return {
-            ok: false,
-            exitCode: 1,
-            message: `refusing to clobber corrupt saved config at ${targetPath} and could not move it aside: ${err instanceof Error ? err.message : String(err)}; rm ${targetPath} manually`,
-          };
-        }
-      } else if (!deps.force) {
-        // Valid JSON existing file: prompt for overwrite (unless --force).
-        if (deps.overwriteReader === undefined) {
-          return {
-            ok: false,
-            exitCode: 1,
-            message: `refusing to overwrite existing saved config at ${targetPath}; pass --force to bypass or answer 'y' to the overwrite prompt`,
-          };
-        }
-        const answer = await deps.overwriteReader();
-        if (answer !== true) {
-          return {
-            ok: false,
-            exitCode: 1,
-            message: `refusing to overwrite existing saved config at ${targetPath}; nothing was written`,
-          };
-        }
-      }
-    }
-
-    // -- Serialize with deterministic key order (schemaVersion, provider, apiUrl, model) -----
     const serialized = serializeSavedConfig(config);
+    const secretErr = scanForSecretLiteral(serialized);
+    if (secretErr !== null) return secretErr;
 
-    // -- Defensive secret-regex scan -------------------------------------
-    if (SECRET_REGEX.test(serialized)) {
-      SECRET_REGEX.lastIndex = 0;
-      return {
-        ok: false,
-        exitCode: 1,
-        message: "internal: writer produced an unintended secret literal; refusing to persist",
-      };
-    }
-    SECRET_REGEX.lastIndex = 0;
+    const writeErr = writeAndChmod(targetPath, serialized, isPosix);
+    if (writeErr !== null) return writeErr;
 
-    // -- Atomic write + chmod 0o600 --------------------------------------
-    try {
-      writeFileAtomic(targetPath, serialized);
-    } catch (err) {
-      return {
-        ok: false,
-        exitCode: 1,
-        message: `cannot write saved config at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
-      };
-    }
-    if (isPosix) {
-      try {
-        setMode(targetPath, 0o600);
-      } catch {
-        // Non-fatal: the file is on disk; chmod may fail under restrictive
-        // mount options. The wizard surfaces a warn check in T12 but does
-        // not abort the write (E-⚠8).
-      }
-    }
+    const verifyErr = verifyFileMode(targetPath, isPosix);
+    if (verifyErr !== null) return verifyErr;
 
-    // -- Verify mode round-tripped to 0o600 on POSIX ----------------------
-    if (isPosix) {
-      const mode = getMode(targetPath);
-      if (mode !== null && (mode & 0o777) !== 0o600) {
-        return {
-          ok: false,
-          exitCode: 1,
-          message: `saved config written but mode is ${(mode & 0o777).toString(8)} (expected 0o600); check filesystem mount options`,
-        };
-      }
-    }
-
-    return { ok: true, path: targetPath, bytes: Buffer.byteLength(serialized, "utf8"), lockUnavailable: writeSavedConfigFlockUnavailable.flag };
+    return {
+      ok: true,
+      path: targetPath,
+      bytes: Buffer.byteLength(serialized, "utf8"),
+      lockUnavailable: writeSavedConfigFlockUnavailable.flag,
+    };
   } finally {
-    // -- Release flock ---------------------------------------------------
-    // flock(1) is a wrapper around flock(2); closing the fd releases the lock.
-    if (isPosix && lockFd !== null) {
-      try {
-        closeSync(lockFd);
-      } catch {
-        // ignore — the lock is advisory; a stuck release on process exit
-        // does not break the file write.
-      }
+    releaseInitLock(lockFd, isPosix);
+  }
+}
+
+/**
+ * POSIX-only advisory flock acquisition. On Windows the writer
+ * relies on the atomic-rename primitive + the lock file's existence
+ * for best-effort serialization, so this stage is a no-op there.
+ *
+ * On success returns `{ fd, lockUnavailable }` so the caller can
+ * release the fd in `finally` and surface the
+ * `flock(1)-unavailable` hint when relevant. On failure returns
+ * `{ error }` carrying the canonical lock-acquisition envelope.
+ */
+function acquireInitLock(input: {
+  readonly isPosix: boolean;
+  readonly homeDir: string;
+  readonly lockPath: string;
+}): { readonly fd: number | null; readonly lockUnavailable: boolean } | { readonly error: WriteSavedConfigResult } {
+  if (!input.isPosix) {
+    // Windows: best-effort serialization via shared-lock semantics on
+    // the lock file's existence + the atomic-rename primitive.
+    return { fd: null, lockUnavailable: false };
+  }
+
+  // Ensure the lock dir exists so we can open the lock file even on a
+  // first-run machine. mkdirSync is a no-op if the dir already exists.
+  try {
+    mkdirSync(SAVED_CONFIG_GLOBAL_DIR(input.homeDir), { recursive: true, mode: 0o700 });
+  } catch {
+    // mkdir failure here will resurface at the target-dir ensure below.
+  }
+
+  // Open the lock file (creates it if missing) so flock(1) has a real
+  // inode to lock against — the file itself carries no payload, only
+  // the inode carries the lock.
+  let fd: number;
+  try {
+    fd = openSync(input.lockPath, "w");
+  } catch {
+    return {
+      error: {
+        ok: false,
+        exitCode: 1,
+        message: `cannot acquire init lock at ${input.lockPath}; another init may be in progress; rm ${input.lockPath} if stale`,
+      },
+    };
+  }
+
+  // Non-blocking try-lock via `flock(1) -n <lockPath> true`. We pass
+  // the PATH (not the fd number — see saved-config-flock.ts for why
+  // the fd-number form silently no-ops in vite-node / CI sandboxes).
+  //
+  // Flock availability:
+  //   - flock(1) is in coreutils on every Linux and macOS (via brew
+  //     install coreutils). When it is present, status=0 means lock
+  //     acquired; status≠0 means another init holds it (contention).
+  //   - On hosts without flock(1) (macOS without coreutils, alpine
+  //     without busybox flock, restricted CI sandboxes), the wrapper
+  //     throws `FlockUnavailableError`. We MUST surface this so the
+  //     operator knows the init-time concurrency lock is NOT
+  //     enforced: writes can still race. The atomic-rename primitive
+  //     keeps the file corruption-safe (last-writer-wins on a per-
+  //     inode basis), but a parallel `umactually init` could clobber
+  //     a half-written sibling temp file if the lock is genuinely
+  //     missing. The check below records the unavailability; the
+  //     `lockUnavailable` flag is surfaced via the WriteSavedConfigResult
+  //     so the wizard can emit a hint to the user.
+  let flockResult = true;
+  let lockUnavailable = false;
+  try {
+    flockResult = tryFlockNonBlocking(input.lockPath);
+  } catch (err) {
+    if (err instanceof FlockUnavailableError) {
+      // flock(1) is missing on this host. Atomic-rename still prevents
+      // file corruption; we lose only the "second init declines"
+      // guarantee. Surface a hint to the operator so they understand
+      // the weakened contract — see WriteSavedConfigResult.lockUnavailable.
+      lockUnavailable = true;
+    } else {
+      throw err;
     }
   }
+  if (!flockResult) {
+    try {
+      closeSync(fd);
+    } catch {
+      // ignore
+    }
+    return {
+      error: {
+        ok: false,
+        exitCode: 1,
+        message: `another init is in progress; rm ${input.lockPath} if stale`,
+        lockUnavailable: false,
+      },
+    };
+  }
+  return { fd, lockUnavailable };
+}
+
+/**
+ * flock(1) is a wrapper around flock(2); closing the fd releases
+ * the lock. Best-effort — a stuck release on process exit does
+ * not break the file write.
+ */
+function releaseInitLock(lockFd: number | null, isPosix: boolean): void {
+  if (!isPosix || lockFd === null) return;
+  try {
+    closeSync(lockFd);
+  } catch {
+    // ignore — the lock is advisory
+  }
+}
+
+/**
+ * Ensure the target directory exists with mode 0o700 on POSIX. On
+ * POSIX + global scope, re-stat and chmod to mask off any umask
+ * effects (root + restrictive umask can mask the mode arg).
+ * Returns `null` on success or a `WriteSavedConfigResult` error.
+ */
+function ensureTargetDir(
+  targetDir: string,
+  isPosix: boolean,
+  scope: WriteSavedConfigDeps["scope"],
+): WriteSavedConfigResult | null {
+  try {
+    mkdirSync(targetDir, { recursive: true, mode: 0o700 });
+    if (isPosix && scope === "global") {
+      try {
+        const st = statSync(targetDir);
+        if ((st.mode & 0o777) !== 0o700) {
+          setMode(targetDir, 0o700);
+        }
+      } catch {
+        // ignore — chmod failure on a dir the user can already write to
+        // is non-fatal; we still chmod the FILE to 0o600 below.
+      }
+    }
+    return null;
+  } catch (err) {
+    return {
+      ok: false,
+      exitCode: 1,
+      message: `cannot create saved-config directory ${targetDir}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+}
+
+/**
+ * Build the "refusing to overwrite symlink at target" envelope.
+ */
+function targetSymlinkFail(targetPath: string): WriteSavedConfigResult {
+  return {
+    ok: false,
+    exitCode: 1,
+    message: `refusing to overwrite: ${targetPath} is a symlink; remove it and re-run init`,
+  };
+}
+
+/**
+ * Existing-file handling: when a regular file already lives at the
+ * target path, either (a) back it up if the existing JSON is
+ * corrupt, or (b) prompt the operator before overwriting (unless
+ * `--force` bypassed the prompt). Symlinks are rejected by the
+ * caller (see `targetSymlinkFail`). Returns `null` when it's safe
+ * to proceed, or a `WriteSavedConfigResult` error otherwise.
+ */
+async function handleExistingTarget(
+  targetPath: string,
+  fs: FsAdapter,
+  deps: WriteSavedConfigDeps,
+): Promise<WriteSavedConfigResult | null> {
+  if (!fs.exists(targetPath)) return null;
+  let existingIsCorrupt = false;
+  try {
+    const existingRaw = fs.readFile(targetPath);
+    JSON.parse(existingRaw); // throws on malformed JSON
+  } catch {
+    existingIsCorrupt = true;
+  }
+
+  if (existingIsCorrupt) {
+    // Corrupt JSON: move aside instead of clobbering. The backup
+    // preserves operator history for forensics; the wizard surfaces
+    // the backup path in its C-7 envelope.
+    const mtime = (deps.now ?? Date.now)();
+    const backupPath = `${targetPath}.bak-${Math.floor(mtime)}`;
+    try {
+      renameSync(targetPath, backupPath);
+    } catch (err) {
+      return {
+        ok: false,
+        exitCode: 1,
+        message: `refusing to clobber corrupt saved config at ${targetPath} and could not move it aside: ${err instanceof Error ? err.message : String(err)}; rm ${targetPath} manually`,
+      };
+    }
+    return null;
+  }
+
+  if (deps.force) return null;
+
+  // Valid JSON existing file: prompt for overwrite (unless --force).
+  if (deps.overwriteReader === undefined) {
+    return {
+      ok: false,
+      exitCode: 1,
+      message: `refusing to overwrite existing saved config at ${targetPath}; pass --force to bypass or answer 'y' to the overwrite prompt`,
+    };
+  }
+  const answer = await deps.overwriteReader();
+  if (answer !== true) {
+    return {
+      ok: false,
+      exitCode: 1,
+      message: `refusing to overwrite existing saved config at ${targetPath}; nothing was written`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Defensive secret-regex scan over the FINAL serialized bytes. If
+ * the canonical SECRET_REGEX matches anywhere in the payload the
+ * write is refused — the SavedConfig type excludes `apiKey`, so
+ * this only catches a future field that silently regresses the
+ * no-secrets-at-rest guarantee.
+ */
+function scanForSecretLiteral(serialized: string): WriteSavedConfigResult | null {
+  if (SECRET_REGEX.test(serialized)) {
+    SECRET_REGEX.lastIndex = 0;
+    return {
+      ok: false,
+      exitCode: 1,
+      message: "internal: writer produced an unintended secret literal; refusing to persist",
+    };
+  }
+  SECRET_REGEX.lastIndex = 0;
+  return null;
+}
+
+/**
+ * Atomic write + chmod 0o600 on POSIX. The chmod is best-effort
+ * (non-fatal) — the file is on disk; chmod may fail under
+ * restrictive mount options. Returns `null` on success or a
+ * `WriteSavedConfigResult` error.
+ */
+function writeAndChmod(
+  targetPath: string,
+  serialized: string,
+  isPosix: boolean,
+): WriteSavedConfigResult | null {
+  try {
+    writeFileAtomic(targetPath, serialized);
+  } catch (err) {
+    return {
+      ok: false,
+      exitCode: 1,
+      message: `cannot write saved config at ${targetPath}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (isPosix) {
+    try {
+      setMode(targetPath, 0o600);
+    } catch {
+      // Non-fatal: the file is on disk; chmod may fail under restrictive
+      // mount options. The wizard surfaces a warn check in T12 but does
+      // not abort the write (E-⚠8).
+    }
+  }
+  return null;
+}
+
+/**
+ * Verify the written file's mode round-tripped to 0o600 on POSIX.
+ * Returns `null` on success or a `WriteSavedConfigResult` error
+ * when the mode didn't stick.
+ */
+function verifyFileMode(
+  targetPath: string,
+  isPosix: boolean,
+): WriteSavedConfigResult | null {
+  if (!isPosix) return null;
+  const mode = getMode(targetPath);
+  if (mode !== null && (mode & 0o777) !== 0o600) {
+    return {
+      ok: false,
+      exitCode: 1,
+      message: `saved config written but mode is ${(mode & 0o777).toString(8)} (expected 0o600); check filesystem mount options`,
+    };
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

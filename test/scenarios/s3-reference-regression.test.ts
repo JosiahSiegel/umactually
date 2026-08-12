@@ -1,27 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-import { expectNotImplementedExport } from "../helpers/assert-red-module.js";
+import { verifyReferenceRegressions } from "../../src/reference/verify-reference-regressions.js";
 import { REVIEW_MARKER } from "../../src/util/marker.js";
-
-type ReferenceRegressionInput = {
-  readonly inlineQuoteReference: string;
-  readonly rawJsonLeakReference: string;
-  readonly rawFencedJson: string;
-  readonly expectedArtifact: "artifacts/manual/s3-reference-compatibility.md";
-};
-
-type ReferenceRegressionReport = {
-  readonly artifactPath: string;
-  readonly preservesInlineQuoteEscaping: true;
-  readonly preventsRawJsonLeak: true;
-  readonly supportsCurrentMarker: true;
-};
-
-type VerifyReferenceRegressions = (input: ReferenceRegressionInput) => Promise<ReferenceRegressionReport>;
-
-const referenceModule = "../../src/reference/verify-reference-regressions.js";
-const referencePath = "src/reference/verify-reference-regressions.ts";
 
 // Inline reference fixtures. The original `.reference/test_inline_quote_helpers.py`
 // and `.reference/test_raw_json_leak_fix.py` are gitignored (the user wanted a
@@ -49,10 +30,6 @@ const RAW_JSON_LEAK_REFERENCE_FRAGMENT = [
   "        pass",
 ].join("\n");
 
-function isVerifyReferenceRegressions(value: unknown): value is VerifyReferenceRegressions {
-  return typeof value === "function";
-}
-
 describe("S3 reference regression contract", () => {
   it("REF-S3-001 preserves inline quote, raw-output, and current-marker reference behavior", async () => {
     // Given: the round-1 reference describes prior markdown escaping and raw JSON leak fixes.
@@ -64,14 +41,6 @@ describe("S3 reference regression contract", () => {
     expect(rawFencedJson).toContain("```json");
 
     // When: the TypeScript regression verifier evaluates the references without executing Bash or Python.
-    const verifyReferenceRegressions = await expectNotImplementedExport(
-      referenceModule,
-      referencePath,
-      "verifyReferenceRegressions",
-    );
-    if (!isVerifyReferenceRegressions(verifyReferenceRegressions)) {
-      expect.fail("RED: src/reference/verify-reference-regressions.ts must export verifyReferenceRegressions(input)");
-    }
     const result = await verifyReferenceRegressions({
       inlineQuoteReference,
       rawJsonLeakReference,

@@ -148,7 +148,7 @@ describe("CLI --show-config (v0.6.26)", () => {
     }
 
     expect(result.exitCode).toBe(0);
-    expect(capture.stdout.text).toMatch(/no saved config/i);
+    expect(capture.stdout.text).toMatch(/no saved config|saved config: none/i);
     expect(capture.stdout.text).toContain("umactually init");
     expect(capture.stderr.text).toBe("");
   });
