@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,25 +10,13 @@ const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..", "..");
 const localCompanionActionPath = resolve(packageRoot, "..", "umactually-action", "action.yml");
 
-function loadPublishedAction(): { readonly path: string; readonly body: string } {
-  if (existsSync(localCompanionActionPath)) {
-    return { path: localCompanionActionPath, body: readFileSync(localCompanionActionPath, "utf8") };
-  }
-
-  return {
-    path: "github.com/JosiahSiegel/umactually-action@v1",
-    body: execFileSync(
-      "gh",
-      ["api", "repos/JosiahSiegel/umactually-action/contents/action.yml?ref=v1", "--jq", ".content"],
-      { encoding: "utf8" },
-    ).replace(/\r?\n/gu, ""),
-  };
+if (!existsSync(localCompanionActionPath)) {
+  throw new Error(
+    `Published action schema requires a sibling checkout at ${localCompanionActionPath}; clone https://github.com/JosiahSiegel/umactually-action there before running this test.`,
+  );
 }
 
-const publishedAction = loadPublishedAction();
-const actionBody = publishedAction.path === localCompanionActionPath
-  ? publishedAction.body
-  : Buffer.from(publishedAction.body, "base64").toString("utf8");
+const actionBody = readFileSync(localCompanionActionPath, "utf8");
 const actionDoc = parseYaml(actionBody) as {
   name?: string;
   description?: string;
