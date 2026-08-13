@@ -532,7 +532,7 @@ export function buildInlineCommentBody(input: {
   const safeSeverity = sanitizeForPost(input.comment.severity.toLowerCase(), input.secrets);
   const safeCategory = sanitizeForPost(input.comment.category, input.secrets);
   const safePath = sanitizeForPost(input.comment.path, input.secrets);
-  const fallback = `Finding at ${safePath}:${input.comment.line}.`;
+  const fallback = `Finding at ${safePath}:${input.comment.line} (${safeSeverity} / ${safeCategory}) — body not populated by provider. See the parent review summary for context.`;
   const safeBody = input.comment.body.length > 0
     ? sanitizeForPost(input.comment.body, input.secrets)
     : sanitizeForPost(fallback, input.secrets);
