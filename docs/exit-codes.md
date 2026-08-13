@@ -7,7 +7,11 @@
 | 0 | success | normal completion (also: `--help`, `--version`, bare-invocation quickstart on TTY) |
 | 1 | runtime error | Node version guard, standalone-mode provider failure, unexpected internal error, `LiveReviewError`, invalid artifact, uninstall check failure, corrupt `--show-config` file |
 | 2 | validation error | required flags missing (or `CliUsageError` from parse-time), unknown subcommand, non-interactive `--purge-config`/`--revert-path` without `--yes` |
+| 3 | secret bootstrap required | the published action's first-run path emitted the typed error `UMACTUALLY_ERR_SECRET_BOOTSTRAP` because `secrets.UMACTUALLY_API_URL` or `secrets.UMACTUALLY_API_KEY` was empty on an opening/reopening pull-request event; the action posted (or skipped on `synchronize`) the bootstrap PR comment and exited with this typed code (also surfaced via `UMACTUALLY_TYPED_EXIT_CODE_NAMES[3]`) |
+| 4 | Marketplace publisher identity not verified | the publisher-identity precondition gate (run before any Marketplace publish) emitted the typed error `UMACTUALLY_ERR_PUBLISHER_UNVERIFIED` because neither the `umactually-publisher` GitHub App nor the `JosiahSiegel` org app is a verified Marketplace publisher (also surfaced via `UMACTUALLY_TYPED_EXIT_CODE_NAMES[4]`) |
 | 127 | missing bundle | `dist/cli.js` not built (run `npm run bundle`) |
+
+> **New typed codes (3, 4) — single-click-github-install plan.** Codes `3` and `4` were added by the single-click-github-install plan (tasks T02 and T09). They are the only codes that carry a fully-qualified typed-error identifier (`UMACTUALLY_ERR_SECRET_BOOTSTRAP`, `UMACTUALLY_ERR_PUBLISHER_UNVERIFIED`) — the pre-existing codes 0, 1, 2, 127 intentionally have no typed-error name. The literals are exported from `src/util/exit-codes.ts` as `UMACTUALLY_EXIT_CODES.SECRET_BOOTSTRAP` / `UMACTUALLY_EXIT_CODES.PUBLISHER_UNVERIFIED` and the typed-error strings are sourced from `UMACTUALLY_TYPED_EXIT_CODE_NAMES` so a rename stays a one-file change.
 
 ## Wiring CI around exit codes
 

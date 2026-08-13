@@ -10,6 +10,10 @@ ship a tag).
 
 ## [Unreleased]
 
+### Changed
+
+- **`umactually init --ci github|azure` now emits the published-action / published-task shortform by default**. The generated GitHub workflow references `JosiahSiegel/umactually-action@v1` as a single `uses:` step with an explicit `with:` block (every input documented in `C1`: `cli-version`, `api-url`, `api-key`, `provider`, `config-path`, `output-artifact`, `skip-draft`, `paths-ignore`); the generated Azure pipeline references `UmActuallyReview@1` as a single ADO task with the same input matrix and the `SYSTEM_ACCESSTOKEN` env-passthrough preserved. The action / task owns Node.js setup, `npm install -g umactually@<pin>`, and the live review call. The version pin is now applied to the action's `cli-version:` / task's `cliVersion:` input (modulo the existing `__UMACTUALLY_VERSION__` substitution) rather than to an inline `npm install` line. `--longform` selects the prior inline form for one release as a deprecation escape hatch; the shortform default is targeted for removal at `umactually-action@v2` (target: 2026-Q4), at which point `--longform` and the inline templates will be deleted. New canonical shortform fixtures `examples/github/pr-review.yml.action-ref.yml` and `examples/azure/azure-pipelines.yml.task-ref.yml` pin the byte-equality contract for the drift test, alongside the existing longform fixtures. `[src/cli/init-templates.ts] [src/cli/init.ts]`
+
 
 
 ## [0.8.2] - 2026-08-12
