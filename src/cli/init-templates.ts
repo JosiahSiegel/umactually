@@ -65,13 +65,12 @@ jobs:
         with:
           cli-version: __UMACTUALLY_VERSION__
           provider: openai-compatible
+          api-url: \${{ secrets.UMACTUALLY_API_URL }}
+          api-key: \${{ secrets.UMACTUALLY_API_KEY }}
           config-path: ./umactually.review.json
           output-artifact: umactually-review.json
           skip-draft: 'true'
           paths-ignore: '**/*.md,docs/**,**/*.lock'
-        secrets:
-          api-url: \${{ secrets.UMACTUALLY_API_URL }}
-          api-key: \${{ secrets.UMACTUALLY_API_KEY }}
 `;
 
 /**

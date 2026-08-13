@@ -8,7 +8,6 @@ Provider-agnostic pull-request review from the UmActually CLI. One-line install,
 - uses: JosiahSiegel/umactually-action@v1
   with:
     provider: openai-compatible
-  secrets:
     api-url: ${{ secrets.UMACTUALLY_API_URL }}
     api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
