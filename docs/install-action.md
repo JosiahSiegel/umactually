@@ -14,7 +14,7 @@ This document is the canonical reference for the action. The README's [Quickstar
     api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
 
-Forward repository secrets through `with:` inputs (e.g. `with: api-url: ${{ secrets.UMACTUALLY_API_URL }}`). The companion action's internal steps read `inputs.api-url` and `inputs.api-key`; direct `secrets.` expressions in its composite-step metadata are rejected by the runtime loader. This supersedes the v0.9.1 `secrets:`-block forwarding contract per `JosiahSiegel/umactually-action@4d5a5f4`.
+Forward repository secrets through `with:` inputs (e.g. `with: api-url: ${{ secrets.UMACTUALLY_API_URL }}`). The companion action's internal steps read `inputs.api-url` and `inputs.api-key`; direct `secrets.` expressions in its composite-step metadata are rejected by the runtime loader. This supersedes the v0.9.2 `secrets:`-block forwarding contract per `JosiahSiegel/umactually-action@4d5a5f4`.
 
 ## Input matrix
 
