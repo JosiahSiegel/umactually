@@ -10,12 +10,11 @@ This document is the canonical reference for the action. The README's [Quickstar
 - uses: JosiahSiegel/umactually-action@v1
   with:
     provider: openai-compatible
-  secrets:
     api-url: ${{ secrets.UMACTUALLY_API_URL }}
     api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
 
-Secrets are forwarded via the `secrets:` block on `uses:`. GitHub Actions does NOT template `${{ secrets.* }}` expressions inside a Composite Action's input `default:` values — they are stored as plain strings and passed verbatim, which would bypass the bootstrap. Use the `secrets:` block instead.
+Forward repository secrets through `with:` inputs (e.g. `with: api-url: ${{ secrets.UMACTUALLY_API_URL }}`). The companion action's internal steps read `inputs.api-url` and `inputs.api-key`; direct `secrets.` expressions in its composite-step metadata are rejected by the runtime loader. This supersedes the v0.9.0 `secrets:`-block forwarding contract per `JosiahSiegel/umactually-action@4d5a5f4`.
 
 ## Input matrix
 
@@ -24,8 +23,8 @@ The full input matrix from the published [`JosiahSiegel/umactually-action`](http
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `cli-version` | no | `__UMACTUALLY_VERSION__` | `umactually` CLI version to install via `npm install -g`. Pin a specific tag (e.g. `0.8.2`) to disable auto-update. |
-| `api-url` | no | `""` | Provider API base URL. Default empty — forward via `secrets: api-url:`. Override via `with:` only for non-default hosts. |
-| `api-key` | no | `""` | Provider API key. Default empty — forward via `secrets: api-key:`. |
+| `api-url` | no | `""` | Provider API base URL. Default empty — forward via `with: api-url: ${{ secrets.UMACTUALLY_API_URL }}`. Override via `with:` only for non-default hosts. |
+| `api-key` | no | `""` | Provider API key. Default empty — forward via `with: api-key: ${{ secrets.UMACTUALLY_API_KEY }}`. |
 | `provider` | no | `openai-compatible` | Provider family: `openai-compatible`, `anthropic`, or `copilot`. |
 | `model` | no | `""` | Provider-specific model identifier (optional). |
 | `config-path` | no | `./umactually.review.json` | Path to the committed `umactually.review.json` policy file (schemaVersion 1). |
@@ -45,11 +44,11 @@ The full input matrix from the published [`JosiahSiegel/umactually-action`](http
 
 The action sets these env vars before invoking the CLI (the equivalent of the longform workflow's `env:` block):
 
-- `UMACTUALLY_API_URL` ← `${{ secrets.api-url || inputs.api-url }}`
-- `UMACTUALLY_API_KEY` ← `${{ secrets.api-key || inputs.api-key }}`
+- `UMACTUALLY_API_URL` ← `${{ inputs.api-url }}`
+- `UMACTUALLY_API_KEY` ← `${{ inputs.api-key }}`
 - `GITHUB_TOKEN` ← `${{ github.token }}`
 
-The `secrets.* || inputs.*` coalesce supports both forwarding paths: secrets forwarded via the `secrets:` block on `uses:` (new contract) and explicit overrides via the `with:` block (legacy form).
+The action reads `inputs.api-url` and `inputs.api-key` only. Pass repository secrets into those `with:` inputs in the calling workflow; the former `secrets.* || inputs.*` coalesce was removed in `JosiahSiegel/umactually-action@4d5a5f4`.
 
 ## CLI-flag passthrough
 

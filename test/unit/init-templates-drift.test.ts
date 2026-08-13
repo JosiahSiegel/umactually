@@ -139,12 +139,10 @@ describe("init CI templates drift contract", () => {
     expect(body).toMatch(/contents:\s*read/u);
     expect(body).toMatch(/pull-requests:\s*write/u);
     expect(body).toMatch(/cli-version:\s*__UMACTUALLY_VERSION__/u);
-    // Finding 1 fix: secrets are now forwarded via the `secrets:` block
-    // on `uses:`, NOT via the `with:` block. The `secrets:` block MUST
-    // carry both secret mappings, using the action's declared secret
-    // names (`api-url`, `api-key`).
-    expect(body).toMatch(/secrets:\s*\n\s*api-url:\s*\$\{\{\s*secrets\.UMACTUALLY_API_URL\s*\}\}/u);
-    expect(body).toMatch(/api-key:\s*\$\{\{\s*secrets\.UMACTUALLY_API_KEY\s*\}\}/u);
+    // Secrets must be forwarded through the action's `with:` inputs.
+    expect(body).toMatch(/with:\s*\n(?:\s*[^\n]+\n)*?\s*api-url:\s*\$\{\{\s*secrets\.UMACTUALLY_API_URL\s*\}\}/u);
+    expect(body).toMatch(/with:\s*\n(?:\s*[^\n]+\n)*?\s*api-key:\s*\$\{\{\s*secrets\.UMACTUALLY_API_KEY\s*\}\}/u);
+    expect(body).not.toMatch(/^\s*secrets:/mu);
     expect(body).toMatch(/provider:\s*openai-compatible/u);
     expect(body).toMatch(/config-path:\s*\.\/umactually\.review\.json/u);
     expect(body).toMatch(/output-artifact:\s*umactually-review\.json/u);

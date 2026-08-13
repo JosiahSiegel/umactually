@@ -118,7 +118,7 @@ describe("published umactually-action — Composite Action schema contract", () 
     expect(typeof actionDoc.branding?.color).toBe("string");
   });
 
-  it("api-url and api-key defaults are the empty string (secrets forwarded via `secrets:` block, NOT input defaults)", () => {
+  it("api-url and api-key defaults are the empty string (secrets forwarded via `with:` input, NOT input defaults)", () => {
     // Finding 1 contract: GitHub Actions does NOT template
     // `${{ secrets.* }}` expressions inside a Composite Action's
     // `inputs.<key>.default` — they are stored as plain strings and
@@ -128,7 +128,7 @@ describe("published umactually-action — Composite Action schema contract", () 
     // defaults MUST be the empty string so the bootstrap fires when
     // the calling workflow does not forward the secret.
     const inputs = actionDoc.inputs ?? {};
-    expect(inputs["api-url"]?.default, "api-url.default must be empty string (secrets via secrets: block)").toBe("");
-    expect(inputs["api-key"]?.default, "api-key.default must be empty string (secrets via secrets: block)").toBe("");
+    expect(inputs["api-url"]?.default, "api-url.default must be empty string (secrets via with: input)").toBe("");
+    expect(inputs["api-key"]?.default, "api-key.default must be empty string (secrets via with: input)").toBe("");
   });
 });
