@@ -7696,8 +7696,10 @@ async function smartPromptForApiConfig(input) {
 ;// CONCATENATED MODULE: ./src/cli/init-templates.ts
 // SPDX-License-Identifier: MIT
 // Verbatim canonical CI workflow bytes. Drift-tested against
-// examples/github/pr-review.yml and examples/azure/azure-pipelines.yml
-// in test/unit/init-templates-drift.test.ts modulo the single
+// examples/github/pr-review.yml, examples/azure/azure-pipelines.yml
+// (longform/inline), and examples/github/pr-review.yml.action-ref.yml
+// + examples/azure/azure-pipelines.yml.task-ref.yml (shortform/action-
+// ref) in test/unit/init-templates-drift.test.ts modulo the single
 // version-pin substitution point.
 //
 // Why inline-const (not fs.readFileSync at runtime): the SEA binary
@@ -7706,10 +7708,70 @@ async function smartPromptForApiConfig(input) {
 // is broken in the binary. The npm-published path also has no
 // examples/ files relative to dist/. Inline constants ship with the
 // bundle. The drift test guards against template rot.
+//
+// Shortform vs longform: the default wizard emit (shortform) references
+// the published GitHub Action / ADO task so the workflow body stays a
+// single step. `--longform` selects the prior inline install + run form
+// for one release as a deprecation escape hatch — removal is pinned to
+// `umactually-action@v2` (target: 2026-Q4), see CHANGELOG `[Unreleased]`.
 
 const GITHUB_WORKFLOW_FILENAME = "umactually-pr-review.yml";
 const AZURE_PIPELINE_FILENAME = "azure-pipelines.yml";
-const GITHUB_WORKFLOW_TEMPLATE = `# Runs umactually as a pinned npm CLI for pull requests.
+/**
+ * Shortform (default) — references the published GitHub Action so the
+ * generated workflow body is a single `uses:` step. The action owns
+ * Node.js setup, npm install of the CLI, and the live review call; the
+ * operator only wires credentials and config.
+ *
+ * Secret forwarding contract (Finding 1 fix): the action's `api-url` /
+ * `api-key` input defaults are the empty string `""` (GitHub Actions
+ * does not template `${{ secrets.* }}` inside `inputs.<key>.default`).
+ * Secrets are forwarded via the `secrets:` block on `uses:` using the
+ * action's declared secret names (`api-url`, `api-key`), NOT via the
+ * `with:` block. The action reads from `secrets.* || inputs.*` so the
+ * legacy `with:` form still works as a fallback.
+ *
+ * `__UMACTUALLY_VERSION__` pins the action's `cli-version` input
+ * (default for the npm install the action runs internally). It is
+ * intentionally NOT on an `npm install -g` line — longform still has
+ * that, but shortform delegates install to the action.
+ */
+const GITHUB_WORKFLOW_TEMPLATE = `# Runs umactually via the published GitHub Action for pull requests.
+# Action: https://github.com/JosiahSiegel/umactually-action
+name: PR review
+on: [pull_request]
+concurrency:
+  group: umactually-\${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run umactually PR review
+        uses: JosiahSiegel/umactually-action@v1
+        with:
+          cli-version: __UMACTUALLY_VERSION__
+          provider: openai-compatible
+          config-path: ./umactually.review.json
+          output-artifact: umactually-review.json
+          skip-draft: 'true'
+          paths-ignore: '**/*.md,docs/**,**/*.lock'
+        secrets:
+          api-url: \${{ secrets.UMACTUALLY_API_URL }}
+          api-key: \${{ secrets.UMACTUALLY_API_KEY }}
+`;
+/**
+ * Longform — the prior inline `npm install -g` + `umactually review`
+ * form, retained for one release as a deprecation escape hatch via the
+ * `umactually init --longform` flag. Byte-for-byte equivalent to
+ * examples/github/pr-review.yml modulo the version pin (so the drift
+ * test can pin the prior canonical example against this constant).
+ */
+const GITHUB_WORKFLOW_TEMPLATE_LONGFORM = `# Runs umactually as a pinned npm CLI for pull requests.
 name: PR review
 on: [pull_request]
 concurrency:
@@ -7736,7 +7798,48 @@ jobs:
           UMACTUALLY_API_KEY: \${{ secrets.UMACTUALLY_API_KEY }}
         run: umactually review --platform github
 `;
+/**
+ * Shortform (default) — references the published ADO task. The task
+ * owns Node.js setup, npm install, and the live review call; the
+ * operator only wires credentials and config.
+ *
+ * `SYSTEM_ACCESSTOKEN` env-passthrough is preserved because ADO does
+ * not export $(System.AccessToken) inside the task scope.
+ */
 const AZURE_PIPELINE_TEMPLATE = `# Enable "Allow scripts to access the OAuth token" in pipeline settings.
+# Only the two canonical UMACTUALLY_* credential vars are forwarded; runtime
+# options (model, provider, github-api-base) are read from the saved config
+# under ~/.umactually/config.json or the provider's own discovery.
+# Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
+# only ADO-specific plumbing because Azure does not export $(System.AccessToken).
+trigger: none
+pr:
+  branches:
+    include: [main]
+pool:
+  vmImage: ubuntu-latest
+steps:
+  - checkout: self
+  - task: UmActuallyReview@1
+    inputs:
+      cliVersion: __UMACTUALLY_VERSION__
+      apiUrl: $(UMACTUALLY_API_URL)
+      apiKey: $(UMACTUALLY_API_KEY)
+      provider: openai-compatible
+      configPath: ./umactually.review.json
+      outputArtifact: umactually-review.json
+      skipDraft: 'true'
+      pathsIgnore: '**/*.md,docs/**,**/*.lock'
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+`;
+/**
+ * Longform — the prior inline `npm install -g` + `umactually review`
+ * script form, retained for one release as a deprecation escape hatch
+ * via `umactually init --longform`. Byte-for-byte equivalent to
+ * examples/azure/azure-pipelines.yml modulo the version pin.
+ */
+const AZURE_PIPELINE_TEMPLATE_LONGFORM = `# Enable "Allow scripts to access the OAuth token" in pipeline settings.
 # Only the two canonical UMACTUALLY_* credential vars are forwarded; runtime
 # options (model, provider, github-api-base) are read from the saved config
 # under ~/.umactually/config.json or the provider's own discovery.
@@ -7763,8 +7866,29 @@ steps:
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
 `;
+/**
+ * Render the canonical CI workflow body for a target. Default
+ * (`longform: false`) emits the published-action / published-task
+ * shortform. `longform: true` selects the prior inline form for one
+ * release — removal is pinned to `umactually-action@v2` (target:
+ * 2026-Q4), see CHANGELOG `[Unreleased]`.
+ *
+ * The `__UMACTUALLY_VERSION__` placeholder is substituted on
+ * whichever line owns the version pin for the selected form:
+ *   - shortform GitHub: `cli-version: __UMACTUALLY_VERSION__` (input to the action)
+ *   - longform  GitHub: `npm install -g umactually@__UMACTUALLY_VERSION__`
+ *   - shortform Azure: `cliVersion: __UMACTUALLY_VERSION__` (input to the task)
+ *   - longform  Azure: `npm install -g umactually@__UMACTUALLY_VERSION__`
+ */
 function renderCiTemplate(input) {
-    const template = input.target === "github" ? GITHUB_WORKFLOW_TEMPLATE : AZURE_PIPELINE_TEMPLATE;
+    const useLongform = input.longform === true;
+    let template;
+    if (input.target === "github") {
+        template = useLongform ? GITHUB_WORKFLOW_TEMPLATE_LONGFORM : GITHUB_WORKFLOW_TEMPLATE;
+    }
+    else {
+        template = useLongform ? AZURE_PIPELINE_TEMPLATE_LONGFORM : AZURE_PIPELINE_TEMPLATE;
+    }
     const body = template.replaceAll("__UMACTUALLY_VERSION__", input.packageVersion);
     const filename = input.target === "github" ? GITHUB_WORKFLOW_FILENAME : AZURE_PIPELINE_FILENAME;
     const relativePath = input.target === "github"
@@ -7861,6 +7985,7 @@ const FLAG_HANDLERS = {
     "--policy-template": { consume: false, apply: (state) => { state.policyTemplate = true; } },
     "--dry-run": { consume: false, apply: (state) => { state.dryRun = true; } },
     "--show": { consume: false, apply: (state) => { state.show = true; } },
+    "--longform": { consume: false, apply: (state) => { state.longform = true; } },
     "--ci": { consume: true, validate: parseCi, apply: (state, value) => { state.ci = value; } },
     "--scope": { consume: true, validate: parseScope, apply: (state, value) => { state.scope = value; } },
     "--provider": { consume: true, validate: init_parseProvider, apply: (state, value) => { state.provider = value; } },
@@ -7919,6 +8044,7 @@ function createParsedInitState() {
         show: false,
         nonInteractive: false,
         policyTemplate: false,
+        longform: false,
     };
 }
 function flagValue() {
@@ -8048,6 +8174,7 @@ const init_INIT_HELP_TEXT = [
     "  --yes                      Skip all confirmation prompts",
     "  --dry-run                  Compute the plan; no filesystem writes",
     "  --policy-template          Write umactually.review.json template (opt-in; explicit)",
+    "  --longform                 Emit the prior inline (npm install + review) CI template (one-release escape hatch; default emits published action / task)",
     "  --show                     Print the resolved saved config and exit",
     "  --json                     Emit machine-readable JSON envelope",
     "  --help, -h                 Show this help",
@@ -9018,6 +9145,7 @@ async function promptCi(input) {
         fs,
         deps,
         packageVersion,
+        longform: args.longform,
     });
     if (!gen.ok) {
         return {
@@ -9151,6 +9279,7 @@ async function generateCiForResult(input) {
             fs: input.fs,
             deps: input.deps,
             packageVersion: input.packageVersion,
+            longform: input.args.longform,
         });
         return r.ok ? [ci] : [];
     }
@@ -9163,6 +9292,7 @@ async function generateCiForResult(input) {
             fs: input.fs,
             deps: input.deps,
             packageVersion: input.packageVersion,
+            longform: input.args.longform,
         });
         return r.ok ? [target] : [];
     }
@@ -9185,6 +9315,7 @@ async function generateCi(input) {
     const rendered = renderCiTemplate({
         target: input.target,
         packageVersion: input.packageVersion,
+        longform: input.longform,
     });
     let targetPath;
     try {
@@ -16494,14 +16625,24 @@ function truncateSnippet(snippet, max) {
  */
 function findingsDetailsRow(index, c, secrets, summaryCap) {
     const title = collapseBody(c, secrets);
-    const snippet = truncateSnippet(title, summaryCap);
+    // When the provider emits an empty `body` (e.g. the synthetic
+    // review-model for some findings) the collapsed title is "" and the
+    // summary line would render as `1 · 🟠 Medium — ` — useless to
+    // reviewers. Mirror the inline-thread fallback in
+    // `src/cli/live-shared.ts:buildInlineCommentBody` (which produces
+    // `Finding at <path>:<line>.` for the same empty-body case) so the
+    // summary snippet still gives the reader a locatable handle.
+    const safePath = cell(c.path);
+    const fallbackBody = `Finding at ${safePath}:${c.line}.`;
+    const snippetSource = title.trim().length > 0 ? title : fallbackBody;
+    const snippet = truncateSnippet(snippetSource, summaryCap);
     const lines = [];
     lines.push("<details>");
     lines.push(`<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`);
     lines.push("");
-    lines.push(`📍 \`${cell(c.path)}\`:${c.line}`);
+    lines.push(`📍 \`${safePath}\`:${c.line}`);
     lines.push("");
-    lines.push(`> ${cell(title)}`);
+    lines.push(`> ${cell(snippetSource)}`);
     lines.push("");
     lines.push("</details>");
     return lines.join("\n");
