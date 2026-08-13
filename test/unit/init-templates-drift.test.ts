@@ -24,13 +24,24 @@ describe("init CI templates drift contract", () => {
   // must still match the canonical inline example byte-for-byte modulo
   // the single `npm install -g umactually@<version>` substitution point.
   // The original test (kept for the longform path).
+  // Longform deprecation comment block — added to `examples/azure/azure-pipelines.yml`
+  // by the single-click-github-install plan (T08) to record that this is
+  // the inline longform kept for one release (removed in
+  // `umactually-action@v2`, target: 2026-Q4). The drift test strips it
+  // from the canonical fixture before comparing so the byte equality
+  // is against the actual rendered workflow body only (mirrors the
+  // shortform `shortformFixtureDocComment` pattern above).
+  const longformFixtureDeprecationComment =
+    /^[ \t]*#\s*(Inline-form|Inline longform|Removal of the inline|longform kept|umactually init --ci azure)[^\n]*\n(?:^[ \t]*#\s*[^\n]*\n)*/gum;
   for (const [target, relativePath] of Object.entries(longformFiles)) {
     it(`${target} longform bytes equal the canonical file modulo the one version pin`, async () => {
       // Given: the checked-in canonical longform workflow, independent from generated output.
-      const canonical = readFileSync(resolve(relativePath), "utf8").replace(
-        /npm install -g umactually@[^\s]+/gu,
-        "npm install -g umactually@9.8.7",
-      );
+      const canonical = readFileSync(resolve(relativePath), "utf8")
+        .replace(longformFixtureDeprecationComment, "")
+        .replace(
+          /npm install -g umactually@[^\s]+/gu,
+          "npm install -g umactually@9.8.7",
+        );
 
       // When: the longform template is rendered at the same version.
       const rendered = renderCiTemplate({

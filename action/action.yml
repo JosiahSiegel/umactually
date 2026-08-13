@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: MIT
+#
+# Composite Action skeleton for `JosiahSiegel/umactually-action`.
+#
+# This file is committed in the CLI repo for review and to unblock the
+# drift / schema tests. The published copy will live at
+# github.com/JosiahSiegel/umactually-action once the separate repo is
+# bootstrapped (plan T10 — an external human gate that this repo
+# acknowledges as out-of-scope).
+#
+# Branch-protection contract:
+#   - Output `verdict`: success / failure verdict for required checks.
+#   - Output `inline-thread-count`: number of inline threads posted.
+#   - Output `review-id`: the run's review identifier.
+# These three outputs are what branch-protection rules branch on.
+#
+# First-run secret bootstrap behavior:
+#   The `bootstrap-secret-pr-comment` step detects a missing
+#   `secrets.UMACTUALLY_API_URL` or `secrets.UMACTUALLY_API_KEY` on an
+#   opening/reopening PR event and posts an idempotent PR comment
+#   (marker `<!-- umactually-bootstrap -->`) explaining the two
+#   secrets the operator must add. On `synchronize` the step is a
+#   no-op (one comment per PR). The step then exits with the typed
+#   error code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3) so a branch-
+#   protection rule can surface the bootstrap requirement as a
+#   required status check failure. See
+#   `docs/install-action.md#first-run-secret-bootstrap` for the
+#   long form and `src/util/exit-codes.ts` for the literal.
+name: "UmActually PR review"
+description: "Run umactually as a Composite Action — Node.js 24 setup, npm install of the CLI, first-run secret bootstrap, live PR review, and verdict output for branch protection."
+author: "Josiah Siegel <https://github.com/JosiahSiegel>"
+branding:
+  icon: "check-circle"
+  color: "blue"
+inputs:
+  cli-version:
+    description: "Version of the `umactually` CLI to install via `npm install -g`. Default `__UMACTUALLY_VERSION__` is the substitution point the `umactually init` wizard uses to track the CLI release; pin a specific tag (e.g. `0.8.2`) to disable auto-update."
+    required: false
+    default: "__UMACTUALLY_VERSION__"
+  api-url:
+    description: "API base URL for the configured provider family. Forwarded to the CLI as `UMACTUALLY_API_URL`. Default reads `secrets.UMACTUALLY_API_URL`; only override when the provider's base URL differs from the secret (e.g. Anthropic or a non-default OpenAI-compatible host)."
+    required: false
+    default: "${{ secrets.UMACTUALLY_API_URL }}"
+  api-key:
+    description: "Provider API key. Forwarded to the CLI as `UMACTUALLY_API_KEY`. Default reads `secrets.UMACTUALLY_API_KEY`. Never place the credential in YAML literals or command arguments."
+    required: false
+    default: "${{ secrets.UMACTUALLY_API_KEY }}"
+  provider:
+    description: "Provider family. One of `openai-compatible`, `anthropic`, or `copilot`. Default `openai-compatible` — the wizard's pick for the most common operator profile."
+    required: false
+    default: "openai-compatible"
+  model:
+    description: "Provider-specific model identifier (optional). Empty string = let the provider pick its default model (e.g. OpenAI's `gpt-4o`, Anthropic's `claude-sonnet-4-5`)."
+    required: false
+    default: ""
+  config-path:
+    description: "Path to the committed `umactually.review.json` policy file (schemaVersion 1). Default `./umactually.review.json` — the wizard's default path; auto-discovery walks up to the repo root."
+    required: false
+    default: "./umactually.review.json"
+  output-artifact:
+    description: "Path the CLI writes the review artifact to. Default `umactually-review.json`. Exposed as a step output and uploaded via `actions/upload-artifact@v4` in the action's final step for downstream consumers."
+    required: false
+    default: "umactually-review.json"
+  skip-draft:
+    description: "When `'true'`, the CLI skips re-reviewing files whose inline threads haven't changed since the last run. Default `'true'` matches the wizard's default (cost-aware incremental review)."
+    required: false
+    default: "true"
+  paths-ignore:
+    description: "Comma-separated gitignore-style globs the CLI excludes from review. Default excludes Markdown docs and lock files — neither is reviewable code. Pass an empty string to review every file."
+    required: false
+    default: "**/*.md,docs/**,**/*.lock"
+outputs:
+  verdict:
+    description: "Success/failure verdict for required status checks. `success` when the review posted without a parse-fail sentinel; `failure` otherwise. Branch-protection rules branch on this output."
+  inline-thread-count:
+    description: "Number of inline review threads posted to the PR. Zero is a successful clean review. Surfaced as a job summary for human reviewers."
+  review-id:
+    description: "Opaque run identifier (request id) emitted by the CLI in the review artifact's `metadata.requestId` field. Used for log correlation."
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Node.js 24
+      uses: actions/setup-node@v7
+      with:
+        node-version: "24"
+
+    - name: Install umactually CLI
+      shell: bash
+      run: npm install -g "umactually@${{ inputs.cli-version }}"
+
+    - name: First-run secret bootstrap (idempotent PR comment + typed exit code 3)
+      id: bootstrap
+      shell: bash
+      env:
+        UMACTUALLY_API_URL: ${{ inputs.api-url }}
+        UMACTUALLY_API_KEY: ${{ inputs.api-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        if [ -z "$UMACTUALLY_API_URL" ] || [ -z "$UMACTUALLY_API_KEY" ]; then
+          if [ "${{ github.event_name }}" = "pull_request" ] && { [ "${{ github.event.action }}" = "opened" ] || [ "${{ github.event.action }}" = "reopened" ] || [ "${{ github.event.action }}" = "ready_for_review" ]; }; then
+            MARKER="<!-- umactually-bootstrap -->"
+            COMMENT_BODY=$(cat <<EOF
+        $MARKER
+        ## umactually: secret bootstrap required
+
+        The umactually action needs two repository secrets before it can run a review:
+
+        1. \`UMACTUALLY_API_URL\` — your provider's API base URL.
+        2. \`UMACTUALLY_API_KEY\` — your provider's API key.
+
+        Configure them under **Settings → Secrets and variables → Actions** on this repository. The action re-runs on the next \`synchronize\` event once both secrets are present.
+
+        See \`docs/install-action.md\` for the long form.
+        EOF
+            )
+            gh pr comment "${{ github.event.pull_request.number }}" --body "$COMMENT_BODY" || true
+          fi
+          echo "::error::UMACTUALLY_ERR_SECRET_BOOTSTRAP — secrets.UMACTUALLY_API_URL or secrets.UMACTUALLY_API_KEY is empty."
+          exit 3
+        fi
+
+    - name: Run umactually PR review
+      id: review
+      shell: bash
+      env:
+        UMACTUALLY_API_URL: ${{ inputs.api-url }}
+        UMACTUALLY_API_KEY: ${{ inputs.api-key }}
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        umactually review \
+          --platform github \
+          --config-path "${{ inputs.config-path }}" \
+          --output-artifact "${{ inputs.output-artifact || 'umactually-review.json' }}"
+
+    - name: Upload review artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: umactually-review
+        path: ${{ inputs.output-artifact || 'umactually-review.json' }}
+        if-no-files-found: warn
+
+    - name: Emit branch-protection outputs
+      if: always()
+      id: outputs
+      shell: bash
+      run: |
+        set -e
+        ARTIFACT="${{ inputs.output-artifact || 'umactually-review.json' }}"
+        if [ -f "$ARTIFACT" ]; then
+          VERDICT=$(node -e "const j=require('./$ARTIFACT');process.stdout.write(j.verdict||'success')")
+          COUNT=$(node -e "const j=require('./$ARTIFACT');process.stdout.write(String(j.inlineThreadCount??0))")
+          REVIEW_ID=$(node -e "const j=require('./$ARTIFACT');process.stdout.write(j.metadata?.requestId||j.reviewId||'')")
+        else
+          VERDICT="failure"
+          COUNT="0"
+          REVIEW_ID=""
+        fi
+        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+        echo "inline-thread-count=$COUNT" >> "$GITHUB_OUTPUT"
+        echo "review-id=$REVIEW_ID" >> "$GITHUB_OUTPUT"

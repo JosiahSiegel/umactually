@@ -1,0 +1,1 @@
+// compiled from src/index.ts; `npm run ado-task:build` rebuilds; do not edit by hand

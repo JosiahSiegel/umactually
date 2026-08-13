@@ -70,6 +70,32 @@ describe("docs/exit-codes.md", () => {
     expect(docBody).toMatch(/validation error/u);
   });
 
+  it("documents exit code 3 — secret bootstrap required (UMACTUALLY_ERR_SECRET_BOOTSTRAP, single-click-github-install T02)", () => {
+    // exit 3 is the typed-error code emitted by the published action's
+    // first-run bootstrap step when `secrets.UMACTUALLY_API_URL` or
+    // `secrets.UMACTUALLY_API_KEY` is empty on an opening/reopening
+    // pull-request event. The doc MUST list both the numeric row AND
+    // the typed-error identifier so an operator can map a returned
+    // exit 3 to the bootstrap PR comment + secret configuration step.
+    expect(docBody).toMatch(/\| 3 \|/u);
+    expect(docBody).toMatch(/secret bootstrap required/u);
+    expect(docBody).toMatch(/UMACTUALLY_ERR_SECRET_BOOTSTRAP/u);
+    expect(docBody).toMatch(/UMACTUALLY_API_URL/u);
+    expect(docBody).toMatch(/UMACTUALLY_API_KEY/u);
+  });
+
+  it("documents exit code 4 — Marketplace publisher identity not verified (UMACTUALLY_ERR_PUBLISHER_UNVERIFIED, single-click-github-install T09)", () => {
+    // exit 4 is the typed-error code emitted by the publisher-identity
+    // precondition gate (T09) when neither the `umactually-publisher`
+    // GitHub App nor the `JosiahSiegel` org app is a verified
+    // Marketplace publisher. The doc MUST list both the numeric row
+    // AND the typed-error identifier so an operator can map a returned
+    // exit 4 to the publisher-verification prerequisite.
+    expect(docBody).toMatch(/\| 4 \|/u);
+    expect(docBody).toMatch(/publisher identity not verified/u);
+    expect(docBody).toMatch(/UMACTUALLY_ERR_PUBLISHER_UNVERIFIED/u);
+  });
+
   it("documents exit code 127 — missing bundle (bin/...mjs dist guard)", () => {
     // exit 127 is the wrapper-shim's "bundle missing" branch
     // (bin/umactually.mjs lines 37-46). Distinct from 1 so

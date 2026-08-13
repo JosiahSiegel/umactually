@@ -10,21 +10,28 @@ A Node.js 24 CLI for auditable, policy-aware pull-request review. It posts valid
 Latest release: **[v0.8.2](https://github.com/JosiahSiegel/umactually/releases/tag/v0.8.2)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 ## Quickstart
 
-Use `umactually init` as the single current-version first-run path after installing the CLI. The wizard writes non-secret choices to `~/.umactually/config.json` (mode `0o600`); every later `umactually review` reads them. Per-flag reference: [`docs/configuration.md`](docs/configuration.md). Exit codes: [`docs/exit-codes.md`](docs/exit-codes.md#umactually-init-exit-codes).
+Add `umactually-action` to a pull-request workflow, configure two repo secrets, ship. The action owns Node.js 24 setup, `npm install -g umactually`, the first-run secret bootstrap, the live review, and the verdict output for branch protection. Full reference: [`docs/install-action.md`](docs/install-action.md).
 
-1. **Run the wizard** — interactive on a TTY, non-interactive in CI.
+1. **Add the action** to `.github/workflows/umactually-pr-review.yml`:
 
-   ```bash
-   umactually init
+   ```yaml
+   - uses: JosiahSiegel/umactually-action@v1
+     with:
+       api-url: ${{ secrets.UMACTUALLY_API_URL }}
+       api-key: ${{ secrets.UMACTUALLY_API_KEY }}
    ```
 
-2. **Pick a provider family** — one of `openai-compatible`, `anthropic`, or `copilot`. The wizard prompts per branch (e.g. `api-url` + `api-key` + `model` for OpenAI-compatible; `api-key` + `model` for Anthropic; `github-api-base` + `model` for Copilot — no `api-key`, the wizard points you at `GITHUB_TOKEN`). Stash the API credential in your platform secret store: GitHub Actions → Settings → Secrets → `UMACTUALLY_API_KEY`; Azure DevOps → Pipelines → Library → Variable group → `UMACTUALLY_API_KEY` (secret); local shell → `export UMACTUALLY_API_KEY="$KEY"`. The wizard never persists the key to disk.
+2. **Add two repository secrets** at Settings → Secrets and variables → Actions: `UMACTUALLY_API_URL` (provider base URL) and `UMACTUALLY_API_KEY` (provider API key). For the `copilot` family, the action uses `GITHUB_TOKEN` instead of `api-key`. The action never persists the key to disk.
 
-3. **Run a review** — `umactually review` posts inline PR comments. You're ready.
+3. **Open a PR** — the action runs on every `pull_request` event. On the first run it posts an idempotent bootstrap comment (marker `<!-- umactually-bootstrap -->`) explaining the secrets to configure, then exits with the typed code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3) — see [`docs/exit-codes.md`](docs/exit-codes.md). Once both secrets are set, the next `synchronize` runs the live review and emits `verdict` + `inline-thread-count` + `review-id` outputs for branch protection.
 
-   ```bash
-   umactually review
-   ```
+### Advanced / local install
+
+For local-first operator workflows (running `umactually review` from your shell, generating a workflow manually, or wiring non-GitHub platforms) the `umactually init` wizard is the equivalent first-run path. The wizard writes non-secret choices to `~/.umactually/config.json` (mode `0o600`); every later `umactually review` reads them. Per-flag reference: [`docs/configuration.md`](docs/configuration.md).
+
+```bash
+umactually init
+```
 
 ## Install
 
@@ -99,10 +106,10 @@ umactually uninstall --purge-config     # also remove ~/.umactually/ and ~/.cach
 
 | User | Platform | Operator | Maintainers |
 | --- | --- | --- | --- |
-| `docs/configuration.md` | `docs/gh-actions.md` | `docs/providers.md` | [`docs/release-process.md`](docs/release-process.md) |
-| `docs/troubleshooting.md` | `docs/azure-devops.md` | `docs/security.md` | CHANGELOG.md |
-| — | — | `docs/exit-codes.md` | CONTRIBUTING.md |
-| — | — | `docs/distribution-architecture.md` | — |
+| `docs/configuration.md` | `docs/install-action.md` | `docs/providers.md` | [`docs/release-process.md`](docs/release-process.md) |
+| `docs/troubleshooting.md` | `docs/gh-actions.md` | `docs/security.md` | CHANGELOG.md |
+| — | `docs/azure-devops.md` | `docs/exit-codes.md` | CONTRIBUTING.md |
+| — | [`docs/onboarding/github-marketplace.md`](docs/onboarding/github-marketplace.md) | `docs/distribution-architecture.md` | — |
 
 Benchmark methodology and results, including the schema-versioned artifact contract and exact reproduction command, are in [`docs/benchmark.md`](docs/benchmark.md). Architecture, context/policy provenance, incremental behavior, suggestions, local metrics/privacy, `doctor`, TUI, limitations, and rollback are in [`docs/architecture.md`](docs/architecture.md). Security reporting is in [`SECURITY.md`](SECURITY.md) and the detailed trust model in [`docs/security.md`](docs/security.md); contributor operations are in [`CONTRIBUTING.md`](CONTRIBUTING.md). Deferred—not shipped—surfaces are a hosted control plane, GitLab, Bitbucket, opaque learning, and auto-commit behavior.
 
