@@ -34,6 +34,11 @@ const { readFileSync, existsSync } = require("node:fs");
 const { join } = require("node:path");
 
 const UMACTUALLY_TYPED_EXIT_CODES = {
+  // RUNTIME_ERROR (1) is for packaging failures — e.g. the
+  // `__UMACTUALLY_VERSION__` placeholder surviving to runtime — so
+  // branch-protection rules (which branch on 3 for missing secrets)
+  // don't mis-attribute packaging bugs to secrets. See `installCli()`.
+  RUNTIME_ERROR: 1,
   SECRET_BOOTSTRAP: 3,
   PUBLISHER_UNVERIFIED: 4,
 };
@@ -81,9 +86,16 @@ function bootstrap() {
 
 function installCli() {
   const cliVersion = readInput("cliVersion") || "__UMACTUALLY_VERSION__";
+  // Exit 1 (RUNTIME_ERROR), NOT 3 (SECRET_BOOTSTRAP): code 3 is the
+  // typed-error contract for missing secrets and branch-protection rules
+  // surface it as "secret bootstrap required". An un-substituted
+  // version pin is a packaging bug, not a secret bootstrap failure, and
+  // must not mis-attribute to the secrets path. The `UMACTUALLY_ERR_
+  // CLI_VERSION_UNRESOLVED` log is a `::error::` string only — it is
+  // intentionally NOT a numeric exit code (see `src/util/exit-codes.ts`).
   if (cliVersion === "__UMACTUALLY_VERSION__") {
-    console.error("::error::cliVersion was not substituted; rebuild the wizard output or pin cliVersion explicitly.");
-    process.exit(UMACTUALLY_TYPED_EXIT_CODES.SECRET_BOOTSTRAP);
+    console.error("::error::UMACTUALLY_ERR_CLI_VERSION_UNRESOLVED — cliVersion input is the literal `__UMACTUALLY_VERSION__` placeholder; rebuild the wizard output or pin cliVersion explicitly (e.g. `0.8.2`).");
+    process.exit(UMACTUALLY_TYPED_EXIT_CODES.RUNTIME_ERROR);
   }
   const install = spawnSync("npm", ["install", "-g", `umactually@${cliVersion}`], { stdio: "inherit" });
   if (install.status !== 0) {

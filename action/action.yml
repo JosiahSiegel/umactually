@@ -91,7 +91,19 @@ runs:
 
     - name: Install umactually CLI
       shell: bash
-      run: npm install -g "umactually@${{ inputs.cli-version }}"
+      # Exit 1 (NOT 3): an un-substituted `__UMACTUALLY_VERSION__`
+      # placeholder is a packaging bug, not a missing-secrets failure.
+      # Branch-protection rules branch on exit 3 for
+      # `UMACTUALLY_ERR_SECRET_BOOTSTRAP` and would mis-attribute this
+      # packaging failure to missing secrets. The
+      # `UMACTUALLY_ERR_CLI_VERSION_UNRESOLVED` log is a `::error::`
+      # string only — it is intentionally NOT a new numeric exit code.
+      run: |
+        if [ "${{ inputs.cli-version }}" = "__UMACTUALLY_VERSION__" ]; then
+          echo "::error::UMACTUALLY_ERR_CLI_VERSION_UNRESOLVED — cli-version input is the literal \`__UMACTUALLY_VERSION__\` placeholder; rebuild the wizard output or pin cli-version explicitly (e.g. \`0.8.2\`)."
+          exit 1
+        fi
+        npm install -g "umactually@${{ inputs.cli-version }}"
 
     - name: First-run secret bootstrap (idempotent PR comment + typed exit code 3)
       id: bootstrap
