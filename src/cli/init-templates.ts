@@ -204,9 +204,12 @@ export function renderCiTemplate(input: {
   readonly body: string;
 } {
   const useLongform = input.longform === true;
-  const template = input.target === "github"
-    ? (useLongform ? GITHUB_WORKFLOW_TEMPLATE_LONGFORM : GITHUB_WORKFLOW_TEMPLATE)
-    : (useLongform ? AZURE_PIPELINE_TEMPLATE_LONGFORM : AZURE_PIPELINE_TEMPLATE);
+  let template: string;
+  if (input.target === "github") {
+    template = useLongform ? GITHUB_WORKFLOW_TEMPLATE_LONGFORM : GITHUB_WORKFLOW_TEMPLATE;
+  } else {
+    template = useLongform ? AZURE_PIPELINE_TEMPLATE_LONGFORM : AZURE_PIPELINE_TEMPLATE;
+  }
   const body = template.replaceAll("__UMACTUALLY_VERSION__", input.packageVersion);
   const filename = input.target === "github" ? GITHUB_WORKFLOW_FILENAME : AZURE_PIPELINE_FILENAME;
   const relativePath = input.target === "github"
