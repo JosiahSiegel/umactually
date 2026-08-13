@@ -34,7 +34,10 @@ jobs:
         with:
           repository: JosiahSiegel/umactually-action
           ref: v1
-          path: ../umactually-action
+          path: action-source
+
+      - name: Link companion action as sibling checkout
+        run: ln -s "$GITHUB_WORKSPACE/action-source" "$GITHUB_WORKSPACE/../umactually-action"
 
       - name: Setup Node
         uses: actions/setup-node@v7
