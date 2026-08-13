@@ -2,8 +2,6 @@
 
 > **Audience:** any AI agent (or human) reading an umactually review. The CLI posts inline review threads under the marker `<!-- umactually -->`. This guide tells you how to read the comments, determine their disposition, and actually resolve the threads on the platform that the CLI ran against.
 
-> **First-pass readers: start with the AI-agent header in the workflow-appended guide.** The bot's review body always includes the platform-specific resolution guide at `.github/workflows/data/resolution-guide-{github,azure}.md`. Those files lead with an open (un-collapsed) `## For AI agents — read this first` section that contains the disposition matrix, the reply/resolve/verify commands, and the review-verdict gate — visible without expanding any `<details>` collapse. **Read that header first** before falling back to this doc for the full platform-agnostic context and common pitfalls.
-
 ## 0. Determine which platform this review targets
 
 The CLI accepts `--platform <auto|github|azure>`. Use the same value the CLI used:
