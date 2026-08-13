@@ -16,11 +16,15 @@ ship a tag).
 
 ### Fixed
 
-- **`umactually init --ci github` now emits the docs-compliant install shape.** Supersedes the v0.9.0 `secrets:`-block forwarding contract, which the companion action's runtime loader rejected (`Unrecognized named-value: 'secrets'` inside the composite action's steps). The action's internal steps now read `inputs.api-url` / `inputs.api-key` only; the calling workflow forwards repository secrets into those inputs via `with:`. The wizard, README, all install docs, and the example fixtures are updated to the `with:` form. Matches the metadata fix landed in `JosiahSiegel/umactually-action@4d5a5f4`.
-
 ### Removed
 
 ### Security
+
+## [0.9.1] - 2026-08-13
+
+### Fixed
+
+- **`umactually init --ci github` now emits the docs-compliant install shape.** Supersedes the v0.9.0 `secrets:`-block forwarding contract, which the companion action's runtime loader rejected (`Unrecognized named-value: 'secrets'` inside the composite action's steps). The action's internal steps now read `inputs.api-url` / `inputs.api-key` only; the calling workflow forwards repository secrets into those inputs via `with:`. The wizard, README, all install docs, and the example fixtures are updated to the `with:` form. Matches the metadata fix landed in `JosiahSiegel/umactually-action@4d5a5f4`.
 
 ## [0.9.0] - 2026-08-13
 
