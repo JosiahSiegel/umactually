@@ -391,6 +391,48 @@ describe("S6 — the layout uses no raw <table> HTML (Azure-incompatible)", () =
 // -- Additional cross-cutting invariants -----------------------------------
 
 describe("severity-table details", () => {
+  it("falls back to path:line snippet when a posted comment has empty body (PR #219 regression)", () => {
+    // PR #219 review `PRR_kwDOTHG5gM8AAAABJa7d1g` produced a finding
+    // with `body: ""`. The summary-line snippet path had no fallback,
+    // so the line rendered as `1 · 🟠 Medium — ` — useless to humans
+    // scanning the review summary. The inline-thread path already
+    // falls back to `Finding at <path>:<line>.` (see
+    // `src/cli/live-shared.ts:buildInlineCommentBody`); the summary
+    // snippet now mirrors the same fallback so reviewers see a
+    // locatable handle in both layouts.
+    const data: ReviewData = makeData({
+      postedComments: [
+        {
+          path: "src/empty-body.ts",
+          line: 42,
+          body: "",
+          severity: "medium",
+          category: "correctness",
+        },
+      ],
+      validCommentCount: 1,
+      severityCounts: { critical: 0, high: 0, medium: 1, low: 0 },
+    });
+    const out = renderSummary(data);
+    // Summary line: snippet falls back to `Finding at <path>:<line>.`
+    // — same fallback string as the inline-thread path in
+    // `src/cli/live-shared.ts:buildInlineCommentBody`, so reviewers
+    // see the same shape in both layouts.
+    expect(out).toContain(
+      "<summary>1 · 🟠 Medium — Finding at src/empty-body.ts:42.</summary>",
+    );
+    // Regression guard: the snippet portion after the em-dash must
+    // NOT be just whitespace (this is the exact byte shape that
+    // surfaced on PR #219).
+    expect(out).not.toMatch(/<summary>1 · 🟠 Medium —\s+<\/summary>/u);
+    // Expanded body mirrors the same fallback so the body is also
+    // non-empty when the user expands the row.
+    expect(out).toContain("> Finding at src/empty-body.ts:42.");
+    // 📍 marker still uses the bare path:line shape (no "Finding at"
+    // prefix) — unchanged by the fix.
+    expect(out).toContain("📍 `src/empty-body.ts`:42");
+  });
+
   it("falls back to general when a runtime comment omits category", () => {
     const data: ReviewData = JSON.parse(JSON.stringify({
       review: {

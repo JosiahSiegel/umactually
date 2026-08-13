@@ -1,0 +1,30 @@
+# Enable "Allow scripts to access the OAuth token" in pipeline settings.
+# Only the two canonical UMACTUALLY_* credential vars are forwarded; runtime
+# options (model, provider, github-api-base) are read from the saved config
+# under ~/.umactually/config.json or the provider's own discovery.
+# Artifact validation is automatic after each live review. SYSTEM_ACCESSTOKEN is the
+# only ADO-specific plumbing because Azure does not export $(System.AccessToken).
+# Published-task (shortform) reference. The longform inline-script form lives at
+# examples/azure/azure-pipelines.yml. Removal of the published task is pinned to
+# UmActuallyReview@2 / umactually-action@v2 (target: 2026-Q4); see CHANGELOG
+# `[Unreleased]`. --longform on `umactually init` selects the prior form.
+trigger: none
+pr:
+  branches:
+    include: [main]
+pool:
+  vmImage: ubuntu-latest
+steps:
+  - checkout: self
+  - task: UmActuallyReview@1
+    inputs:
+      cliVersion: __UMACTUALLY_VERSION__
+      apiUrl: $(UMACTUALLY_API_URL)
+      apiKey: $(UMACTUALLY_API_KEY)
+      provider: openai-compatible
+      configPath: ./umactually.review.json
+      outputArtifact: umactually-review.json
+      skipDraft: 'true'
+      pathsIgnore: '**/*.md,docs/**,**/*.lock'
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)

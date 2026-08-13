@@ -10,6 +10,20 @@ ship a tag).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Secrets must be forwarded via the `secrets:` block on `uses:`, not via input defaults**. GitHub Actions does NOT evaluate `${{ secrets.* }}` expressions inside a Composite Action's `inputs.<key>.default` — the literal string is stored and passed verbatim, making it truthy and silently bypassing the bootstrap step's empty-string detection. The `api-url` and `api-key` input defaults are now the empty string `""`; secrets are forwarded via the `secrets:` block on the `uses:` line (e.g. `secrets: api-url: ${{ secrets.UMACTUALLY_API_URL }}`). The action's env blocks coalesce `secrets.* || inputs.*` so the legacy `with:` form still works as a fallback. The `umactually init` wizard emit, all example fixtures, the action README, and all docs are updated to the `secrets:`-block form. `[action/action.yml] [src/cli/init-templates.ts] [examples/github/pr-review.yml.action-ref.yml] [examples/action/basic-usage.yml] [action/README.md] [docs/install-action.md] [docs/onboarding/github-marketplace.md] [README.md]`
+
+- **Bootstrap step is now idempotent (marker-guarded)**. The bootstrap step previously always called `gh pr comment` on every opening/reopened/ready-for-review event, posting duplicate comments when a PR was reopened after a prior bootstrap. The step now queries existing PR comments (via `gh api .../issues/{n}/comments`) for the `<!-- umactually-bootstrap -->` marker and skips the post if one already carries it. The comment body is written via `--body-file` (avoiding bash here-doc backtick escaping). The marker string is byte-identical to the prior contract; exit semantics (exit 3 + `UMACTUALLY_ERR_SECRET_BOOTSTRAP`) are unchanged. `[action/action.yml]`
+
+- **Action input passthrough extended to `--provider`, `--skip-draft`, `--paths-ignore` (always) and `--model` (when non-empty)**. The `umactually review` invocation in the action now forwards the `provider`, `skip-draft`, and `paths-ignore` inputs as CLI flags unconditionally (they always have defaults). The `model` input is forwarded as `--model` ONLY when non-empty, so the action's default `""` does not override the wizard's saved config. `[action/action.yml] [docs/install-action.md]`
+
+### Changed
+
+- **`umactually init --ci github|azure` now emits the published-action / published-task shortform by default**. The generated GitHub workflow references `JosiahSiegel/umactually-action@v1` as a single `uses:` step with an explicit `with:` block (every input documented in `C1`: `cli-version`, `api-url`, `api-key`, `provider`, `config-path`, `output-artifact`, `skip-draft`, `paths-ignore`); the generated Azure pipeline references `UmActuallyReview@1` as a single ADO task with the same input matrix and the `SYSTEM_ACCESSTOKEN` env-passthrough preserved. The action / task owns Node.js setup, `npm install -g umactually@<pin>`, and the live review call. The version pin is now applied to the action's `cli-version:` / task's `cliVersion:` input (modulo the existing `__UMACTUALLY_VERSION__` substitution) rather than to an inline `npm install` line. `--longform` selects the prior inline form for one release as a deprecation escape hatch; the shortform default is targeted for removal at `umactually-action@v2` (target: 2026-Q4), at which point `--longform` and the inline templates will be deleted. New canonical shortform fixtures `examples/github/pr-review.yml.action-ref.yml` and `examples/azure/azure-pipelines.yml.task-ref.yml` pin the byte-equality contract for the drift test, alongside the existing longform fixtures. `[src/cli/init-templates.ts] [src/cli/init.ts]`
+
+- **Resolution-guide append-marker bumped `v1` → `v2`** in `self-review.yml`. The marker-based idempotency check skips append when the literal is already in the bot's review body, so PRs that already carry `<!-- umactually:resolution-guide-v1 -->` get `<!-- umactually:resolution-guide-v2 -->` appended on the next self-review run. The guide body content itself is unchanged (still covered by `test/unit/self-review-noise-skip.test.ts`). `[.github/workflows/self-review.yml]`
+
 
 
 ## [0.8.2] - 2026-08-12

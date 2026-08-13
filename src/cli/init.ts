@@ -176,6 +176,7 @@ export type ParsedInitArgs = {
   readonly show: boolean;
   readonly nonInteractive: boolean;
   readonly policyTemplate: boolean;
+  readonly longform: boolean;
 };
 /**
  * Parse argv into typed fields. Unknown flags → errors[]. Missing
@@ -208,6 +209,7 @@ const FLAG_HANDLERS: Readonly<Record<string, FlagHandler>> = {
   "--policy-template": { consume: false, apply: (state) => { state.policyTemplate = true; } },
   "--dry-run": { consume: false, apply: (state) => { state.dryRun = true; } },
   "--show": { consume: false, apply: (state) => { state.show = true; } },
+  "--longform": { consume: false, apply: (state) => { state.longform = true; } },
   "--ci": { consume: true, validate: parseCi, apply: (state, value) => { state.ci = value as "auto" | CiTarget | "none"; } },
   "--scope": { consume: true, validate: parseScope, apply: (state, value) => { state.scope = value as "global" | "repo"; } },
   "--provider": { consume: true, validate: parseProvider, apply: (state, value) => { state.provider = value as InitProvider; } },
@@ -288,6 +290,7 @@ type ParsedInitState = {
   show: boolean;
   nonInteractive: boolean;
   policyTemplate: boolean;
+  longform: boolean;
 };
 
 function createParsedInitState(): ParsedInitState {
@@ -308,6 +311,7 @@ function createParsedInitState(): ParsedInitState {
     show: false,
     nonInteractive: false,
     policyTemplate: false,
+    longform: false,
   };
 }
 
@@ -461,6 +465,7 @@ export const INIT_HELP_TEXT = [
   "  --yes                      Skip all confirmation prompts",
   "  --dry-run                  Compute the plan; no filesystem writes",
   "  --policy-template          Write umactually.review.json template (opt-in; explicit)",
+  "  --longform                 Emit the prior inline (npm install + review) CI template (one-release escape hatch; default emits published action / task)",
   "  --show                     Print the resolved saved config and exit",
   "  --json                     Emit machine-readable JSON envelope",
   "  --help, -h                 Show this help",
@@ -1588,11 +1593,12 @@ async function promptCi(input: {
   }
 
   const gen = await generateCi({
-    target: chosen,
-    fs,
-    deps,
-    packageVersion,
-  });
+      target: chosen,
+      fs,
+      deps,
+      packageVersion,
+      longform: args.longform,
+    });
   if (!gen.ok) {
     return {
       outcome: "error",
@@ -1745,6 +1751,7 @@ async function generateCiForResult(input: {
       fs: input.fs,
       deps: input.deps,
       packageVersion: input.packageVersion,
+      longform: input.args.longform,
     });
     return r.ok ? [ci] : [];
   }
@@ -1756,6 +1763,7 @@ async function generateCiForResult(input: {
       fs: input.fs,
       deps: input.deps,
       packageVersion: input.packageVersion,
+      longform: input.args.longform,
     });
     return r.ok ? [target] : [];
   }
@@ -1781,10 +1789,12 @@ async function generateCi(input: {
   readonly fs: FsAdapter;
   readonly deps: InitDeps;
   readonly packageVersion: string;
+  readonly longform: boolean;
 }): Promise<CiGenResult> {
   const rendered = renderCiTemplate({
     target: input.target,
     packageVersion: input.packageVersion,
+    longform: input.longform,
   });
 
   let targetPath: string;

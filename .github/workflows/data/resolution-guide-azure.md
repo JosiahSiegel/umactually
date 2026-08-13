@@ -1,6 +1,6 @@
 
 <details>
-<summary>📖 <b>How to read + resolve these umactually threads — click to expand</b></summary>
+<summary>📖 <b>How to read + resolve these umactually threads — click to expand</b> · AI agents: see SELF-REVIEW-RESOLUTION-GUIDE.md</summary>
 
 The umactually CLI ran with `--platform azure` against this `pull_request` event on an Azure DevOps pipeline, so every thread below was posted via Azure DevOps' PR thread API and is resolvable only via the `az repos pr thread update --status closed` command below — **not** via GitHub's GraphQL `resolveReviewThread` (no such API exists on Azure DevOps).
 

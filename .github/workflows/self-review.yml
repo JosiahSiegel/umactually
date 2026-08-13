@@ -277,7 +277,7 @@ jobs:
             echo "Guide file not found at ${GUIDE_FILE}; skipping."
             exit 0
           fi
-          GUIDE_MARKER="<!-- umactually:resolution-guide-v1 -->"
+          GUIDE_MARKER="<!-- umactually:resolution-guide-v2 -->"
           QUERY_FILE="${{ github.workspace }}/.github/workflows/data/latest-bot-review.graphql"
           # Pull the latest non-PENDING github-actions review on the
           # current head. The query is parameterized; only the GraphQL

@@ -1,6 +1,6 @@
 
 <details>
-<summary>📖 <b>How to read + resolve these umactually threads — click to expand</b></summary>
+<summary>📖 <b>How to read + resolve these umactually threads — click to expand</b> · AI agents: see SELF-REVIEW-RESOLUTION-GUIDE.md</summary>
 
 The umactually CLI ran with `--platform github` against this `pull_request` event on `actions/checkout@v4`, so every thread below was posted via GitHub's review API and is resolvable only via the GraphQL mutations below — **not** by replying through the GitHub UI's "Resolve conversation" button (that path is intentionally disabled for review-thread-style comments; the GraphQL mutation is the canonical dismiss path).
 

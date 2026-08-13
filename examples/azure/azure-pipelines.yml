@@ -16,6 +16,12 @@ steps:
     inputs:
       versionSpec: "24.x"
   # Pin the npm version for reproducibility (never track `latest`).
+  # Inline-form (longform) deprecation: this inline `npm install` + `umactually review`
+  # pair is kept for one release as a deprecation escape hatch (selected via
+  # `umactually init --ci azure --longform`). It will be removed in
+  # `umactually-action@v2` (target: 2026-Q4); migrate to the published
+  # `UmActuallyReview@1` task via `umactually init --ci azure` for the new
+  # shortform. See `docs/install-ado-task.md` for the task reference.
   - script: npm install -g umactually@0.8.2
     displayName: Install umactually
   - script: umactually review --platform azure

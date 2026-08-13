@@ -177,16 +177,26 @@ function findingsDetailsRow(
   summaryCap: number,
 ): string {
   const title = collapseBody(c, secrets);
-  const snippet = truncateSnippet(title, summaryCap);
+  // When the provider emits an empty `body` (e.g. the synthetic
+  // review-model for some findings) the collapsed title is "" and the
+  // summary line would render as `1 · 🟠 Medium — ` — useless to
+  // reviewers. Mirror the inline-thread fallback in
+  // `src/cli/live-shared.ts:buildInlineCommentBody` (which produces
+  // `Finding at <path>:<line>.` for the same empty-body case) so the
+  // summary snippet still gives the reader a locatable handle.
+  const safePath = cell(c.path);
+  const fallbackBody = `Finding at ${safePath}:${c.line}.`;
+  const snippetSource = title.trim().length > 0 ? title : fallbackBody;
+  const snippet = truncateSnippet(snippetSource, summaryCap);
   const lines: string[] = [];
   lines.push("<details>");
   lines.push(
     `<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`,
   );
   lines.push("");
-  lines.push(`📍 \`${cell(c.path)}\`:${c.line}`);
+  lines.push(`📍 \`${safePath}\`:${c.line}`);
   lines.push("");
-  lines.push(`> ${cell(title)}`);
+  lines.push(`> ${cell(snippetSource)}`);
   lines.push("");
   lines.push("</details>");
   return lines.join("\n");

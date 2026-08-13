@@ -1,0 +1,110 @@
+{
+  "_README": "Azure Pipelines Task skeleton committed in the CLI repo for review and to unblock the manifest test (test/unit/ado-task-manifest.test.ts). The published copy will live in the Visual Studio Marketplace once a signing cert is provisioned (publish step T11 is an external human gate that this repo acknowledges as out-of-scope). The `_README` field is intentionally not part of the `tfx-cli validate` contract and is ignored by Marketplace ingestion; it documents the file's provenance for downstream reviewers.",
+  "id": "UmActuallyReview",
+  "name": "UmActuallyReview",
+  "friendlyName": "UmActually PR review",
+  "description": "Run umactually as an Azure Pipelines Task — Node.js 24 setup, npm install of the CLI, first-run secret bootstrap, live PR review, and verdict output for branch protection.",
+  "helpMarkDown": "See [docs/install-action.md](../docs/install-action.md) for the canonical install reference and [docs/onboarding/github-marketplace.md](../docs/onboarding/github-marketplace.md) for the Marketplace listing copy. Required repository secrets: `UMACTUALLY_API_URL` and `UMACTUALLY_API_KEY`. The task emits the typed exit code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3) when the secrets are absent on an opening/reopening PR.",
+  "category": "Build",
+  "author": "Josiah Siegel",
+  "version": {
+    "Major": "1",
+    "Minor": "0",
+    "Patch": "0"
+  },
+  "minimumAgentVersion": "3.224.0",
+  "inputs": [
+    {
+      "name": "cliVersion",
+      "type": "string",
+      "label": "CLI version",
+      "defaultValue": "__UMACTUALLY_VERSION__",
+      "required": false,
+      "helpMarkDown": "Version of the `umactually` CLI to install via `npm install -g`. Default `__UMACTUALLY_VERSION__` is the substitution point the `umactually init` wizard uses to track the CLI release; pin a specific tag (e.g. `0.8.2`) to disable auto-update."
+    },
+    {
+      "name": "apiUrl",
+      "type": "string",
+      "label": "Provider API base URL",
+      "defaultValue": "$(UMACTUALLY_API_URL)",
+      "required": false,
+      "helpMarkDown": "API base URL for the configured provider family. Forwarded to the CLI as `UMACTUALLY_API_URL`. Default reads the pipeline variable `UMACTUALLY_API_URL`; only override when the provider's base URL differs from the variable."
+    },
+    {
+      "name": "apiKey",
+      "type": "string",
+      "label": "Provider API key",
+      "defaultValue": "$(UMACTUALLY_API_KEY)",
+      "required": false,
+      "helpMarkDown": "Provider API key. Forwarded to the CLI as `UMACTUALLY_API_KEY`. Default reads the pipeline variable `UMACTUALLY_API_KEY`. Never place the credential in YAML literals or command arguments."
+    },
+    {
+      "name": "provider",
+      "type": "string",
+      "label": "Provider family",
+      "defaultValue": "openai-compatible",
+      "required": false,
+      "helpMarkDown": "Provider family. One of `openai-compatible`, `anthropic`, or `copilot`. Default `openai-compatible` — the wizard's pick for the most common operator profile."
+    },
+    {
+      "name": "model",
+      "type": "string",
+      "label": "Provider model",
+      "defaultValue": "",
+      "required": false,
+      "helpMarkDown": "Provider-specific model identifier (optional). Empty string = let the provider pick its default model."
+    },
+    {
+      "name": "configPath",
+      "type": "string",
+      "label": "Config path",
+      "defaultValue": "./umactually.review.json",
+      "required": false,
+      "helpMarkDown": "Path to the committed `umactually.review.json` policy file (schemaVersion 1). Default `./umactually.review.json` — the wizard's default path."
+    },
+    {
+      "name": "outputArtifact",
+      "type": "string",
+      "label": "Output artifact path",
+      "defaultValue": "umactually-review.json",
+      "required": false,
+      "helpMarkDown": "Path the CLI writes the review artifact to. Default `umactually-review.json`."
+    },
+    {
+      "name": "skipDraft",
+      "type": "boolean",
+      "label": "Skip draft threads",
+      "defaultValue": "true",
+      "required": false,
+      "helpMarkDown": "When `true`, the CLI skips re-reviewing files whose inline threads haven't changed since the last run. Default `true` matches the wizard's default (cost-aware incremental review)."
+    },
+    {
+      "name": "pathsIgnore",
+      "type": "string",
+      "label": "Paths to ignore",
+      "defaultValue": "**/*.md,docs/**,**/*.lock",
+      "required": false,
+      "helpMarkDown": "Comma-separated gitignore-style globs the CLI excludes from review. Default excludes Markdown docs and lock files."
+    }
+  ],
+  "outputVariables": [
+    {
+      "name": "verdict",
+      "description": "Success/failure verdict for required status checks. `success` when the review posted without a parse-fail sentinel; `failure` otherwise."
+    },
+    {
+      "name": "inlineThreadCount",
+      "description": "Number of inline review threads posted to the PR. Zero is a successful clean review."
+    },
+    {
+      "name": "reviewId",
+      "description": "Opaque run identifier (request id) emitted by the CLI in the review artifact's `metadata.requestId` field."
+    }
+  ],
+  "execution": {
+    "Node10": {
+      "target": "dist/index.js",
+      "argumentFormat": ""
+    }
+  }
+}
