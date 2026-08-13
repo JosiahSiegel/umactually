@@ -70,17 +70,32 @@ describe("README quickstart freshness", () => {
     expect(readmeReferencesExample(readme, "examples/azure/azure-pipelines.yml", "Azure DevOps")).toBe(true);
   });
 
-  it("README-FRESHNESS R-1: README mentions `umactually init` BEFORE the npm install path in reading order", () => {
-    // The wizard path is the canonical first-run experience. If
-    // `umactually init` appears AFTER the `npm install -g umactually`
-    // recommendation in reading order, the README still nudges
-    // operators to skip the wizard — R-1 fails by design until T16.
+  it("README-FRESHNESS R-1: README leads with the action snippet and preserves `umactually init` under `### Advanced / local install`", () => {
+    // Single-click-github-install plan T16 INTENTIONALLY INVERTS the
+    // pre-existing R-1 ordering invariant (`umactually init` BEFORE
+    // `npm install`). The Quickstart now leads with the one-line
+    //   uses: JosiahSiegel/umactually-action@v1
+    // install. The wizard path is preserved but scoped under an
+    // explicit `### Advanced / local install` subsection — it is NOT
+    // pinned as the recommended Quickstart path anymore. This is a
+    // deliberate inversion, not a regression: see plan task T16.
     const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
+    const actionRefIndex = readme.indexOf("JosiahSiegel/umactually-action@v1");
+    const advancedHeadingIndex = readme.indexOf("### Advanced / local install");
     const initIndex = readme.indexOf("umactually init");
     const npmInstallIndex = readme.indexOf("npm install -g umactually");
-    expect(initIndex, "README must contain the literal `umactually init`").toBeGreaterThanOrEqual(0);
-    expect(npmInstallIndex, "README must still reference the npm install path (regression guard)").toBeGreaterThanOrEqual(0);
-    expect(initIndex).toBeLessThan(npmInstallIndex);
+    // Quickstart must lead with the action reference.
+    expect(actionRefIndex, "README must contain the action reference `JosiahSiegel/umactually-action@v1`").toBeGreaterThanOrEqual(0);
+    // The action reference must precede the `### Advanced / local install`
+    // heading (the wizard is NOT the recommended path).
+    expect(actionRefIndex).toBeLessThan(advancedHeadingIndex);
+    // The `umactually init` literal must exist (regression guard) and must
+    // live UNDER the `### Advanced / local install` heading, not before it.
+    expect(initIndex, "README must still contain the literal `umactually init`").toBeGreaterThanOrEqual(0);
+    expect(advancedHeadingIndex, "README must contain an `### Advanced / local install` heading").toBeGreaterThanOrEqual(0);
+    expect(initIndex, "`umactually init` must live UNDER the `### Advanced / local install` heading (T16 inversion)").toBeGreaterThan(advancedHeadingIndex);
+    // Regression guard: the npm install path is still documented.
+    expect(npmInstallIndex, "README must still reference the npm install path").toBeGreaterThanOrEqual(0);
   });
 
   it("README-FRESHNESS R-2: a `## Quickstart` section heading exists (case-insensitive)", () => {
@@ -104,21 +119,39 @@ describe("README quickstart freshness", () => {
     expect(readme).not.toMatch(/^##\s+Install\s*\(alternative\)/mu);
   });
 
-  it("README-FRESHNESS R-4: Quickstart section describes the 4-step wizard flow", () => {
-    // Bundle §2.2 pins the wizard as 4 conceptual steps:
-    //   init → choose provider → provide creds → done
-    // The README's Quickstart section must surface every step in some
-    // scannable form (numbered list, prose enumeration, code blocks).
+  it("README-FRESHNESS R-4: Quickstart section describes the action-install flow, not the wizard flow", () => {
+    // Single-click-github-install plan T16 INTENTIONALLY INVERTS the
+    // pre-existing R-4 contract. The pre-existing invariant pinned
+    // the wizard's 4-step flow (init → provider → creds → done) inside
+    // the Quickstart section. The new contract pins the action-install
+    // flow inside the Quickstart section instead:
+    //   1. add the action → 2. add two secrets → 3. open a PR.
+    // The `umactually init` literal may appear elsewhere in the README
+    // (under `### Advanced / local install`) but it is no longer part
+    // of the Quickstart main path. This is a deliberate inversion, not
+    // a regression: see plan task T16.
     const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
-    const quickstartSection = readme
+    const quickstartBody = readme
       .split(/^##\s+Quickstart\b/mu)[1]
-      ?.split(/^(?:#|##)\s+/mu)[0]
+      ?.split(/^##\s+/mu)[0]
       ?? "";
-    expect(quickstartSection.length, "Quickstart section body must be non-empty").toBeGreaterThan(0);
-    expect(quickstartSection).toMatch(/umactually init/u);
-    expect(quickstartSection).toMatch(/provider/u);
-    expect(quickstartSection).toMatch(/cred(?:ential|s)/u);
-    expect(quickstartSection).toMatch(/done|finish|complete|ready|set up|setup/i);
+    // The Quickstart main path is everything BEFORE the
+    // `### Advanced / local install` subheading. Everything after
+    // that subheading (including the literal `umactually init`) is
+    // the documented Advanced subsection and is intentionally out
+    // of scope for R-4.
+    const mainPath = quickstartBody
+      .split(/^###\s+Advanced\s*\/\s*local\s+install\b/mu)[0]
+      ?? "";
+    expect(mainPath.length, "Quickstart main-path body must be non-empty").toBeGreaterThan(0);
+    // The action-install flow must be the Quickstart main path.
+    expect(mainPath, "Quickstart main path must reference the action install").toMatch(/JosiahSiegel\/umactually-action@v1/u);
+    expect(mainPath, "Quickstart main path must describe adding two secrets").toMatch(/UMACTUALLY_API_KEY/u);
+    expect(mainPath, "Quickstart main path must describe opening a PR").toMatch(/pull_request/u);
+    // The wizard must NOT be pinned as part of the Quickstart main path
+    // anymore. The literal `umactually init` may appear later under
+    // the `### Advanced / local install` subsection.
+    expect(mainPath, "Quickstart main path must not reference `umactually init` (T16 inversion)").not.toMatch(/umactually init/u);
   });
 
   it("README-FRESHNESS R-5: no fenced code block in README contains `sk-` or `ghp_` secret literals", () => {
