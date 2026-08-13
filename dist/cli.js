@@ -18579,7 +18579,7 @@ function buildInlineCommentBody(input) {
     const safeSeverity = sanitizeForPost(input.comment.severity.toLowerCase(), input.secrets);
     const safeCategory = sanitizeForPost(input.comment.category, input.secrets);
     const safePath = sanitizeForPost(input.comment.path, input.secrets);
-    const fallback = `Finding at ${safePath}:${input.comment.line}.`;
+    const fallback = `Finding at ${safePath}:${input.comment.line} (${safeSeverity} / ${safeCategory}) — body not populated by provider. See the parent review summary for context.`;
     const safeBody = input.comment.body.length > 0
         ? sanitizeForPost(input.comment.body, input.secrets)
         : sanitizeForPost(fallback, input.secrets);
@@ -20535,11 +20535,11 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
                 additionalProperties: false,
                 required: ["path", "line", "body", "severity", "category"],
                 properties: {
-                    path: { type: "string" },
+                    path: { type: "string", minLength: 1 },
                     line: { type: "integer", minimum: 1 },
-                    body: { type: "string" },
+                    body: { type: "string", minLength: 1 },
                     severity: { type: "string", minLength: 1 },
-                    category: { type: "string" },
+                    category: { type: "string", minLength: 1 },
                 },
             },
         },
@@ -20550,11 +20550,11 @@ const REVIEW_PAYLOAD_JSON_SCHEMA = {
                 additionalProperties: false,
                 required: ["path", "line", "body", "severity", "category"],
                 properties: {
-                    path: { type: "string" },
+                    path: { type: "string", minLength: 1 },
                     line: { type: "integer", minimum: 1 },
-                    body: { type: "string" },
+                    body: { type: "string", minLength: 1 },
                     severity: { type: "string", minLength: 1 },
-                    category: { type: "string" },
+                    category: { type: "string", minLength: 1 },
                 },
             },
         },
@@ -20908,11 +20908,13 @@ function buildDefaultSystemPrompt() {
         "- Your entire response is parsed as a single JSON object matching the schema below. No prose before or after the JSON. No markdown code fences around the JSON (the parser strips them, but emitting them wastes output tokens).",
         "- If you would normally think before answering, the thinking must happen INSIDE the JSON (e.g. as a `reasoning` field) — not as separate prose. The parser discards any text before the first `{` and after the last `}`, so thinking prose only burns your output budget and the answer gets truncated.",
         "- The JSON must contain every required field (`summary`, `verdict`, `comments`, `suppressed_comments`). Missing fields cause a parse failure and the operator sees a parse-fail card instead of your review.",
+        "- Every string field with a minLength: 1 constraint (summary fields via verdict/severity, finding fields via path/body/category) must contain real content — an empty string fails schema validation. The parser will surface your response as a parse-fail card.",
         "",
         "Workflow for every finding you emit:",
         "1. Identify a real concern introduced by the diff.",
         "2. Copy the EXACT diff lines that justify the concern (a verbatim quote, 1-3 lines).",
         "3. Emit a JSON object whose `path` matches a file from the Files-in-diff list in the user message and whose `line` matches a line number that appears in the diff for that file.",
+        "4. Write the actual issue in the `body` field — minimum ~20 characters describing the specific concern. Empty strings, single words (\"fix\", \"bug\"), or location-only text (\"line 9\") fail schema validation. The `category` field is also required non-empty — pick from the schema enums (general, security, performance, etc.).",
         "If you cannot complete steps 2-3, OMIT the finding entirely. Do not invent a citation.",
         "",
         "Verified-facts grounding:",

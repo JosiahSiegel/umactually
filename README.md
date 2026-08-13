@@ -2,12 +2,12 @@
 
 A Node.js 24 CLI for auditable, policy-aware pull-request review. It posts validated inline findings to GitHub (including documented GHES support) and Azure DevOps through an operator-selected OpenAI-compatible, Anthropic, or Copilot provider.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.9.1)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.9.2)
 [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 
-Latest release: **[v0.9.1](https://github.com/JosiahSiegel/umactually/releases/tag/v0.9.1)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+Latest release: **[v0.9.2](https://github.com/JosiahSiegel/umactually/releases/tag/v0.9.2)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 ## Quickstart
 
 Add `umactually-action` to a pull-request workflow, configure two repo secrets, ship. The action owns Node.js 24 setup, `npm install -g umactually`, the first-run secret bootstrap, the live review, and the verdict output for branch protection. Full reference: [`docs/install-action.md`](docs/install-action.md).
@@ -79,7 +79,7 @@ Full per-family wire shape and the cross-protocol dispatcher at [`docs/providers
 
 ## CI
 
-CI must use Node.js 24 and a version-pinned install. Pin to [`v0.9.1`](https://github.com/JosiahSiegel/umactually/releases/tag/v0.9.1) — never track `main`.
+CI must use Node.js 24 and a version-pinned install. Pin to [`v0.9.2`](https://github.com/JosiahSiegel/umactually/releases/tag/v0.9.2) — never track `main`.
 
 ### GitHub Actions
 

@@ -20,6 +20,12 @@ ship a tag).
 
 ### Security
 
+## [0.9.2] - 2026-08-13
+
+### Fixed
+
+- **Review payload schema now requires non-empty `body`, `category`, and `path` on every finding.** Added `minLength: 1` to `body`, `category`, and `path` in both `comments.items.properties` and `suppressed_comments.items.properties` of `REVIEW_PAYLOAD_JSON_SCHEMA`. This prevents providers from returning empty-string bodies that render as location-only inline threads. Prompt guidance updated with a new step 4 in the Workflow section (minimum ~20 characters for `body`) and an Output contract bullet about `minLength` enforcement. When a provider ignores `minLength` (defense-in-depth), the `buildInlineCommentBody` fallback now includes severity, category, and a body-missing hint instead of just the location. User-observed symptom: waffle-house-menu review posted 2 inline findings with empty bodies, rendered as `Finding at .github/workflows/pr-review.yml:9.` — where the finding is, but not what's wrong. The `umactually init` wizard templates, docs, and example fixtures are unchanged (no user-facing config change). `[src/cli/provider-prompts.ts] [src/cli/live-shared.ts] [test/unit/review-payload-schema.test.ts] [test/unit/live-shared-body.test.ts]` (PR #225)
+
 ## [0.9.1] - 2026-08-13
 
 ### Fixed
