@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -8,11 +9,27 @@ import { parse as parseYaml } from "yaml";
 // Resolve the package root from THIS test file's location.
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..", "..");
-const actionPath = resolve(packageRoot, "action", "action.yml");
+const localCompanionActionPath = resolve(packageRoot, "..", "umactually-action", "action.yml");
 
-// Load-once. Re-reading on every `it` is wasteful and the YAML is the
-// contract under test.
-const actionBody = readFileSync(actionPath, "utf8");
+function loadPublishedAction(): { readonly path: string; readonly body: string } {
+  if (existsSync(localCompanionActionPath)) {
+    return { path: localCompanionActionPath, body: readFileSync(localCompanionActionPath, "utf8") };
+  }
+
+  return {
+    path: "github.com/JosiahSiegel/umactually-action@v1",
+    body: execFileSync(
+      "gh",
+      ["api", "repos/JosiahSiegel/umactually-action/contents/action.yml", "--jq", ".content"],
+      { encoding: "utf8" },
+    ).replace(/\s+/gu, ""),
+  };
+}
+
+const publishedAction = loadPublishedAction();
+const actionBody = publishedAction.path === localCompanionActionPath
+  ? publishedAction.body
+  : Buffer.from(publishedAction.body, "base64").toString("utf8");
 const actionDoc = parseYaml(actionBody) as {
   name?: string;
   description?: string;
@@ -37,14 +54,8 @@ const actionDoc = parseYaml(actionBody) as {
 // the exact missing field instead of a generic "schema changed"
 // failure. Every assertion is structural — no `actionlint` dependency,
 // no network.
-describe("action/action.yml — Composite Action schema contract", () => {
-  it("exists at action/action.yml (relative to package root)", () => {
-    // The Marketplace listing and the test files both depend on this
-    // path being stable. If the action moves (action/src/action.yml,
-    // github-action/action.yml, etc.) the input matrix changes — this
-    // assertion locks the path. readFileSync would have thrown above
-    // if the file were missing, so a present `name:` field is the
-    // contract under test.
+describe("published umactually-action — Composite Action schema contract", () => {
+  it("loads the published companion action rather than the CLI repository placeholder", () => {
     expect(typeof actionDoc.name).toBe("string");
   });
 
