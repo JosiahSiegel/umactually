@@ -17,6 +17,8 @@ Add `umactually-action` to a pull-request workflow, configure two repo secrets, 
    ```yaml
    - uses: JosiahSiegel/umactually-action@v1
      with:
+       provider: openai-compatible
+     secrets:
        api-url: ${{ secrets.UMACTUALLY_API_URL }}
        api-key: ${{ secrets.UMACTUALLY_API_KEY }}
    ```

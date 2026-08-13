@@ -9,9 +9,13 @@ This document is the canonical reference for the action. The README's [Quickstar
 ```yaml
 - uses: JosiahSiegel/umactually-action@v1
   with:
+    provider: openai-compatible
+  secrets:
     api-url: ${{ secrets.UMACTUALLY_API_URL }}
     api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
+
+Secrets are forwarded via the `secrets:` block on `uses:`. GitHub Actions does NOT template `${{ secrets.* }}` expressions inside a Composite Action's input `default:` values — they are stored as plain strings and passed verbatim, which would bypass the bootstrap. Use the `secrets:` block instead.
 
 ## Input matrix
 
@@ -20,8 +24,8 @@ The full input matrix from `action/action.yml`:
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
 | `cli-version` | no | `__UMACTUALLY_VERSION__` | `umactually` CLI version to install via `npm install -g`. Pin a specific tag (e.g. `0.8.2`) to disable auto-update. |
-| `api-url` | no | `${{ secrets.UMACTUALLY_API_URL }}` | Provider API base URL. Forwarded to the CLI as `UMACTUALLY_API_URL`. |
-| `api-key` | no | `${{ secrets.UMACTUALLY_API_KEY }}` | Provider API key. Forwarded to the CLI as `UMACTUALLY_API_KEY`. |
+| `api-url` | no | `""` | Provider API base URL. Default empty — forward via `secrets: api-url:`. Override via `with:` only for non-default hosts. |
+| `api-key` | no | `""` | Provider API key. Default empty — forward via `secrets: api-key:`. |
 | `provider` | no | `openai-compatible` | Provider family: `openai-compatible`, `anthropic`, or `copilot`. |
 | `model` | no | `""` | Provider-specific model identifier (optional). |
 | `config-path` | no | `./umactually.review.json` | Path to the committed `umactually.review.json` policy file (schemaVersion 1). |
@@ -41,11 +45,20 @@ The full input matrix from `action/action.yml`:
 
 The action sets these env vars before invoking the CLI (the equivalent of the longform workflow's `env:` block):
 
-- `UMACTUALLY_API_URL` ← `${{ inputs.api-url }}`
-- `UMACTUALLY_API_KEY` ← `${{ inputs.api-key }}`
+- `UMACTUALLY_API_URL` ← `${{ secrets.api-url || inputs.api-url }}`
+- `UMACTUALLY_API_KEY` ← `${{ secrets.api-key || inputs.api-key }}`
 - `GITHUB_TOKEN` ← `${{ github.token }}`
 
-Optional passthrough (from `inputs.model` / `inputs.provider`) is forwarded as the `--model` / `--provider` CLI flags so the wizard's saved config doesn't override the operator's per-run choice.
+The `secrets.* || inputs.*` coalesce supports both forwarding paths: secrets forwarded via the `secrets:` block on `uses:` (new contract) and explicit overrides via the `with:` block (legacy form).
+
+## CLI-flag passthrough
+
+The action forwards these action inputs as CLI flags on the `umactually review` invocation, so the wizard's saved config does not override the operator's per-run choice:
+
+- `--provider` ← `${{ inputs.provider }}` (always forwarded; default `openai-compatible`)
+- `--skip-draft` ← `${{ inputs.skip-draft }}` (always forwarded; default `'true'`)
+- `--paths-ignore` ← `${{ inputs.paths-ignore }}` (always forwarded; default excludes Markdown docs and lock files)
+- `--model` ← `${{ inputs.model }}` (forwarded ONLY when non-empty; the action's default `""` would override the wizard's saved config if always forwarded)
 
 ## GitHub Enterprise Server (GHES)
 
@@ -53,13 +66,13 @@ Supported. Set `GITHUB_API_URL=https://<your-ghe-host>/api/v3` (or your install'
 
 ## First-run secret bootstrap
 
-If `secrets.UMACTUALLY_API_URL` or `secrets.UMACTUALLY_API_KEY` is empty on an opening/reopening pull request, the action posts an idempotent PR comment with the literal marker:
+If `UMACTUALLY_API_URL` or `UMACTUALLY_API_KEY` is empty on an opening/reopening/ready-for-review pull request event, the action posts an idempotent PR comment with the literal marker:
 
 ```html
 <!-- umactually-bootstrap -->
 ```
 
-followed by a short explanation of the two secrets to configure. The marker is the idempotency guard — on a `synchronize` event the action checks for an existing comment with the marker and skips the post. After the comment (or the no-op skip), the action exits with the typed error code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3) — sourced from `src/util/exit-codes.ts` (`UMACTUALLY_EXIT_CODES.SECRET_BOOTSTRAP`). Branch-protection rules surface this as a required status check failure with a searchable, documented message.
+followed by a short explanation of the two secrets to configure. **Idempotency is enforced via a marker guard**: before posting, the step queries existing PR comments (via `gh api .../issues/{n}/comments`) and searches for the marker (`grep -F '<!-- umactually-bootstrap -->'`). If a comment carrying the marker already exists, the post is skipped — so a reopened PR that previously received the bootstrap comment will not be spammed with a duplicate. On `synchronize` events the comment step is a no-op entirely. After the comment (or the no-op skip), the action exits with the typed error code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3) — sourced from `src/util/exit-codes.ts` (`UMACTUALLY_EXIT_CODES.SECRET_BOOTSTRAP`). Branch-protection rules surface this as a required status check failure with a searchable, documented message.
 
 ## Branch-protection contract
 

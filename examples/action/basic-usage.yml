@@ -10,6 +10,10 @@
 #   1. Add two repo secrets: `UMACTUALLY_API_URL`, `UMACTUALLY_API_KEY`.
 #   2. Save this file at `.github/workflows/umactually-pr-review.yml`.
 #   3. Open a PR. The action runs on every pull_request event.
+#
+# Secret forwarding contract: secrets are forwarded via the `secrets:`
+# block on `uses:` (NOT via `with:`) — GitHub Actions does not template
+# `${{ secrets.* }}` inside input `default:` values.
 # Runs umactually via the published GitHub Action for pull requests.
 # Action: https://github.com/JosiahSiegel/umactually-action
 name: PR review
@@ -29,10 +33,11 @@ jobs:
         uses: JosiahSiegel/umactually-action@v1
         with:
           cli-version: __UMACTUALLY_VERSION__
-          api-url: ${{ secrets.UMACTUALLY_API_URL }}
-          api-key: ${{ secrets.UMACTUALLY_API_KEY }}
           provider: openai-compatible
           config-path: ./umactually.review.json
           output-artifact: umactually-review.json
           skip-draft: 'true'
           paths-ignore: '**/*.md,docs/**,**/*.lock'
+        secrets:
+          api-url: ${{ secrets.UMACTUALLY_API_URL }}
+          api-key: ${{ secrets.UMACTUALLY_API_KEY }}

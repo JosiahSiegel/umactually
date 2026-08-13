@@ -7,6 +7,8 @@ Provider-agnostic pull-request review from the UmActually CLI. One-line install,
 ```yaml
 - uses: JosiahSiegel/umactually-action@v1
   with:
+    provider: openai-compatible
+  secrets:
     api-url: ${{ secrets.UMACTUALLY_API_URL }}
     api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
@@ -32,7 +34,7 @@ Supported. Set `GITHUB_API_URL=https://<your-ghe-host>/api/v3` on the runner; th
 
 ## First-run bootstrap
 
-Missing secrets → posts the idempotent `<!-- umactually-bootstrap -->` PR comment on opening PRs (skipped on `synchronize`), then exits with the typed error `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3). Branch protection surfaces this as a required check failure.
+Missing secrets → queries existing comments for the `<!-- umactually-bootstrap -->` marker and, if absent, posts the idempotent bootstrap PR comment on opening/reopening PRs (skipped on `synchronize`). The marker guard prevents duplicate comments on reopened PRs. Then exits with the typed error `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3). Branch protection surfaces this as a required check failure.
 
 ## Versioning
 

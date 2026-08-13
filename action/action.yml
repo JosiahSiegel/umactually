@@ -14,15 +14,32 @@
 #   - Output `review-id`: the run's review identifier.
 # These three outputs are what branch-protection rules branch on.
 #
+# Secret forwarding contract:
+#   GitHub Actions does NOT evaluate `${{ ... }}` expressions inside a
+#   Composite Action's `inputs.<key>.default` — they are stored as plain
+#   strings and passed verbatim. To avoid the literal `"${{ secrets.* }}"`
+#   string being truthy (which would silently bypass the bootstrap),
+#   `api-url` / `api-key` defaults are the empty string `""`. The calling
+#   workflow forwards secrets via the `secrets:` block on `uses:` (NOT via
+#   the input `default:`), using the action's declared secret names:
+#     secrets:
+#       api-url: ${{ secrets.UMACTUALLY_API_URL }}
+#       api-key: ${{ secrets.UMACTUALLY_API_KEY }}
+#   Inside the action, env blocks coalesce `secrets.* || inputs.*` so
+#   both the `secrets:`-block form (new) and the legacy `with:` form
+#   still work.
+#
 # First-run secret bootstrap behavior:
 #   The `bootstrap-secret-pr-comment` step detects a missing
 #   `secrets.UMACTUALLY_API_URL` or `secrets.UMACTUALLY_API_KEY` on an
 #   opening/reopening PR event and posts an idempotent PR comment
 #   (marker `<!-- umactually-bootstrap -->`) explaining the two
 #   secrets the operator must add. On `synchronize` the step is a
-#   no-op (one comment per PR). The step then exits with the typed
-#   error code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3) so a branch-
-#   protection rule can surface the bootstrap requirement as a
+#   no-op (one comment per PR). The step queries existing comments
+#   for the marker before posting, so reopened PRs that already carry
+#   the bootstrap comment are not spammed. The step then exits with
+#   the typed error code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3) so a
+#   branch-protection rule can surface the bootstrap requirement as a
 #   required status check failure. See
 #   `docs/install-action.md#first-run-secret-bootstrap` for the
 #   long form and `src/util/exit-codes.ts` for the literal.
@@ -38,13 +55,13 @@ inputs:
     required: false
     default: "__UMACTUALLY_VERSION__"
   api-url:
-    description: "API base URL for the configured provider family. Forwarded to the CLI as `UMACTUALLY_API_URL`. Default reads `secrets.UMACTUALLY_API_URL`; only override when the provider's base URL differs from the secret (e.g. Anthropic or a non-default OpenAI-compatible host)."
+    description: "API base URL for the configured provider family. Forwarded to the CLI as `UMACTUALLY_API_URL`. Default is empty — forward the secret via the `secrets:` block on `uses:` (e.g. `secrets: api-url: ${{ secrets.UMACTUALLY_API_URL }}`), NOT via the input `default:`. Only override via `with: api-url:` when the provider's base URL differs from the secret (e.g. Anthropic or a non-default OpenAI-compatible host)."
     required: false
-    default: "${{ secrets.UMACTUALLY_API_URL }}"
+    default: ""
   api-key:
-    description: "Provider API key. Forwarded to the CLI as `UMACTUALLY_API_KEY`. Default reads `secrets.UMACTUALLY_API_KEY`. Never place the credential in YAML literals or command arguments."
+    description: "Provider API key. Forwarded to the CLI as `UMACTUALLY_API_KEY`. Default is empty — forward the secret via the `secrets:` block on `uses:` (e.g. `secrets: api-key: ${{ secrets.UMACTUALLY_API_KEY }}`), NOT via the input `default:`. Never place the credential in YAML literals or command arguments."
     required: false
-    default: "${{ secrets.UMACTUALLY_API_KEY }}"
+    default: ""
   provider:
     description: "Provider family. One of `openai-compatible`, `anthropic`, or `copilot`. Default `openai-compatible` — the wizard's pick for the most common operator profile."
     required: false
@@ -76,6 +93,13 @@ outputs:
     description: "Number of inline review threads posted to the PR. Zero is a successful clean review. Surfaced as a job summary for human reviewers."
   review-id:
     description: "Opaque run identifier (request id) emitted by the CLI in the review artifact's `metadata.requestId` field. Used for log correlation."
+secrets:
+  api-url:
+    description: "Repository secret mapped to `UMACTUALLY_API_URL`. The calling workflow forwards via `secrets: api-url: ${{ secrets.UMACTUALLY_API_URL }}` on the `uses:` line."
+    required: false
+  api-key:
+    description: "Repository secret mapped to `UMACTUALLY_API_KEY`. The calling workflow forwards via `secrets: api-key: ${{ secrets.UMACTUALLY_API_KEY }}` on the `uses:` line."
+    required: false
 runs:
   using: "composite"
   steps:
@@ -109,28 +133,43 @@ runs:
       id: bootstrap
       shell: bash
       env:
-        UMACTUALLY_API_URL: ${{ inputs.api-url }}
-        UMACTUALLY_API_KEY: ${{ inputs.api-key }}
+        # Coalesce: prefer the `secrets:`-block forwarding (new contract),
+        # fall back to `inputs.*` (legacy `with:` path or explicit override).
+        UMACTUALLY_API_URL: ${{ secrets.api-url || inputs.api-url }}
+        UMACTUALLY_API_KEY: ${{ secrets.api-key || inputs.api-key }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
         if [ -z "$UMACTUALLY_API_URL" ] || [ -z "$UMACTUALLY_API_KEY" ]; then
+          # Idempotency contract: only post the bootstrap comment on the
+          # PR-opening family of events (`opened` / `reopened` /
+          # `ready_for_review`). On `synchronize` the step is a no-op for
+          # the comment post. Even on the opening-family events, we first
+          # query existing comments for the marker `<!-- umactually-bootstrap -->`
+          # and skip the post if one already carries it — defeating
+          # duplicate posts on reopened PRs that previously bootstrapped.
+          # The marker string MUST stay byte-identical (see
+          # `docs/install-action.md` § First-run secret bootstrap).
           if [ "${{ github.event_name }}" = "pull_request" ] && { [ "${{ github.event.action }}" = "opened" ] || [ "${{ github.event.action }}" = "reopened" ] || [ "${{ github.event.action }}" = "ready_for_review" ]; }; then
             MARKER="<!-- umactually-bootstrap -->"
-            COMMENT_BODY=$(cat <<EOF
-        $MARKER
+            PR_NUMBER="${{ github.event.pull_request.number }}"
+            EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" --jq '.[] | .body' 2>/dev/null | grep -F "$MARKER" || true)
+            if [ -z "$EXISTING" ]; then
+              cat > /tmp/umactually-bootstrap-body.md <<'BOOTSTRAP_EOF'
+        <!-- umactually-bootstrap -->
         ## umactually: secret bootstrap required
 
         The umactually action needs two repository secrets before it can run a review:
 
-        1. \`UMACTUALLY_API_URL\` — your provider's API base URL.
-        2. \`UMACTUALLY_API_KEY\` — your provider's API key.
+        1. `UMACTUALLY_API_URL` — your provider's API base URL.
+        2. `UMACTUALLY_API_KEY` — your provider's API key.
 
-        Configure them under **Settings → Secrets and variables → Actions** on this repository. The action re-runs on the next \`synchronize\` event once both secrets are present.
+        Configure them under **Settings → Secrets and variables → Actions** on this repository. The action re-runs on the next `synchronize` event once both secrets are present.
 
-        See \`docs/install-action.md\` for the long form.
-        EOF
-            )
-            gh pr comment "${{ github.event.pull_request.number }}" --body "$COMMENT_BODY" || true
+        See `docs/install-action.md` for the long form.
+        BOOTSTRAP_EOF
+              gh pr comment "$PR_NUMBER" --body-file /tmp/umactually-bootstrap-body.md || true
+              rm -f /tmp/umactually-bootstrap-body.md
+            fi
           fi
           echo "::error::UMACTUALLY_ERR_SECRET_BOOTSTRAP — secrets.UMACTUALLY_API_URL or secrets.UMACTUALLY_API_KEY is empty."
           exit 3
@@ -140,14 +179,29 @@ runs:
       id: review
       shell: bash
       env:
-        UMACTUALLY_API_URL: ${{ inputs.api-url }}
-        UMACTUALLY_API_KEY: ${{ inputs.api-key }}
+        # Coalesce: prefer the `secrets:`-block forwarding (new contract),
+        # fall back to `inputs.*` (legacy `with:` path or explicit override).
+        UMACTUALLY_API_URL: ${{ secrets.api-url || inputs.api-url }}
+        UMACTUALLY_API_KEY: ${{ secrets.api-key || inputs.api-key }}
         GITHUB_TOKEN: ${{ github.token }}
       run: |
+        # Finding 3 fix: forward provider, skip-draft, and paths-ignore
+        # unconditionally (they always have defaults from action inputs).
+        # Forward --model ONLY when non-empty, so the action's default
+        # empty string does not override the wizard's saved config when
+        # the operator didn't explicitly set a per-run model.
+        MODEL_ARGS=()
+        if [ -n "${{ inputs.model }}" ]; then
+          MODEL_ARGS+=(--model "${{ inputs.model }}")
+        fi
         umactually review \
           --platform github \
           --config-path "${{ inputs.config-path }}" \
-          --output-artifact "${{ inputs.output-artifact || 'umactually-review.json' }}"
+          --output-artifact "${{ inputs.output-artifact || 'umactually-review.json' }}" \
+          --provider "${{ inputs.provider }}" \
+          --skip-draft "${{ inputs.skip-draft }}" \
+          --paths-ignore "${{ inputs.paths-ignore }}" \
+          "${MODEL_ARGS[@]}"
 
     - name: Upload review artifact
       if: always()

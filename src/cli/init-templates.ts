@@ -32,6 +32,14 @@ export type CiTarget = "github" | "azure";
  * Node.js setup, npm install of the CLI, and the live review call; the
  * operator only wires credentials and config.
  *
+ * Secret forwarding contract (Finding 1 fix): the action's `api-url` /
+ * `api-key` input defaults are the empty string `""` (GitHub Actions
+ * does not template `${{ secrets.* }}` inside `inputs.<key>.default`).
+ * Secrets are forwarded via the `secrets:` block on `uses:` using the
+ * action's declared secret names (`api-url`, `api-key`), NOT via the
+ * `with:` block. The action reads from `secrets.* || inputs.*` so the
+ * legacy `with:` form still works as a fallback.
+ *
  * `__UMACTUALLY_VERSION__` pins the action's `cli-version` input
  * (default for the npm install the action runs internally). It is
  * intentionally NOT on an `npm install -g` line — longform still has
@@ -56,13 +64,14 @@ jobs:
         uses: JosiahSiegel/umactually-action@v1
         with:
           cli-version: __UMACTUALLY_VERSION__
-          api-url: \${{ secrets.UMACTUALLY_API_URL }}
-          api-key: \${{ secrets.UMACTUALLY_API_KEY }}
           provider: openai-compatible
           config-path: ./umactually.review.json
           output-artifact: umactually-review.json
           skip-draft: 'true'
           paths-ignore: '**/*.md,docs/**,**/*.lock'
+        secrets:
+          api-url: \${{ secrets.UMACTUALLY_API_URL }}
+          api-key: \${{ secrets.UMACTUALLY_API_KEY }}
 `;
 
 /**
