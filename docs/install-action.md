@@ -19,7 +19,7 @@ Secrets are forwarded via the `secrets:` block on `uses:`. GitHub Actions does N
 
 ## Input matrix
 
-The full input matrix from `action/action.yml`:
+The full input matrix from the published [`JosiahSiegel/umactually-action`](https://github.com/JosiahSiegel/umactually-action/blob/v1/action.yml) manifest:
 
 | Input | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -92,7 +92,7 @@ To pin a specific CLI version, set `cli-version: <tag>` explicitly (e.g. `cli-ve
 
 ## Reference
 
-- [`action/action.yml`](../action/action.yml) — the input matrix and outputs.
+- [`JosiahSiegel/umactually-action@v1`](https://github.com/JosiahSiegel/umactually-action/tree/v1) — the published action, input matrix, and outputs.
 - [`src/util/exit-codes.ts`](../src/util/exit-codes.ts) — the typed-error code literals (`UMACTUALLY_ERR_SECRET_BOOTSTRAP`, `UMACTUALLY_ERR_PUBLISHER_UNVERIFIED`).
 - [`docs/configuration.md`](configuration.md) — the committed `umactually.review.json` schema (the `config-path` input's payload).
 - [`docs/onboarding/github-marketplace.md`](onboarding/github-marketplace.md) — the Marketplace listing copy.

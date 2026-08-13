@@ -3,7 +3,7 @@
 /**
  * Azure Pipelines Task handler for `UmActuallyReview`.
  *
- * Mirrors the Composite Action's flow (see `action/action.yml`):
+ * Mirrors the published Composite Action's flow (see `JosiahSiegel/umactually-action@v1`):
  *   1. Bootstrap: detect missing `UMACTUALLY_API_URL` or
  *      `UMACTUALLY_API_KEY` env vars and exit with the typed error
  *      code `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3, see
