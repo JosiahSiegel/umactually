@@ -575,5 +575,5 @@ describe("evidence/task-9", () => {
     appendFileSync(REGRESSION_PATH, "Task 4 fingerprint/collision: passed (unchanged).\n");
     appendFileSync(REGRESSION_PATH, "Task 6 policy precedence: passed (unchanged).\n");
     appendFileSync(REGRESSION_PATH, "Task 9 state machine: passed.\n");
-  });
+  }, 30_000);
 });

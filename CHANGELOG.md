@@ -10,6 +10,18 @@ ship a tag).
 
 ## [Unreleased]
 
+### Added
+
+### Changed
+
+### Fixed
+
+### Removed
+
+### Security
+
+## [0.9.0] - 2026-08-13
+
 ### Fixed
 
 - **Secrets must be forwarded via the `secrets:` block on `uses:`, not via input defaults**. GitHub Actions does NOT evaluate `${{ secrets.* }}` expressions inside a Composite Action's `inputs.<key>.default` — the literal string is stored and passed verbatim, making it truthy and silently bypassing the bootstrap step's empty-string detection. The `api-url` and `api-key` input defaults are now the empty string `""`; secrets are forwarded via the `secrets:` block on the `uses:` line (e.g. `secrets: api-url: ${{ secrets.UMACTUALLY_API_URL }}`). The action's env blocks coalesce `secrets.* || inputs.*` so the legacy `with:` form still works as a fallback. The `umactually init` wizard emit, all example fixtures, the action README, and all docs are updated to the `secrets:`-block form. `[action/action.yml] [src/cli/init-templates.ts] [examples/github/pr-review.yml.action-ref.yml] [examples/action/basic-usage.yml] [action/README.md] [docs/install-action.md] [docs/onboarding/github-marketplace.md] [README.md]`
@@ -17,6 +29,8 @@ ship a tag).
 - **Bootstrap step is now idempotent (marker-guarded)**. The bootstrap step previously always called `gh pr comment` on every opening/reopened/ready-for-review event, posting duplicate comments when a PR was reopened after a prior bootstrap. The step now queries existing PR comments (via `gh api .../issues/{n}/comments`) for the `<!-- umactually-bootstrap -->` marker and skips the post if one already carries it. The comment body is written via `--body-file` (avoiding bash here-doc backtick escaping). The marker string is byte-identical to the prior contract; exit semantics (exit 3 + `UMACTUALLY_ERR_SECRET_BOOTSTRAP`) are unchanged. `[action/action.yml]`
 
 - **Action input passthrough extended to `--provider`, `--skip-draft`, `--paths-ignore` (always) and `--model` (when non-empty)**. The `umactually review` invocation in the action now forwards the `provider`, `skip-draft`, and `paths-ignore` inputs as CLI flags unconditionally (they always have defaults). The `model` input is forwarded as `--model` ONLY when non-empty, so the action's default `""` does not override the wizard's saved config. `[action/action.yml] [docs/install-action.md]`
+
+- **`findingsDetailsRow` now falls back to `Finding at <path>:<line>.` when a finding body is empty**, so the summary detail row always provides a locatable snippet instead of ending after the severity em dash. `[src/render/summary-layouts.ts]` (commit `1ecdd4a`)
 
 ### Changed
 

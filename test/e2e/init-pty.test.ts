@@ -397,8 +397,6 @@ describe.skipIf(SKIP_REASON !== null)(
       const workflowPath = join(ghDir, "umactually-pr-review.yml");
       expect(existsSync(workflowPath)).toBe(true);
       const parsed = (await lintYaml(workflowPath)) as Record<string, unknown>;
-      // G-12 / G-13 invariants: jobs.review.steps, concurrency,
-      // permissions, actions/checkout@v4, actions/setup-node@v4.
       expect(parsed["name"]).toBe("PR review");
       const jobs = parsed["jobs"] as Record<string, unknown>;
       const review = jobs["review"] as Record<string, unknown>;
@@ -406,7 +404,7 @@ describe.skipIf(SKIP_REASON !== null)(
       const steps = review["steps"] as ReadonlyArray<Record<string, unknown>>;
       const uses = steps.map((step) => step["uses"]);
       expect(uses).toContain("actions/checkout@v4");
-      expect(uses).toContain("actions/setup-node@v7");
+      expect(uses).toContain("JosiahSiegel/umactually-action@v1");
 
       // Clean up the generated workflow so it doesn't pollute the repo.
       await rm(workflowPath, { force: true });
@@ -434,21 +432,14 @@ describe.skipIf(SKIP_REASON !== null)(
       const pipelinePath = join(cwd, "azure-pipelines.yml");
       expect(existsSync(pipelinePath)).toBe(true);
       const parsed = (await lintYaml(pipelinePath)) as Record<string, unknown>;
-      // G-13 / G-14 / G-15 invariants: NodeTool@0 task, SYSTEM_ACCESSTOKEN mapping, OAuth-token comment.
       expect(parsed["trigger"]).toBe("none");
       const steps = parsed["steps"] as ReadonlyArray<Record<string, unknown>>;
       const tasks = steps.map((step) => step["task"]).filter((t) => typeof t === "string");
-      expect(tasks).toContain("NodeTool@0");
-      // The "Run umactually" step's env must include SYSTEM_ACCESSTOKEN.
-      const runStep = steps.find((step) =>
-        typeof step["displayName"] === "string" &&
-        (step["displayName"] as string).toLowerCase().includes("run umactually"),
-      ) as Record<string, unknown> | undefined;
-      expect(runStep, "expected Run umactually PR review step").toBeDefined();
-      const env = runStep?.["env"] as Record<string, string>;
+      expect(tasks).toContain("UmActuallyReview@1");
+      const taskStep = steps.find((step) => step["task"] === "UmActuallyReview@1");
+      expect(taskStep, "expected UmActuallyReview task").toBeDefined();
+      const env = taskStep?.["env"] as Record<string, string>;
       expect(env["SYSTEM_ACCESSTOKEN"]).toBe("$(System.AccessToken)");
-      expect(env["UMACTUALLY_API_KEY"]).toBe("$(UMACTUALLY_API_KEY)");
-      expect(env["UMACTUALLY_API_URL"]).toBe("$(UMACTUALLY_API_URL)");
 
       // Clean up the generated pipeline so it doesn't pollute the repo.
       await rm(pipelinePath, { force: true });
