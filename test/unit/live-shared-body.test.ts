@@ -237,7 +237,7 @@ describe("buildInlineCommentBody (shared per-comment format for GitHub and Azure
       },
       secrets: SECRETS,
     });
-    expect(body).toContain("Finding at src/auth.ts:12.");
+    expect(body).toContain("Finding at src/auth.ts:12");
   });
 
   it("FEAT-PARITY-012 redacts secrets in the inline body", () => {
@@ -268,6 +268,38 @@ describe("buildInlineCommentBody (shared per-comment format for GitHub and Azure
       includeMarker: true,
     });
     expect(body).toContain(REVIEW_MARKER);
+  });
+
+  it("SCHEMA-001 emits the location + severity/category hint when body is empty", () => {
+    const body = buildInlineCommentBody({
+      comment: {
+        path: "src/foo.ts",
+        line: 42,
+        body: "",
+        severity: "medium",
+        category: "general",
+      },
+      secrets: [],
+    });
+    expect(body).toContain("Finding at src/foo.ts:42");
+    expect(body).toContain("medium");
+    expect(body).toContain("general");
+    expect(body).toContain("body not populated by provider");
+  });
+
+  it("SCHEMA-002 uses the real body when present (no fallback)", () => {
+    const body = buildInlineCommentBody({
+      comment: {
+        path: "src/foo.ts",
+        line: 42,
+        body: "The function swallows errors and returns null, hiding failures from the caller.",
+        severity: "medium",
+        category: "general",
+      },
+      secrets: [],
+    });
+    expect(body).toContain("swallows errors");
+    expect(body).not.toContain("Finding at src/foo.ts:42");
   });
 });
 
