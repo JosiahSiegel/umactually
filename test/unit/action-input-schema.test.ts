@@ -20,9 +20,9 @@ function loadPublishedAction(): { readonly path: string; readonly body: string }
     path: "github.com/JosiahSiegel/umactually-action@v1",
     body: execFileSync(
       "gh",
-      ["api", "repos/JosiahSiegel/umactually-action/contents/action.yml", "--jq", ".content"],
+      ["api", "repos/JosiahSiegel/umactually-action/contents/action.yml?ref=v1", "--jq", ".content"],
       { encoding: "utf8" },
-    ).replace(/\s+/gu, ""),
+    ).replace(/\r?\n/gu, ""),
   };
 }
 

@@ -21,6 +21,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
   ci:
     name: ci
