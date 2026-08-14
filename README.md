@@ -14,7 +14,7 @@ Add `umactually-action` to a pull-request workflow, configure two repo secrets, 
 1. **Add the action** to `.github/workflows/umactually-pr-review.yml` (SHA-pinned; enable Dependabot on `uses:` to auto-bump the SHA):
 
    ```yaml
-   - uses: JosiahSiegel/umactually-action@317613abd39061d90f761e965dde1dee8f705e19  # v1
+   - uses: JosiahSiegel/umactually-action@043d6070a43a5f61aa6ede9efe60d0f47b76fc58  # v1
      with:
        cli-version: 0.9.3
        provider: openai-compatible
