@@ -60,7 +60,7 @@ Since action release 1.0.1 (the flag-drop landed in commit `317613a`, an ancesto
 - `--model` ← `${{ inputs.model }}` (forwarded ONLY when non-empty; the action's default `""` would override the wizard's saved config if always forwarded)
 - `--output-artifact` ← `${{ inputs.output-artifact }}` (default `umactually-review.json`)
 
-The `config-path`, `skip-draft`, and `paths-ignore` inputs remain declared for backward compatibility with the wizard template and pre-v0.10.0 examples, but are no longer forwarded: the CLI auto-discovers `umactually.review.json` from cwd, incremental review is per-PR via GitHub thread queries, and the `--files` flag plus the diff's own ignore list handle path filtering. Passing them is dead config.
+The `config-path`, `skip-draft`, and `paths-ignore` inputs remain declared for backward compatibility with the wizard template and pre-action-1.0.1 examples, but are no longer forwarded: the CLI auto-discovers `umactually.review.json` from cwd, incremental review is per-PR via GitHub thread queries, and the `--files` flag plus the diff's own ignore list handle path filtering. Passing them is dead config.
 
 ## GitHub Enterprise Server (GHES)
 
