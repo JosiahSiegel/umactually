@@ -10,12 +10,6 @@ ship a tag).
 
 ## [Unreleased]
 
-### Added
-
-### Changed
-
-### Fixed
-
 ## [0.10.0] - 2026-08-14
 
 ### Fixed
