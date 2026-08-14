@@ -53,7 +53,8 @@ export type ReasonKind =
   | "below-threshold"
   | "carried-over"
   | "unchanged"
-  | "manual-full";
+  | "manual-full"
+  | "empty-body";
 
 export const REASON_KIND_VALUES: readonly ReasonKind[] = [
   "off-diff",
@@ -67,6 +68,7 @@ export const REASON_KIND_VALUES: readonly ReasonKind[] = [
   "carried-over",
   "unchanged",
   "manual-full",
+  "empty-body",
 ] as const;
 
 export const ALL_REASON_KINDS: ReadonlyArray<ReasonKind> = REASON_KIND_VALUES;
@@ -87,6 +89,7 @@ export function emptyReasonHistogram(): FilterHistogram {
     "carried-over": 0,
     "unchanged": 0,
     "manual-full": 0,
+    "empty-body": 0,
   };
   return h;
 }
@@ -426,6 +429,7 @@ export function buildReviewMetrics(opts: { now?: MetricsClock } = {}): ReviewMet
         "carried-over": state.reasons["carried-over"],
         "unchanged": state.reasons["unchanged"],
         "manual-full": state.reasons["manual-full"],
+        "empty-body": state.reasons["empty-body"],
       };
       next[kind] = current + by;
       state.reasons = next;
