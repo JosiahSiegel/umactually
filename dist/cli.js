@@ -13283,6 +13283,33 @@ function getActiveSeveritySink() {
     return activeSeveritySink;
 }
 /**
+ * Ambient (module-singleton) observation sink slot. Default value is
+ * `null` (no sink installed → no observations surfaced), preserving the
+ * previous silent-alias behavior for any caller that has not opted in.
+ *
+ * Concurrency note: mirrors the severity sink above — only safe when
+ * callers install → await → clear atomically. The guard below warns
+ * loudly on overwrite so the regression class surfaces at install time.
+ */
+let activeParseObservationSink = null;
+function setActiveParseObservationSink(sink) {
+    if (sink !== null && activeParseObservationSink !== null) {
+        // Concurrency footgun detected: a sink is already installed and the
+        // caller is overwriting it without clearing the previous one first.
+        // Log + warn loudly so the regression class surfaces in CI logs
+        // rather than silently corrupting telemetry.
+        // eslint-disable-next-line no-console -- provider parse-fail diagnostic
+        console.warn("[provider-parse] setActiveParseObservationSink: overwriting a non-null ambient sink. " +
+            "This usually means two requestLiveReview calls are running concurrently " +
+            "(Promise.all) — the second's sink will be cleared by the first's finally, " +
+            "corrupting the captured observations. Thread the sink via ParseContext instead.");
+    }
+    activeParseObservationSink = sink;
+}
+function getActiveParseObservationSink() {
+    return activeParseObservationSink;
+}
+/**
  * Emit a structured warning when the parser encounters a severity value
  * it cannot classify. Always also writes a single `console.warn` line so
  * operators can see the mismatch in CI logs without needing to inspect
@@ -13308,6 +13335,40 @@ function emitSeverityWarning(rawValue, normalizedFallback, context, sink) {
 function isNonEmptyReview(review) {
     return review !== null
         && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0);
+}
+/**
+ * Returns true when the review carries findings but every one of them has
+ * an empty or whitespace-only body — the schema-valid-but-useless shape
+ * a model can emit when it collapses under output-token pressure.
+ *
+ * Origin: the Minimax-M3 empty-body incident (waffle-house-menu PR,
+ * workflow run 31801055564). The model returned a review whose comment
+ * bodies were all empty strings while the surrounding JSON was perfectly
+ * schema-valid, so the payload sailed through validation and posted an
+ * empty findings table as if it were a real review. These predicates let
+ * callers detect that shape and route to the soft-fail/retry path
+ * instead of publishing the hollow output (wiring lands in T10).
+ *
+ * Semantics:
+ *   - Vacuous-truth guard: zero comments → false. A clean 0-finding
+ *     review must NOT trigger the soft-fail path.
+ *   - `suppressed_comments` are deliberately EXCLUDED — only the
+ *     published `comments` array decides.
+ */
+function hasOnlyEmptyBodyFindings(review) {
+    return review.comments.length > 0 && review.comments.every(c => c.body.trim().length === 0);
+}
+/**
+ * Counts how many comments in the review carry non-whitespace body text.
+ *
+ * Companion to {@link hasOnlyEmptyBodyFindings} for the same Minimax-M3
+ * empty-body incident (waffle-house-menu PR, workflow run 31801055564):
+ * callers use it to distinguish "all bodies hollow" from "some bodies
+ * survived" when deciding how degraded a parsed review actually is
+ * (wiring lands in T10). Pure — no logging, no telemetry.
+ */
+function countPopulatedBodies(review) {
+    return review.comments.filter(c => c.body.trim().length > 0).length;
 }
 /**
  * Self-healing follow-up prefix prepended to the original user
@@ -13339,7 +13400,13 @@ function isNonEmptyReview(review) {
  */
 const PARSE_FAIL_RETRY_PROMPT = "Your previous response did not contain a valid JSON review payload. " +
     "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
-    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n\n' +
+    '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n' +
+    "Each item in comments and suppressed_comments is an object with exactly these fields: " +
+    '"path" (string — the file path from the diff), ' +
+    '"line" (integer ≥ 1 — the line in that file the finding applies to), ' +
+    '"body" (string — must be a non-empty string explaining the issue; never emit ""), ' +
+    '"severity" (string), "category" (string). ' +
+    "Do not omit any field and do not leave any body empty.\n\n" +
     "Original review request follows:\n\n";
 function buildResponsesBody(config, opts) {
     // When `userOverride` is set (parse-fail retry), APPEND the original
@@ -13994,6 +14061,28 @@ function parseRawRemediation(value) {
         rawRemediation: { objective, targetPath, targetAnchor, constraints, verificationCommands },
     };
 }
+/**
+ * Ordered body-key fallback chain. Providers occasionally emit the finding
+ * text under a synonym of `body`; without this chain those findings land
+ * with an empty body and post as empty inline comments.
+ *
+ * A key wins only when it holds a trim-nonempty string — fallthrough is
+ * triggered by a missing, non-string, or whitespace-only value. A
+ * populated canonical `body` therefore always wins outright.
+ */
+const BODY_KEY_ALIAS_ORDER = ["body", "description", "message", "comment", "issue", "detail"];
+function readBodyWithAlias(entry, commentIndex) {
+    for (const key of BODY_KEY_ALIAS_ORDER) {
+        const value = json_guards_readStringField(entry, key);
+        if (value !== null && value.trim().length > 0) {
+            if (key !== "body") {
+                getActiveParseObservationSink()?.({ kind: "body-alias", field: key, commentIndex });
+            }
+            return { body: value };
+        }
+    }
+    return { body: "" };
+}
 function readCommentArray(value, context) {
     if (!isUnknownArray(value)) {
         return [];
@@ -14011,7 +14100,7 @@ function readCommentArray(value, context) {
         const path = entry["path"];
         const line = readSafeIntegerField(entry, "line");
         if (typeof path === "string" && line !== null) {
-            const body = json_guards_readStringField(entry, "body") ?? "";
+            const { body } = readBodyWithAlias(entry, index);
             comments.push({
                 path,
                 line,
@@ -14981,6 +15070,7 @@ function assertCopilotTokenEndpointAllowed(tokenUrl) {
 
 
 
+
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
 const COPILOT_EDITOR_PLUGIN_VERSION = `${brand/* BRAND */.qt}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";
@@ -15071,21 +15161,43 @@ async function runChatCall(config, fetchImpl, requestId, session) {
     // a parse failure even when extractJsonBlock returned an object. This
     // catches chat-format responses fed to the responses endpoint and
     // similar misconfigurations.
+    //
+    // Soft-fail detection (Minimax-M3 empty-body incident): a review whose
+    // comment bodies are ALL empty is schema-valid but hollow. Do NOT
+    // return it — fall through to the same self-healing retry the hard
+    // parse-fail uses. The original review is the fallback: a retry that
+    // throws, HTTP-fails, or parses no better resolves to the ORIGINAL
+    // review, never to the parse-fail error path.
+    let softFailOriginal = null;
     if (isNonEmptyReview(review)) {
-        const usage = parseProviderUsage(rawText);
-        return {
-            ok: true,
-            endpoint: ENDPOINT_CHAT,
-            review,
-            requestId,
-            ...(usage !== undefined ? { usage } : {}),
-        };
+        if (!hasOnlyEmptyBodyFindings(review)) {
+            const usage = parseProviderUsage(rawText);
+            return {
+                ok: true,
+                endpoint: ENDPOINT_CHAT,
+                review,
+                requestId,
+                ...(usage !== undefined ? { usage } : {}),
+            };
+        }
+        softFailOriginal = review;
+        // [DEBUG-RAW] Trace the soft-fail decision so a production run can
+        // show WHY a second request fired despite a 200-OK schema-valid
+        // response. Mirrors the openai-compatible [DEBUG-RAW] style.
+        if (isDebugRawActive()) {
+            writeDebugRaw(`[DEBUG-RAW] soft-fail: all ${review.comments.length} finding bodies empty; retrying\n`);
+        }
     }
     // Provider-error detection: check for router/proxy misconfiguration
     // before the self-healing retry. See openai-compatible.ts for the
     // full rationale — the short version: retrying won't help when no
     // model was invoked.
-    const providerError = detectProviderError(rawText);
+    //
+    // Soft-fail NOTE: a soft-fail response PARSED successfully, so it
+    // cannot be a provider error envelope — and the soft path must never
+    // resolve to an error. Skip the check there; the hard path below it
+    // is byte-identical to before.
+    const providerError = softFailOriginal === null ? detectProviderError(rawText) : null;
     if (providerError !== null) {
         return {
             ok: false,
@@ -15120,21 +15232,38 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         });
     }
     catch {
-        // Retry HTTP call itself failed — surface the ORIGINAL parse failure
-        // (not the retry's network error) so the parse-fail path's diagnostic
-        // captures the actual root cause.
+        // Retry HTTP call itself failed. Hard path: surface the ORIGINAL
+        // parse failure (not the retry's network error) so the parse-fail
+        // path's diagnostic captures the actual root cause. Soft path: the
+        // original review is the safety net — resolve to it, never to an
+        // error.
+        if (softFailOriginal !== null) {
+            return softFailSuccess(softFailOriginal, rawText, requestId);
+        }
         return {
             ok: false,
             error: new ProviderError("parse", ENDPOINT_CHAT, response.status, requestId, "Provider response did not contain a JSON review payload.", { rawText }),
         };
     }
     if (!retryResponse.ok) {
+        if (softFailOriginal !== null) {
+            return softFailSuccess(softFailOriginal, rawText, requestId);
+        }
         return {
             ok: false,
             error: new ProviderError("parse", ENDPOINT_CHAT, retryResponse.status, requestId, `Provider self-healing retry failed with status ${retryResponse.status}; original parse error remains the root cause.`, { rawText }),
         };
     }
-    const retryRawText = await readResponseText(retryResponse, ENDPOINT_CHAT, requestId);
+    let retryRawText;
+    try {
+        retryRawText = await readResponseText(retryResponse, ENDPOINT_CHAT, requestId);
+    }
+    catch (error) {
+        if (softFailOriginal !== null) {
+            return softFailSuccess(softFailOriginal, rawText, requestId);
+        }
+        throw error;
+    }
     const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
     let retryReview = null;
     const parsedRetry = parseReviewPayload(retryTextPayload);
@@ -15142,6 +15271,9 @@ async function runChatCall(config, fetchImpl, requestId, session) {
         retryReview = parsedRetry;
     }
     if (retryReview === null) {
+        if (softFailOriginal !== null) {
+            return softFailSuccess(softFailOriginal, rawText, requestId);
+        }
         const diagnosis = diagnoseParseFailure({ rawText });
         return {
             ok: false,
@@ -15156,7 +15288,32 @@ async function runChatCall(config, fetchImpl, requestId, session) {
             }),
         };
     }
+    // Soft-fail: adopt the retry ONLY when it strictly improved the
+    // populated-body count. A retry that parses but is no better (or
+    // worse) keeps the original verdict/summary.
+    if (softFailOriginal !== null && countPopulatedBodies(retryReview) <= countPopulatedBodies(softFailOriginal)) {
+        return softFailSuccess(softFailOriginal, rawText, requestId);
+    }
     return { ok: true, endpoint: ENDPOINT_CHAT, review: retryReview, requestId };
+}
+/**
+ * Build the soft-fail resolution: the original (hollow-bodies) review
+ * with the original response's usage block. The soft-fail contract
+ * mandates this shape on EVERY failed retry branch — throw, HTTP
+ * failure, unparseable payload, or no-better payload.
+ */
+function softFailSuccess(review, rawText, requestId) {
+    const usage = parseProviderUsage(rawText);
+    return {
+        ok: true,
+        endpoint: ENDPOINT_CHAT,
+        review,
+        requestId,
+        ...(usage !== undefined ? { usage } : {}),
+    };
+}
+function writeDebugRaw(message) {
+    process.stderr.write(message);
 }
 function buildTokenHeaders(githubToken) {
     return {
@@ -15382,12 +15539,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // does not log the raw response by default (it would dump 100+ KB to
     // the log on every run).
     if (isDebugRawActive()) {
-        writeDebugRaw(`[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
+        openai_compatible_writeDebugRaw(`[DEBUG-RAW] requestId=${requestId} endpoint=${endpoint} ` +
             `rawTextLength=${rawText.length} textPayloadLength=${textPayload.length}\n`, config);
         const safeTextPayload = redactDebugSecrets(textPayload, config);
-        writeDebugRaw(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(safeTextPayload.slice(0, 200))}\n`, config);
-        writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
-        writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
+        openai_compatible_writeDebugRaw(`[DEBUG-RAW] textPayload first 200: ${JSON.stringify(safeTextPayload.slice(0, 200))}\n`, config);
+        openai_compatible_writeDebugRaw(`[DEBUG-RAW] textPayload last 200:  ${JSON.stringify(safeTextPayload.slice(-200))}\n`, config);
+        openai_compatible_writeDebugRaw(`[DEBUG-RAW] hasResponseCompletedEvent: ${rawText.includes('"type":"response.completed"')}\n`, config);
     }
     // Surface parse-decision signals so future parse-fail runs can tell
     // whether the self-healing retry was skipped (detectProviderError
@@ -15404,8 +15561,8 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         const trace = review === null
             ? "null"
             : `summary.len=${review.summary.length} verdict='${review.verdict}' comments=${review.comments.length} suppressed=${review.suppressed_comments.length}`;
-        writeDebugRaw(`[DEBUG-RAW] parseReviewPayload returned: ${trace}\n`, config);
-        writeDebugRaw(`[DEBUG-RAW] isNonEmptyReview: ${isNonEmptyReview(review)}\n`, config);
+        openai_compatible_writeDebugRaw(`[DEBUG-RAW] parseReviewPayload returned: ${trace}\n`, config);
+        openai_compatible_writeDebugRaw(`[DEBUG-RAW] isNonEmptyReview: ${isNonEmptyReview(review)}\n`, config);
     }
     // Treat an empty-summary+empty-verdict parse as a parse failure even
     // when `extractJsonBlock` returned an object. The parser is permissive
@@ -15413,15 +15570,32 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // for any JSON object), so a chat-format response (`{choices: [...]}`)
     // fed to the responses endpoint can otherwise pass as a 0-finding
     // "empty review" — see CLARITY-10.
+    // Soft-fail detection (Minimax-M3 empty-body incident): a review whose
+    // comment bodies are ALL empty is schema-valid but hollow. Do NOT
+    // return it — fall through to the same self-healing retry the hard
+    // parse-fail uses. The original review is preserved as the fallback:
+    // if the retry throws, HTTP-fails, or parses worse, we resolve to the
+    // ORIGINAL review (verdict/summary preserved), never to the parse-fail
+    // throw path that the hard flow uses below.
+    let softFailOriginal = null;
     if (isNonEmptyReview(review)) {
-        const usage = parseProviderUsage(rawText);
-        return {
-            ok: true,
-            endpoint,
-            review,
-            requestId,
-            ...(usage !== undefined ? { usage } : {}),
-        };
+        if (!hasOnlyEmptyBodyFindings(review)) {
+            const usage = parseProviderUsage(rawText);
+            return {
+                ok: true,
+                endpoint,
+                review,
+                requestId,
+                ...(usage !== undefined ? { usage } : {}),
+            };
+        }
+        softFailOriginal = review;
+        // [DEBUG-RAW] Trace the soft-fail decision so a production run can
+        // show WHY a second request fired despite a 200-OK schema-valid
+        // response. Mirrors the [DEBUG-RAW] style above.
+        if (isDebugRawActive()) {
+            openai_compatible_writeDebugRaw(`[DEBUG-RAW] soft-fail: all ${review.comments.length} finding bodies empty; retrying\n`, config);
+        }
     }
     // Provider-error detection: before attempting the self-healing
     // retry, check whether the raw response is a provider error (router
@@ -15432,7 +15606,12 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
     // saves a wasted retry and surfaces a specific error code
     // (`provider_error`) so the live-review layer can hard-fail instead
     // of posting a 0-finding COMMENT review that exits 0.
-    const providerError = detectProviderError(rawText);
+    //
+    // Soft-fail NOTE: a soft-fail response PARSED successfully, so it
+    // cannot be a provider error envelope — and the soft path must never
+    // resolve to a throw. Skip the check there; the hard path below it
+    // is byte-identical to before.
+    const providerError = softFailOriginal === null ? detectProviderError(rawText) : null;
     if (providerError !== null) {
         throw new ProviderError("provider_error", endpoint, response.status, requestId, providerError.message, { rawText, providerErrorDetails: providerError });
     }
@@ -15476,7 +15655,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         textPayloadLength: textPayload.length,
     });
     if (isDebugRawActive() && needsMoreBudget) {
-        writeDebugRaw(`[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`, config);
+        openai_compatible_writeDebugRaw(`[DEBUG-RAW] bumped-budget retry: rawText.length=${rawText.length} textPayload.length=${textPayload.length} bumpedMaxOutput=${bumpedMaxOutput}\n`, config);
     }
     const retryBodyConfig = {
         ...firstAttemptBodyConfig,
@@ -15515,11 +15694,11 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
             const retryRawText = await readResponseText(retryResponse, endpoint, requestId);
             const retryTextPayload = extractTextPayload(endpoint, retryRawText);
             if (isDebugRawActive()) {
-                writeDebugRaw(`[DEBUG-RAW] retry requestId=${requestId} ` +
+                openai_compatible_writeDebugRaw(`[DEBUG-RAW] retry requestId=${requestId} ` +
                     `rawTextLength=${retryRawText.length} textPayloadLength=${retryTextPayload.length}\n`, config);
                 const safeRetryTextPayload = redactDebugSecrets(retryTextPayload, config);
-                writeDebugRaw(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(safeRetryTextPayload.slice(0, 200))}\n`, config);
-                writeDebugRaw(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(safeRetryTextPayload.slice(-200))}\n`, config);
+                openai_compatible_writeDebugRaw(`[DEBUG-RAW] retry textPayload first 200: ${JSON.stringify(safeRetryTextPayload.slice(0, 200))}\n`, config);
+                openai_compatible_writeDebugRaw(`[DEBUG-RAW] retry textPayload last 200:  ${JSON.stringify(safeRetryTextPayload.slice(-200))}\n`, config);
             }
             const parsedRetry = parseReviewPayload(retryTextPayload);
             // Same strict check on the retry: must have actual review content.
@@ -15534,6 +15713,20 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         // ORIGINAL rawText. retryResponseStatus stays null in this branch.
     }
     if (retryReview === null) {
+        // Soft-fail: the original parsed review is the safety net. A retry
+        // that throws, HTTP-fails, or stays unparseable resolves here — the
+        // original verdict/summary stand and the caller sees a success, NOT
+        // a parse-fail throw.
+        if (softFailOriginal !== null) {
+            const usage = parseProviderUsage(rawText);
+            return {
+                ok: true,
+                endpoint,
+                review: softFailOriginal,
+                requestId,
+                ...(usage !== undefined ? { usage } : {}),
+            };
+        }
         const diagnosis = diagnoseParseFailure({ rawText });
         throw buildParseFailError({
             endpoint,
@@ -15545,9 +15738,22 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
             ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
         });
     }
+    // Soft-fail: adopt the retry ONLY when it strictly improved the
+    // populated-body count. A retry that parses but is no better (or
+    // worse) keeps the original verdict/summary.
+    if (softFailOriginal !== null && countPopulatedBodies(retryReview) <= countPopulatedBodies(softFailOriginal)) {
+        const usage = parseProviderUsage(rawText);
+        return {
+            ok: true,
+            endpoint,
+            review: softFailOriginal,
+            requestId,
+            ...(usage !== undefined ? { usage } : {}),
+        };
+    }
     return { ok: true, endpoint, review: retryReview, requestId };
 }
-function writeDebugRaw(message, config) {
+function openai_compatible_writeDebugRaw(message, config) {
     process.stderr.write(redactDebugSecrets(message, config));
 }
 function redactDebugSecrets(value, config) {
@@ -15742,6 +15948,7 @@ function assertNever(value) {
  * diagnostic, hard-fail on router errors) is identical regardless of which
  * provider family the operator picks.
  */
+
 
 
 
@@ -16013,24 +16220,40 @@ async function runOnce(config, fetchImpl, requestId, url) {
         };
     }
     const review = parseReviewPayload(textPayload);
+    // Soft-fail detection (Minimax-M3 empty-body incident): a review whose
+    // comment bodies are ALL empty is schema-valid but hollow. Do NOT
+    // return it — fall through to the same self-healing retry the hard
+    // parse-fail uses. The original review is the fallback: a retry that
+    // throws, HTTP-fails, or parses no better resolves to the ORIGINAL
+    // review, never to the parse-fail error path.
+    let softFailOriginal = null;
     if (isNonEmptyReview(review)) {
-        // Try to read usage from the response body even on the success
-        // path so the local audit artifact can compute cost estimates.
-        let successUsage;
-        try {
-            const parsedRaw = JSON.parse(rawText);
-            successUsage = readUsage(parsedRaw);
+        if (!hasOnlyEmptyBodyFindings(review)) {
+            // Try to read usage from the response body even on the success
+            // path so the local audit artifact can compute cost estimates.
+            let successUsage;
+            try {
+                const parsedRaw = JSON.parse(rawText);
+                successUsage = readUsage(parsedRaw);
+            }
+            catch {
+                // rawText wasn't JSON; no usage to surface.
+            }
+            return {
+                ok: true,
+                endpoint: ENDPOINT,
+                review,
+                requestId,
+                ...(successUsage !== undefined ? { usage: successUsage } : {}),
+            };
         }
-        catch {
-            // rawText wasn't JSON; no usage to surface.
+        softFailOriginal = review;
+        // [DEBUG-RAW] Trace the soft-fail decision so a production run can
+        // show WHY a second request fired despite a 200-OK schema-valid
+        // response. Mirrors the openai-compatible [DEBUG-RAW] style.
+        if (isDebugRawActive()) {
+            anthropic_messages_writeDebugRaw(`[DEBUG-RAW] soft-fail: all ${review.comments.length} finding bodies empty; retrying\n`);
         }
-        return {
-            ok: true,
-            endpoint: ENDPOINT,
-            review,
-            requestId,
-            ...(successUsage !== undefined ? { usage: successUsage } : {}),
-        };
     }
     // Empty JSON or "truncated stream" parse-fail path. We check
     // `stop_reason === "max_tokens"` AND `rawText.length > 16K` to
@@ -16091,7 +16314,20 @@ async function runOnce(config, fetchImpl, requestId, url) {
         // throw below. retryResponseStatus stays null in this branch.
     }
     if (retryReview !== null) {
+        // Soft-fail: adopt the retry ONLY when it strictly improved the
+        // populated-body count. A retry that parses but is no better (or
+        // worse) keeps the original verdict/summary.
+        if (softFailOriginal !== null && countPopulatedBodies(retryReview) <= countPopulatedBodies(softFailOriginal)) {
+            return anthropic_messages_softFailSuccess(softFailOriginal, rawText, requestId);
+        }
         return { ok: true, endpoint: ENDPOINT, review: retryReview, requestId };
+    }
+    // Soft-fail: the original parsed review is the safety net. A retry
+    // that throws, HTTP-fails, or stays unparseable resolves here — the
+    // original verdict/summary stand and the caller sees a success, NOT
+    // a parse-fail error.
+    if (softFailOriginal !== null) {
+        return anthropic_messages_softFailSuccess(softFailOriginal, rawText, requestId);
     }
     // Distinguish "truncated stream" from "completed but malformed" by
     // checking the ORIGINAL response's stop_reason. When the first
@@ -16118,6 +16354,32 @@ async function runOnce(config, fetchImpl, requestId, url) {
             ...(usage !== undefined ? { usage } : {}),
         }),
     };
+}
+/**
+ * Build the soft-fail resolution: the original (hollow-bodies) review
+ * with the original response's usage block. The soft-fail contract
+ * mandates this shape on EVERY failed retry branch — throw, HTTP
+ * failure, unparseable payload, or no-better payload.
+ */
+function anthropic_messages_softFailSuccess(review, rawText, requestId) {
+    let successUsage;
+    try {
+        const parsedRaw = JSON.parse(rawText);
+        successUsage = readUsage(parsedRaw);
+    }
+    catch {
+        // rawText wasn't JSON; no usage to surface.
+    }
+    return {
+        ok: true,
+        endpoint: ENDPOINT,
+        review,
+        requestId,
+        ...(successUsage !== undefined ? { usage: successUsage } : {}),
+    };
+}
+function anthropic_messages_writeDebugRaw(message) {
+    process.stderr.write(message);
 }
 /**
  * Build the headers for an Anthropic Messages request. Exported so the
@@ -18463,6 +18725,32 @@ function extractFirstSentence(body) {
 function isStructurallyEmptyReview(review) {
     return review.comments.length === 0 && review.suppressedComments.length === 0;
 }
+/**
+ * Move every trim-empty entry from `review.comments` into
+ * `review.suppressedComments`. Appends the moved entries (no-op
+ * when none). Exported so unit tests can exercise the partition
+ * shape independently of the live pipeline.
+ */
+function partitionEmptyBodyComments(review) {
+    const kept = [];
+    const moved = [];
+    for (const comment of review.comments) {
+        if (comment.body.trim().length === 0) {
+            moved.push(comment);
+        }
+        else {
+            kept.push(comment);
+        }
+    }
+    if (moved.length === 0) {
+        return review;
+    }
+    return {
+        ...review,
+        comments: kept,
+        suppressedComments: [...review.suppressedComments, ...moved],
+    };
+}
 class LiveReviewError extends Error {
     code;
     name = "LiveReviewError";
@@ -18914,6 +19202,12 @@ function countSuppressedComments(review, diffText) {
  */
 function preparePostedReview(input) {
     const suggestionMode = input.suggestionMode ?? "off";
+    // Re-partition empty-body entries so the suppression contract
+    // holds for direct LiveReview callers (the production pipeline
+    // already partitions in `normalizeProviderReview`, so this is a
+    // no-op there but a contract-required defense for tests / fixture
+    // builders).
+    const partitionedReview = partitionEmptyBodyComments(input.review);
     // Parse the diff ONCE and pass the index to all three selectors.
     // Each of the public selectors (`selectPostableComments`,
     // `selectOffDiffComments`, `countSuppressedComments`) was
@@ -18922,7 +19216,7 @@ function preparePostedReview(input) {
     // index so the parse runs exactly once.
     const positions = parse_positions_parseDiffPositions(input.diffText);
     const postableComments = selectPostableCommentsWithPositions({
-        review: input.review,
+        review: partitionedReview,
         positions,
         parsed: input.parsed,
         secrets: input.secrets,
@@ -18949,8 +19243,8 @@ function preparePostedReview(input) {
     // re-parses the diff and re-runs the filter. `preparePostedReview`
     // already has `positions` and the off-diff array, so it computes
     // the count inline rather than calling the helper.
-    const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
-    const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
+    const offDiffFromComments = selectOffDiffCommentsWithPositions(partitionedReview, positions);
+    const suppressedCommentCount = partitionedReview.suppressedComments.length + offDiffFromComments.length;
     const severityCounts = countBySeverity(validatedCommentsResult.comments);
     // Reconcile the model's raw verdict against the postable severity
     // counts. The body would render a `⛔ NEEDS_FIX` headline against a
@@ -19262,6 +19556,29 @@ function collectParseWarnings(input) {
         list.forEach((comment, index) => {
             const path = comment.path;
             const line = comment.line;
+            // empty-body check (must precede the diff-anchor check so a
+            // finding whose body the model failed to populate still surfaces
+            // in the artifact even when its (path, line) anchor is valid).
+            // Records the body-replacement failure rather than a citation
+            // failure so the operator can distinguish "model wrote nothing
+            // here" from "model cited a fake path".
+            //
+            // Source-gated to `comments`: the partition layer in
+            // `normalizeProviderReview` moves every trim-empty entry into
+            // `suppressedComments` and emits the warning explicitly with
+            // `source: "comments"`. Re-emitting here would double-count.
+            if (source === "comments" && comment.body.trim().length === 0) {
+                warnings.push({
+                    reason: "empty-body",
+                    source,
+                    index,
+                    modelPath: path,
+                    modelLine: line,
+                    modelSeverity: comment.severity,
+                    bodyExcerpt: "",
+                });
+                return;
+            }
             // Defensive: a model might emit a non-integer line OR an
             // empty path. Treat both as off-diff (the most actionable
             // signal: the model fabricated the position) so the
@@ -19303,10 +19620,29 @@ function collectParseWarnings(input) {
  * regressions without parsing the full array.
  */
 function buildParseWarningsArtifact(input) {
-    const warnings = collectParseWarnings(input);
+    const diffWarnings = collectParseWarnings(input);
+    const aliasWarnings = (input.bodyAliasObservations ?? []).map((obs) => {
+        const source = obs.commentIndex < input.review.comments.length
+            ? "comments"
+            : "suppressed_comments";
+        return {
+            reason: "body-alias",
+            source,
+            index: obs.commentIndex,
+            modelPath: "",
+            modelLine: 0,
+            modelSeverity: "",
+            bodyExcerpt: "",
+            field: obs.field,
+            commentIndex: obs.commentIndex,
+        };
+    });
+    const warnings = [...diffWarnings, ...aliasWarnings];
     const byReason = {
         "path-not-in-diff": 0,
         "line-not-in-diff": 0,
+        "empty-body": 0,
+        "body-alias": 0,
     };
     const bySource = {
         comments: 0,
@@ -21972,6 +22308,25 @@ async function requestLiveReview(input) {
         });
     };
     setActiveSeveritySink(sink);
+    // Install an ambient body-alias observation sink alongside the
+    // severity sink. Mirrors the install/clear pair: anything
+    // `readCommentArray` emits (a synonym-keyed populated body) lands
+    // in `bodyAliasObservations`, which `withParseWarnings` converts
+    // into `body-alias` ParseWarning entries for the artifact.
+    //
+    // Note on source attribution: `parseReviewPayload` parses
+    // `comments[]` first then `suppressed_comments[]`, so the
+    // observation's `commentIndex` is index-into-whichever-array, and
+    // we attribute source by range — observations with commentIndex
+    // < review.comments.length come from `comments`, the remainder
+    // from `suppressed_comments`. Robust for the common single-parse
+    // case; the parse-fail retry path is rare enough to ignore for
+    // T13's source attribution.
+    const bodyAliasObservations = [];
+    const observationSink = (observation) => {
+        bodyAliasObservations.push(observation);
+    };
+    setActiveParseObservationSink(observationSink);
     // Layer 2-C: when the CLI flag enables it, send the strict JSON-schema
     // response_format on the wire. Defaults to true so the model is
     // constrained at decode time; the in-context system prompt carries
@@ -21997,7 +22352,7 @@ async function requestLiveReview(input) {
      * regardless of provider.
      */
     function handleSuccess(result, providerName) {
-        const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+        const { review: preVerifyReview, emptyBodyDropped } = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
         const verifyFilterResult = input.parsed.verifyFindings !== false
             ? applyVerifyFilter(preVerifyReview, input.diffText)
             : {
@@ -22019,14 +22374,27 @@ async function requestLiveReview(input) {
             provider: providerName,
             modelId,
             severityWarnings: severityWarnings.slice(),
+            bodyAliasObservations: bodyAliasObservations.slice(),
             diffText: input.diffText,
             verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
             confidenceFilter: verifyFilterResult.confidenceFilter,
+            emptyBodyDropped,
         });
+        const emptyBodyDroppedCount = emptyBodyDropped.length;
+        // `::notice::` disclosure when the provider emitted any
+        // empty-body findings; mirrors src/cli/simulate-findings.ts:27-29.
+        // Sanitized so secret-bearing model output can't slip into the
+        // GitHub Actions notice metadata.
+        if (emptyBodyDroppedCount > 0) {
+            const message = `${brand/* BRAND_PREFIX */.rc}${emptyBodyDroppedCount} finding(s) had no body from the provider and were suppressed (see parse-warnings artifact); re-run or switch model if this persists.`;
+            const sanitized = sanitizeForPost(message, [providerApiKey, input.platformToken]);
+            process.stderr.write(`::notice::${sanitized}\n`);
+        }
         return {
             ...preVerifyOutcome,
             review: verifyFilterResult.review,
             ...(result.usage !== undefined ? { usage: result.usage } : {}),
+            ...(emptyBodyDroppedCount > 0 ? { emptyBodyDroppedCount } : {}),
         };
     }
     /**
@@ -22050,6 +22418,7 @@ async function requestLiveReview(input) {
             provider: providerName,
             modelId,
             severityWarnings: severityWarnings.slice(),
+            bodyAliasObservations: bodyAliasObservations.slice(),
             diffText: input.diffText,
         });
     }
@@ -22208,6 +22577,9 @@ async function requestLiveReview(input) {
         // Always clear the sink so a subsequent, unrelated request does not
         // inherit this request's warnings array.
         setActiveSeveritySink(null);
+        // Pair clear for the observation sink — concurrent reads in tests
+        // fail loudly if the slot is left non-null across requests.
+        setActiveParseObservationSink(null);
     }
 }
 /**
@@ -22217,16 +22589,37 @@ async function requestLiveReview(input) {
  * parse-warnings.json artifact instead of silently suppressing it.
  */
 function withParseWarnings(input) {
+    const emptyBodyDropped = input.emptyBodyDropped ?? [];
+    const emptyBodyWarnings = emptyBodyDropped.map((d) => ({
+        reason: "empty-body",
+        source: "comments",
+        index: d.index,
+        modelPath: d.comment.path,
+        modelLine: d.comment.line,
+        modelSeverity: d.comment.severity,
+        bodyExcerpt: "",
+    }));
+    // An empty-body comment that is also off-diff appears in BOTH the
+    // explicit "empty-body" warnings above AND the
+    // "line-not-in-diff" / "path-not-in-diff" warnings from
+    // `collectParseWarnings` (after the partition, the moved entry sits
+    // in `review.suppressedComments` and re-enters the off-diff scan).
+    // This double-count is intentional — the two reasons are
+    // independently actionable and operators triage them separately.
     return {
         review: input.review,
         endpoint: input.endpoint,
         provider: input.provider,
         modelId: input.modelId,
         severityWarnings: input.severityWarnings,
-        parseWarnings: buildParseWarningsArtifact({
-            review: input.review,
-            diffText: input.diffText,
-        }).warnings,
+        parseWarnings: [
+            ...emptyBodyWarnings,
+            ...buildParseWarningsArtifact({
+                review: input.review,
+                diffText: input.diffText,
+                bodyAliasObservations: input.bodyAliasObservations,
+            }).warnings,
+        ],
         verifiedFactsFilter: input.verifiedFactsFilter ?? {
             kept: input.review.comments,
             downgraded: [],
@@ -22318,11 +22711,32 @@ function normalizeProviderReview(payload, secrets) {
     // inline filter drops. Don't re-add the filter here — see
     // the three-step flow in the Copilot/openai-compatible
     // branches.
+    //
+    // Identity enrichment runs before the empty-body partition so the
+    // moved entries retain durableIdentity for fingerprinting / dedup.
+    const sanitizedComments = payload.comments.map((comment) => normalizeProviderComment(comment, secrets));
+    const sanitizedSuppressed = payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets));
+    const keptComments = [];
+    const emptyBodyDropped = [];
+    for (let i = 0; i < sanitizedComments.length; i += 1) {
+        const entry = sanitizedComments[i];
+        if (entry === undefined)
+            continue;
+        if (entry.body.trim().length === 0) {
+            emptyBodyDropped.push({ index: i, comment: entry });
+        }
+        else {
+            keptComments.push(entry);
+        }
+    }
     return {
-        summary: sanitizeForPost(payload.summary, secrets),
-        verdict: payload.verdict,
-        comments: payload.comments.map((comment) => normalizeProviderComment(comment, secrets)),
-        suppressedComments: payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets)),
+        review: {
+            summary: sanitizeForPost(payload.summary, secrets),
+            verdict: payload.verdict,
+            comments: keptComments,
+            suppressedComments: [...sanitizedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
+        },
+        emptyBodyDropped,
     };
 }
 function normalizeProviderComment(comment, secrets) {
@@ -27672,6 +28086,7 @@ const REASON_KIND_VALUES = [
     "carried-over",
     "unchanged",
     "manual-full",
+    "empty-body",
 ];
 const ALL_REASON_KINDS = (/* unused pure expression or super */ null && (REASON_KIND_VALUES));
 /** Return a fresh histogram object with every reason set to zero. */
@@ -27688,6 +28103,7 @@ function emptyReasonHistogram() {
         "carried-over": 0,
         "unchanged": 0,
         "manual-full": 0,
+        "empty-body": 0,
     };
     return h;
 }
@@ -27819,6 +28235,7 @@ function buildReviewMetrics(opts = {}) {
                 "carried-over": state.reasons["carried-over"],
                 "unchanged": state.reasons["unchanged"],
                 "manual-full": state.reasons["manual-full"],
+                "empty-body": state.reasons["empty-body"],
             };
             next[kind] = current + by;
             state.reasons = next;
@@ -28579,6 +28996,9 @@ function attachConsideredCountsToMetrics(metrics, outcome) {
     if (offDiff > 0) {
         metrics.incrementReason("off-diff", offDiff);
     }
+    if ((outcome.emptyBodyDroppedCount ?? 0) > 0) {
+        metrics.incrementReason("empty-body", outcome.emptyBodyDroppedCount);
+    }
     if (outcome.review.parseFailed === true) {
         metrics.incrementReason("parse-failed", 1);
     }
@@ -29095,6 +29515,8 @@ async function writeParseWarningsArtifact(primaryArtifactPath, warnings) {
     const byReason = {
         "path-not-in-diff": 0,
         "line-not-in-diff": 0,
+        "empty-body": 0,
+        "body-alias": 0,
     };
     const bySource = {
         comments: 0,
