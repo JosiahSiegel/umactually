@@ -263,6 +263,7 @@ export async function requestLiveReview(input: {
       severityWarnings: severityWarnings.slice(),
       bodyAliasObservations: bodyAliasObservations.slice(),
       diffText: input.diffText,
+      originalCommentsLength: review.comments.length,
     });
   }
 
@@ -480,7 +481,7 @@ function withParseWarnings(input: {
   // each carrying the ORIGINAL index in the model's emitted comments
   // array so the parse-warnings artifact records `source: "comments"`.
   readonly emptyBodyDropped?: readonly { readonly index: number; readonly comment: LiveReviewComment }[];
-  readonly originalCommentsLength?: number;
+  readonly originalCommentsLength: number;
 }): LiveProviderOutcome {
   const emptyBodyDropped = input.emptyBodyDropped ?? [];
   const emptyBodyWarnings: import("./parse-warnings.js").ParseWarning[] = emptyBodyDropped.map((d) => ({
@@ -511,7 +512,7 @@ function withParseWarnings(input: {
         review: input.review,
         diffText: input.diffText,
         bodyAliasObservations: input.bodyAliasObservations,
-        ...(input.originalCommentsLength !== undefined ? { originalCommentsLength: input.originalCommentsLength } : {}),
+        originalCommentsLength: input.originalCommentsLength,
       }).warnings,
     ],
     verifiedFactsFilter: input.verifiedFactsFilter ?? {

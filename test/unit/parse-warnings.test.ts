@@ -189,6 +189,7 @@ describe("PR #56 regression: dist/cli.js + dist/index.js citations", () => {
     const artifact = buildParseWarningsArtifact({
       review: { comments: pr56FabricatedComments, suppressedComments: [] },
       diffText: pr56SourceDiff,
+      originalCommentsLength: pr56FabricatedComments.length,
     });
     expect(artifact.summary.totalComments).toBe(8);
     expect(artifact.summary.invalidCount).toBe(8);

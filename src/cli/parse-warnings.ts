@@ -150,7 +150,14 @@ export function buildParseWarningsArtifact(input: {
   };
   readonly diffText: string;
   readonly bodyAliasObservations?: readonly BodyAliasObservation[];
-  readonly originalCommentsLength?: number;
+  /**
+   * Length of the model's original `comments` array BEFORE the
+   * empty-body partition moved entries into `suppressedComments`.
+   * Required: the post-partition `review.comments.length` would
+   * misattribute observations whose original index falls in the
+   * partition range.
+   */
+  readonly originalCommentsLength: number;
 }): {
   readonly summary: {
     readonly totalComments: number;
@@ -162,10 +169,9 @@ export function buildParseWarningsArtifact(input: {
   readonly warnings: readonly ParseWarning[];
 } {
   const diffWarnings = collectParseWarnings(input);
-  const commentsLength = input.originalCommentsLength ?? input.review.comments.length;
   const aliasWarnings: ParseWarning[] = (input.bodyAliasObservations ?? []).map(
     (obs) => {
-      const source: ParseWarning["source"] = obs.commentIndex < commentsLength
+      const source: ParseWarning["source"] = obs.commentIndex < input.originalCommentsLength
         ? "comments"
         : "suppressed_comments";
       return {

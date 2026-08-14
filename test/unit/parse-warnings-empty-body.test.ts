@@ -207,6 +207,7 @@ describe("buildParseWarningsArtifact — byReason zero-init for the new reasons"
     const artifact = buildParseWarningsArtifact({
       review: { comments: [], suppressedComments: [] },
       diffText: FIXTURE_DIFF,
+      originalCommentsLength: 0,
     });
     expect(artifact.summary.byReason["empty-body"]).toBe(0);
   });
@@ -215,6 +216,7 @@ describe("buildParseWarningsArtifact — byReason zero-init for the new reasons"
     const artifact = buildParseWarningsArtifact({
       review: { comments: [], suppressedComments: [] },
       diffText: FIXTURE_DIFF,
+      originalCommentsLength: 0,
     });
     expect(artifact.summary.byReason["body-alias"]).toBe(0);
   });
@@ -223,6 +225,7 @@ describe("buildParseWarningsArtifact — byReason zero-init for the new reasons"
     const artifact = buildParseWarningsArtifact({
       review: { comments: [], suppressedComments: [] },
       diffText: FIXTURE_DIFF,
+      originalCommentsLength: 0,
     });
     expect(artifact.summary.byReason["path-not-in-diff"]).toBe(0);
     expect(artifact.summary.byReason["line-not-in-diff"]).toBe(0);
@@ -374,24 +377,6 @@ describe("body-alias source attribution — pre-partition threshold", () => {
     expect(aliasWarning?.index).toBe(2);
   });
 
-  it("falls back to review.comments.length when originalCommentsLength is absent", () => {
-    const artifact = buildParseWarningsArtifact({
-      review: {
-        comments: [
-          { path: "src/a.ts", line: 1, body: "ok", severity: "medium", category: "c" },
-        ],
-        suppressedComments: [],
-      },
-      diffText: FIXTURE_DIFF,
-      bodyAliasObservations: [
-        { kind: "body-alias", field: "description", commentIndex: 0 },
-      ],
-    });
-    const aliasWarning = artifact.warnings.find((w) => w.reason === "body-alias");
-    expect(aliasWarning).toBeDefined();
-    expect(aliasWarning?.source).toBe("comments");
-  });
-
   it("attributes observations beyond the original range to 'suppressed_comments'", () => {
     const artifact = buildParseWarningsArtifact({
       review: {
@@ -438,6 +423,7 @@ describe("empty-body + off-diff double-count (F4)", () => {
         suppressedComments: [],
       },
       diffText: FIXTURE_DIFF,
+      originalCommentsLength: 1,
     });
     const reasons = artifact.warnings.map((w) => w.reason);
     expect(reasons).toContain("empty-body");
@@ -466,6 +452,7 @@ describe("empty-body + off-diff double-count (F4)", () => {
         suppressedComments: [],
       },
       diffText: FIXTURE_DIFF,
+      originalCommentsLength: 1,
     });
     const reasons = artifact.warnings.map((w) => w.reason);
     expect(reasons).toContain("empty-body");
@@ -487,6 +474,7 @@ describe("empty-body + off-diff double-count (F4)", () => {
         suppressedComments: [],
       },
       diffText: FIXTURE_DIFF,
+      originalCommentsLength: 1,
     });
     const reasons = artifact.warnings.map((w) => w.reason);
     expect(reasons).toContain("empty-body");
