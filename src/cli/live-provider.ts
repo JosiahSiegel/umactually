@@ -643,12 +643,23 @@ function normalizeProviderReview(
       keptComments.push(entry);
     }
   }
+  // Defense-in-depth: if the model emits the same empty-body finding in both
+  // `comments` and `suppressed_comments`, count it exactly once. (path, line,
+  // body) uniquely identifies the finding — body is included so a model that
+  // emits a populated body in suppressed_comments at the same path/line still
+  // surfaces it.
+  const droppedKeys = new Set(
+    emptyBodyDropped.map((d) => `${d.comment.path}:${d.comment.line}:${d.comment.body}`),
+  );
+  const dedupedSuppressed = sanitizedSuppressed.filter(
+    (s) => !droppedKeys.has(`${s.path}:${s.line}:${s.body}`),
+  );
   return {
     review: {
       summary: sanitizeForPost(payload.summary, secrets),
       verdict: payload.verdict,
       comments: keptComments,
-      suppressedComments: [...sanitizedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
+      suppressedComments: [...dedupedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
     },
     emptyBodyDropped,
     originalCommentsLength: sanitizedComments.length,

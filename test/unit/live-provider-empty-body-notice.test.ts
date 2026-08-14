@@ -433,4 +433,70 @@ describe("empty-body suppression — suppressed comments placement", () => {
     // And: the count reflects only the empty-body drops.
     expect(outcome.emptyBodyDroppedCount).toBe(1);
   }, 30000);
+
+  it("same empty-body finding in both comments and suppressed_comments → counted exactly once", async () => {
+    // Given: the model emits the same empty-body finding (same path/line) in
+    // BOTH comments[0] and suppressed_comments[0].
+    const payload = {
+      summary: "Review complete.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        makeComment({ path: "src/auth.ts", line: 1, body: "" }),
+        makeComment({ line: 2, body: "Real finding." }),
+      ],
+      suppressed_comments: [
+        makeComment({ path: "src/auth.ts", line: 1, body: "" }),
+      ],
+    };
+    const stub = makeFetchStub([inferenceResponse(payload)]);
+
+    // When: the live review runs.
+    const outcome = await run(stub.fetchImpl);
+
+    // Then: the partition moves it ONCE — emptyBodyDroppedCount === 1.
+    expect(outcome.emptyBodyDroppedCount).toBe(1);
+    expect(emptyBodyNotices()).toHaveLength(1);
+    expect(emptyBodyNotices()[0]).toContain("1 finding(s)");
+
+    // And: suppressedComments has exactly 1 entry for that finding (not 2).
+    expect(outcome.review.suppressedComments).toHaveLength(1);
+    expect(outcome.review.suppressedComments[0]?.path).toBe("src/auth.ts");
+    expect(outcome.review.suppressedComments[0]?.line).toBe(1);
+
+    // And: the populated comment is kept.
+    expect(outcome.review.comments).toHaveLength(1);
+    expect(outcome.review.comments[0]?.body).toBe("Real finding.");
+  }, 30000);
+
+  it("empty-body in comments with populated suppressed_comments at same path/line → no dedup, both surface", async () => {
+    // Given: comments[0] has an empty body and suppressed_comments[0] has a
+    // POPULATED body at the same path/line (different content).
+    const payload = {
+      summary: "Review complete.",
+      verdict: "NEEDS_FIX",
+      comments: [
+        makeComment({ path: "src/auth.ts", line: 5, body: "" }),
+      ],
+      suppressed_comments: [
+        makeComment({ path: "src/auth.ts", line: 5, body: "Suppressed for a stated reason." }),
+      ],
+    };
+    const stub = makeFetchStub([inferenceResponse(payload)]);
+
+    // When: the live review runs.
+    const outcome = await run(stub.fetchImpl);
+
+    // Then: the empty-body comment is partitioned (count === 1)…
+    expect(outcome.emptyBodyDroppedCount).toBe(1);
+
+    // And: no dedup — the model-suppressed entry still surfaces, so
+    // suppressedComments has 2 entries (model-suppressed first, then the drop).
+    expect(outcome.review.suppressedComments).toHaveLength(2);
+    expect(outcome.review.suppressedComments[0]?.body).toBe("Suppressed for a stated reason.");
+    expect(outcome.review.suppressedComments[1]?.body).toBe("");
+    expect(outcome.review.suppressedComments[1]?.line).toBe(5);
+
+    // And: no comments survive the partition.
+    expect(outcome.review.comments).toHaveLength(0);
+  }, 30000);
 });
