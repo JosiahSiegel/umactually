@@ -16,6 +16,8 @@ ship a tag).
 
 ### Fixed
 
+- **Companion action repo + docs/onboarding cross-sync.** The companion `JosiahSiegel/umactually-action@1.0.1` README now leads with the SHA-pin recommendation + Dependabot auto-update path; the `api-url` / `api-key` input descriptions in `action.yml` had a missing `${{ }}` typo that would have confused operators and is now fixed. The CLI repo's `docs/onboarding/github-marketplace.md` (the literal Marketplace listing copy) and `docs/install-action.md` are synced to match.
+
 ### Removed
 
 ### Security

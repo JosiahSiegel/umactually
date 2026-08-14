@@ -7,12 +7,14 @@ This document is the canonical reference for the action. The README's [Quickstar
 ## One-line install
 
 ```yaml
-- uses: JosiahSiegel/umactually-action@v1
+- uses: JosiahSiegel/umactually-action@043d6070a43a5f61aa6ede9efe60d0f47b76fc58  # v1
   with:
     provider: openai-compatible
     api-url: ${{ secrets.UMACTUALLY_API_URL }}
     api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
+
+Pin `uses:` to a full commit SHA for supply-chain integrity. Floating `@v1` accepts any future tag the action repo publishes; a compromised repo would run arbitrary code in your workflow with `pull-requests: write`. Enable Dependabot's `github-actions` ecosystem on the workflow file to auto-bump the SHA on new releases. Confirm the current tag deref with `git ls-remote https://github.com/JosiahSiegel/umactually-action.git refs/tags/v1^{}`.
 
 Forward repository secrets through `with:` inputs (e.g. `with: api-url: ${{ secrets.UMACTUALLY_API_URL }}`). The companion action's internal steps read `inputs.api-url` and `inputs.api-key`; direct `secrets.` expressions in its composite-step metadata are rejected by the runtime loader. This supersedes the earlier `secrets:`-block forwarding contract per `JosiahSiegel/umactually-action@4d5a5f4` (see [CHANGELOG.md](../CHANGELOG.md) for the version history).
 
@@ -27,10 +29,10 @@ The full input matrix from the published [`JosiahSiegel/umactually-action`](http
 | `api-key` | no | `""` | Provider API key. Default empty — forward via `with: api-key: ${{ secrets.UMACTUALLY_API_KEY }}`. |
 | `provider` | no | `openai-compatible` | Provider family: `openai-compatible`, `anthropic`, or `copilot`. |
 | `model` | no | `""` | Provider-specific model identifier (optional). |
-| `config-path` | no | `./umactually.review.json` | Path to the committed `umactually.review.json` policy file (schemaVersion 1). |
+| `config-path` | no | `./umactually.review.json` | Declared for wizard back-compat; **not forwarded to the CLI** as of action v1.0.1 — the CLI auto-discovers `umactually.review.json` from cwd. |
 | `output-artifact` | no | `umactually-review.json` | Path the CLI writes the review artifact to. |
-| `skip-draft` | no | `'true'` | When `'true'`, the CLI skips re-reviewing files whose inline threads haven't changed. |
-| `paths-ignore` | no | `'**/*.md,docs/**,**/*.lock'` | Comma-separated gitignore-style globs the CLI excludes from review. |
+| `skip-draft` | no | `'true'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action v1.0.1 — incremental review is per-PR via GitHub thread queries. |
+| `paths-ignore` | no | `'**/*.md,docs/**,**/*.lock'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action v1.0.1 — the `--files` flag and the diff's own ignore list handle path filtering. |
 
 ## Outputs
 
@@ -52,12 +54,13 @@ The action reads `inputs.api-url` and `inputs.api-key` only. Pass repository sec
 
 ## CLI-flag passthrough
 
-The action forwards these action inputs as CLI flags on the `umactually review` invocation, so the wizard's saved config does not override the operator's per-run choice:
+As of action v1.0.1 (`JosiahSiegel/umactually-action@317613a`), the action forwards only these action inputs as CLI flags on the `umactually review` invocation:
 
 - `--provider` ← `${{ inputs.provider }}` (always forwarded; default `openai-compatible`)
-- `--skip-draft` ← `${{ inputs.skip-draft }}` (always forwarded; default `'true'`)
-- `--paths-ignore` ← `${{ inputs.paths-ignore }}` (always forwarded; default excludes Markdown docs and lock files)
 - `--model` ← `${{ inputs.model }}` (forwarded ONLY when non-empty; the action's default `""` would override the wizard's saved config if always forwarded)
+- `--output-artifact` ← `${{ inputs.output-artifact }}` (default `umactually-review.json`)
+
+The `config-path`, `skip-draft`, and `paths-ignore` inputs remain declared for backward compatibility with the wizard template and pre-v0.9.3 examples, but are no longer forwarded: the CLI auto-discovers `umactually.review.json` from cwd, incremental review is per-PR via GitHub thread queries, and the `--files` flag plus the diff's own ignore list handle path filtering. Passing them is dead config.
 
 ## GitHub Enterprise Server (GHES)
 
@@ -84,6 +87,8 @@ Branch-protection rules branch on the action's three outputs:
 The action exits with code 0 when `verdict === success`, code 3 when the first-run secret bootstrap fired (typed-error code `UMACTUALLY_ERR_SECRET_BOOTSTRAP`), and the CLI's own exit code (1, 2, 4, or 127) when the review itself failed. See [`docs/exit-codes.md`](exit-codes.md) for the full contract.
 
 ## Versioning / auto-update
+
+The action ref itself should be SHA-pinned (`uses: JosiahSiegel/umactually-action@<full-sha>  # v1`) — see the install snippet above. Dependabot's `github-actions` ecosystem auto-updates both the `uses:` SHA and the `with:` block whenever a new release ships.
 
 The action tracks the latest CLI release by default. The `cli-version` input's default value `__UMACTUALLY_VERSION__` is the substitution point the `umactually init` wizard rewrites on emit; running the action with the wizard's output pins the CLI to the release the wizard was built against (the CLI release used to generate the workflow).
 
