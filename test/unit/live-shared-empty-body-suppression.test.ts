@@ -132,8 +132,8 @@ describe("normalizeProviderReview — empty-body suppression", () => {
     const empty2 = makeComment({ line: 2, body: "", severity: "medium" });
     const populated = makeComment({ line: 3, body: "Use parameterized queries.", severity: "high" });
     const review = makeReview({
-      comments: [empty1, empty2, populated],
-      suppressedComments: [],
+      comments: [populated],
+      suppressedComments: [empty1, empty2],
     });
 
     // When: the shared posted-review recipe runs the post-normalization pipeline.
@@ -153,7 +153,7 @@ describe("normalizeProviderReview — empty-body suppression", () => {
   it("preserves body / path / durableIdentity on suppressed entries for fingerprinting", () => {
     // Given: a single empty-body provider comment with a known path/line.
     const empty = makeComment({ path: "src/auth.ts", line: 2, body: "", severity: "high" });
-    const review = makeReview({ comments: [empty], suppressedComments: [] });
+    const review = makeReview({ comments: [], suppressedComments: [empty] });
 
     // When: the pipeline runs.
     const prepared = prepareReview({ review });
@@ -185,7 +185,7 @@ describe("verdict escalation — NEEDS_FIX with all-empty findings", () => {
     const empty1 = makeComment({ line: 1, body: "", severity: "high" });
     const empty2 = makeComment({ line: 2, body: "", severity: "high" });
     const empty3 = makeComment({ line: 3, body: "", severity: "medium" });
-    const review = makeReview({ verdict: "NEEDS_FIX", comments: [empty1, empty2, empty3] });
+    const review = makeReview({ verdict: "NEEDS_FIX", comments: [], suppressedComments: [empty1, empty2, empty3] });
 
     // When: the shared recipe prepares the review.
     const prepared = prepareReview({ review });
@@ -204,7 +204,7 @@ describe("verdict escalation — NEEDS_FIX with all-empty findings", () => {
     const empty1 = makeComment({ line: 1, body: "", severity: "high" });
     const empty2 = makeComment({ line: 2, body: "", severity: "high" });
     const empty3 = makeComment({ line: 3, body: "", severity: "medium" });
-    const review = makeReview({ verdict: "NEEDS_FIX", comments: [empty1, empty2, empty3] });
+    const review = makeReview({ verdict: "NEEDS_FIX", comments: [], suppressedComments: [empty1, empty2, empty3] });
 
     // When: the shared recipe builds the review body.
     const prepared = prepareReview({ review });
@@ -255,8 +255,8 @@ describe("verdict escalation — raw COMMENT + all-empty findings", () => {
     const empty3 = makeComment({ line: 3, body: "", severity: "low" });
     const review = makeReview({
       verdict: "COMMENT",
-      comments: [empty1, empty2, empty3],
-      suppressedComments: [],
+      comments: [],
+      suppressedComments: [empty1, empty2, empty3],
     });
 
     // When: the shared recipe builds the review body.
@@ -296,7 +296,7 @@ describe("posted-output invariant — suppressed findings never surface the plac
     // because no populated comment reaches the renderer.
     const empty1 = makeComment({ line: 1, body: "", severity: "high" });
     const empty2 = makeComment({ line: 2, body: "", severity: "high" });
-    const review = makeReview({ verdict: "NEEDS_FIX", comments: [empty1, empty2] });
+    const review = makeReview({ verdict: "NEEDS_FIX", comments: [], suppressedComments: [empty1, empty2] });
 
     // When: the shared recipe builds the review body.
     const body = prepareReview({ review }).body;
@@ -309,7 +309,7 @@ describe("posted-output invariant — suppressed findings never surface the plac
     // Given: a NEEDS_FIX review whose ONLY findings are empty-body.
     const empty1 = makeComment({ line: 1, body: "", severity: "high" });
     const empty2 = makeComment({ line: 2, body: "", severity: "high" });
-    const review = makeReview({ verdict: "NEEDS_FIX", comments: [empty1, empty2] });
+    const review = makeReview({ verdict: "NEEDS_FIX", comments: [], suppressedComments: [empty1, empty2] });
 
     // When: the shared recipe builds the review body.
     const body = prepareReview({ review }).body;
@@ -370,7 +370,7 @@ describe("whitespace-only body counts as empty", () => {
     // Given: a populated comment + a whitespace-only body comment.
     const whitespace = makeComment({ line: 1, body: "   ", severity: "high" });
     const populated = makeComment({ line: 2, body: "Real finding here.", severity: "high" });
-    const review = makeReview({ comments: [whitespace, populated], suppressedComments: [] });
+    const review = makeReview({ comments: [populated], suppressedComments: [whitespace] });
 
     // When: the shared recipe prepares the review.
     const prepared = prepareReview({ review });
@@ -400,8 +400,8 @@ describe("partially-empty review — populated findings post, empty findings sup
     const populated2 = makeComment({ line: 3, body: "Validate JWT signature.", severity: "critical" });
     const review = makeReview({
       verdict: "NEEDS_FIX",
-      comments: [empty, populated1, populated2],
-      suppressedComments: [],
+      comments: [populated1, populated2],
+      suppressedComments: [empty],
     });
 
     // When: the shared recipe prepares the review.
@@ -428,8 +428,8 @@ describe("partially-empty review — populated findings post, empty findings sup
     const populated2 = makeComment({ line: 3, body: "Validate JWT signature.", severity: "critical" });
     const review = makeReview({
       verdict: "NEEDS_FIX",
-      comments: [empty, populated1, populated2],
-      suppressedComments: [],
+      comments: [populated1, populated2],
+      suppressedComments: [empty],
     });
 
     // When: the shared recipe builds the review body.

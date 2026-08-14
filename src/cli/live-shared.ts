@@ -171,32 +171,6 @@ export function isStructurallyEmptyReview(review: LiveReview): boolean {
   return review.comments.length === 0 && review.suppressedComments.length === 0;
 }
 
-/**
- * Move every trim-empty entry from `review.comments` into
- * `review.suppressedComments`. Appends the moved entries (no-op
- * when none). Exported so unit tests can exercise the partition
- * shape independently of the live pipeline.
- */
-export function partitionEmptyBodyComments(review: LiveReview): LiveReview {
-  const kept: LiveReviewComment[] = [];
-  const moved: LiveReviewComment[] = [];
-  for (const comment of review.comments) {
-    if (comment.body.trim().length === 0) {
-      moved.push(comment);
-    } else {
-      kept.push(comment);
-    }
-  }
-  if (moved.length === 0) {
-    return review;
-  }
-  return {
-    ...review,
-    comments: kept,
-    suppressedComments: [...review.suppressedComments, ...moved],
-  };
-}
-
 export type LiveProviderOutcome = {
   readonly review: LiveReview;
   readonly endpoint: string;
@@ -955,12 +929,6 @@ export function preparePostedReview(input: {
   readonly suggestionMode?: "off" | "validated";
 }): PreparedPostedReview {
   const suggestionMode = input.suggestionMode ?? "off";
-  // Re-partition empty-body entries so the suppression contract
-  // holds for direct LiveReview callers (the production pipeline
-  // already partitions in `normalizeProviderReview`, so this is a
-  // no-op there but a contract-required defense for tests / fixture
-  // builders).
-  const partitionedReview = partitionEmptyBodyComments(input.review);
   // Parse the diff ONCE and pass the index to all three selectors.
   // Each of the public selectors (`selectPostableComments`,
   // `selectOffDiffComments`, `countSuppressedComments`) was
@@ -969,7 +937,7 @@ export function preparePostedReview(input: {
   // index so the parse runs exactly once.
   const positions = parseDiffPositions(input.diffText);
   const postableComments = selectPostableCommentsWithPositions({
-    review: partitionedReview,
+    review: input.review,
     positions,
     parsed: input.parsed,
     secrets: input.secrets,
@@ -996,8 +964,8 @@ export function preparePostedReview(input: {
   // re-parses the diff and re-runs the filter. `preparePostedReview`
   // already has `positions` and the off-diff array, so it computes
   // the count inline rather than calling the helper.
-  const offDiffFromComments = selectOffDiffCommentsWithPositions(partitionedReview, positions);
-  const suppressedCommentCount = partitionedReview.suppressedComments.length + offDiffFromComments.length;
+  const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
+  const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
   const severityCounts = countBySeverity(validatedCommentsResult.comments);
   // Reconcile the model's raw verdict against the postable severity
   // counts. The body would render a `⛔ NEEDS_FIX` headline against a
