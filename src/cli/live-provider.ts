@@ -180,7 +180,7 @@ export async function requestLiveReview(input: {
     result: { readonly ok: true; readonly endpoint: string; readonly review: ProviderReviewPayload; readonly usage?: import("../provider/provider-error.js").ProviderUsage },
     providerName: string,
   ): LiveProviderOutcome {
-    const { review: preVerifyReview, emptyBodyDropped } = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+    const { review: preVerifyReview, emptyBodyDropped, originalCommentsLength } = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
     const verifyFilterResult = input.parsed.verifyFindings !== false
       ? applyVerifyFilter(preVerifyReview, input.diffText)
       : {
@@ -207,6 +207,7 @@ export async function requestLiveReview(input: {
       verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
       confidenceFilter: verifyFilterResult.confidenceFilter,
       emptyBodyDropped,
+      originalCommentsLength,
     });
     const emptyBodyDroppedCount = emptyBodyDropped.length;
     // `::notice::` disclosure when the provider emitted any
@@ -479,6 +480,7 @@ function withParseWarnings(input: {
   // each carrying the ORIGINAL index in the model's emitted comments
   // array so the parse-warnings artifact records `source: "comments"`.
   readonly emptyBodyDropped?: readonly { readonly index: number; readonly comment: LiveReviewComment }[];
+  readonly originalCommentsLength?: number;
 }): LiveProviderOutcome {
   const emptyBodyDropped = input.emptyBodyDropped ?? [];
   const emptyBodyWarnings: import("./parse-warnings.js").ParseWarning[] = emptyBodyDropped.map((d) => ({
@@ -509,6 +511,7 @@ function withParseWarnings(input: {
         review: input.review,
         diffText: input.diffText,
         bodyAliasObservations: input.bodyAliasObservations,
+        ...(input.originalCommentsLength !== undefined ? { originalCommentsLength: input.originalCommentsLength } : {}),
       }).warnings,
     ],
     verifiedFactsFilter: input.verifiedFactsFilter ?? {
@@ -610,6 +613,7 @@ function applyVerifyFilter(review: LiveReview, diffText: string): {
 type NormalizeResult = {
   readonly review: LiveReview;
   readonly emptyBodyDropped: readonly { readonly index: number; readonly comment: LiveReviewComment }[];
+  readonly originalCommentsLength: number;
 };
 
 function normalizeProviderReview(
@@ -647,6 +651,7 @@ function normalizeProviderReview(
       suppressedComments: [...sanitizedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
     },
     emptyBodyDropped,
+    originalCommentsLength: sanitizedComments.length,
   };
 }
 

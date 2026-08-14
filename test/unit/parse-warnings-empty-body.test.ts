@@ -340,3 +340,76 @@ describe("body-alias finding → parse-warnings entry", () => {
     expect(aliasEntry?.commentIndex).toBe(0);
   }, 30000);
 });
+
+// ---------------------------------------------------------------------------
+// Group 6 — body-alias source attribution uses pre-partition length
+// ---------------------------------------------------------------------------
+
+describe("body-alias source attribution — pre-partition threshold", () => {
+  // Simulates a review where normalizeProviderReview has partitioned
+  // comments: 3 original comments, 1 moved to suppressedComments.
+  // Post-partition: comments.length=2, suppressedComments.length=1.
+  // An alias observation with commentIndex=2 (the 3rd original comment)
+  // must be attributed to "comments", not "suppressed_comments".
+  it("attributes alias observations in the partition range to 'comments'", () => {
+    const artifact = buildParseWarningsArtifact({
+      review: {
+        comments: [
+          { path: "src/a.ts", line: 1, body: "ok", severity: "medium", category: "c" },
+          { path: "src/b.ts", line: 2, body: "ok", severity: "low", category: "c" },
+        ],
+        suppressedComments: [
+          { path: "src/c.ts", line: 3, body: "", severity: "low", category: "c" },
+        ],
+      },
+      diffText: FIXTURE_DIFF,
+      bodyAliasObservations: [
+        { kind: "body-alias", field: "description", commentIndex: 2 },
+      ],
+      originalCommentsLength: 3,
+    });
+    const aliasWarning = artifact.warnings.find((w) => w.reason === "body-alias");
+    expect(aliasWarning).toBeDefined();
+    expect(aliasWarning?.source).toBe("comments");
+    expect(aliasWarning?.index).toBe(2);
+  });
+
+  it("falls back to review.comments.length when originalCommentsLength is absent", () => {
+    const artifact = buildParseWarningsArtifact({
+      review: {
+        comments: [
+          { path: "src/a.ts", line: 1, body: "ok", severity: "medium", category: "c" },
+        ],
+        suppressedComments: [],
+      },
+      diffText: FIXTURE_DIFF,
+      bodyAliasObservations: [
+        { kind: "body-alias", field: "description", commentIndex: 0 },
+      ],
+    });
+    const aliasWarning = artifact.warnings.find((w) => w.reason === "body-alias");
+    expect(aliasWarning).toBeDefined();
+    expect(aliasWarning?.source).toBe("comments");
+  });
+
+  it("attributes observations beyond the original range to 'suppressed_comments'", () => {
+    const artifact = buildParseWarningsArtifact({
+      review: {
+        comments: [
+          { path: "src/a.ts", line: 1, body: "ok", severity: "medium", category: "c" },
+        ],
+        suppressedComments: [
+          { path: "src/b.ts", line: 2, body: "suppressed", severity: "low", category: "c" },
+        ],
+      },
+      diffText: FIXTURE_DIFF,
+      bodyAliasObservations: [
+        { kind: "body-alias", field: "description", commentIndex: 1 },
+      ],
+      originalCommentsLength: 1,
+    });
+    const aliasWarning = artifact.warnings.find((w) => w.reason === "body-alias");
+    expect(aliasWarning).toBeDefined();
+    expect(aliasWarning?.source).toBe("suppressed_comments");
+  });
+});

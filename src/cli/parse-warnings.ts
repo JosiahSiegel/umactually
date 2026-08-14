@@ -141,6 +141,7 @@ export function buildParseWarningsArtifact(input: {
   };
   readonly diffText: string;
   readonly bodyAliasObservations?: readonly BodyAliasObservation[];
+  readonly originalCommentsLength?: number;
 }): {
   readonly summary: {
     readonly totalComments: number;
@@ -152,9 +153,10 @@ export function buildParseWarningsArtifact(input: {
   readonly warnings: readonly ParseWarning[];
 } {
   const diffWarnings = collectParseWarnings(input);
+  const commentsLength = input.originalCommentsLength ?? input.review.comments.length;
   const aliasWarnings: ParseWarning[] = (input.bodyAliasObservations ?? []).map(
     (obs) => {
-      const source: ParseWarning["source"] = obs.commentIndex < input.review.comments.length
+      const source: ParseWarning["source"] = obs.commentIndex < commentsLength
         ? "comments"
         : "suppressed_comments";
       return {
