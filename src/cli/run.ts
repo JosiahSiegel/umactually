@@ -546,9 +546,11 @@ async function writeParseWarningsArtifact(
   // Build the summary from the warnings list using the same logic as
   // buildParseWarningsArtifact (we re-import rather than re-invoke the
   // function because we already have the warnings array).
-  const byReason: Record<"path-not-in-diff" | "line-not-in-diff", number> = {
+  const byReason: Record<"path-not-in-diff" | "line-not-in-diff" | "empty-body" | "body-alias", number> = {
     "path-not-in-diff": 0,
     "line-not-in-diff": 0,
+    "empty-body": 0,
+    "body-alias": 0,
   };
   const bySource: Record<"comments" | "suppressed_comments", number> = {
     comments: 0,

@@ -10,7 +10,9 @@ import {
   type AnthropicProviderCallResult,
 } from "../provider/anthropic-messages.js";
 import {
+  setActiveParseObservationSink,
   setActiveSeveritySink,
+  type BodyAliasObservation,
   type ResponseFormat,
   type SeverityWarning,
   type SeverityWarningSink,
@@ -130,6 +132,25 @@ export async function requestLiveReview(input: {
     });
   };
   setActiveSeveritySink(sink);
+  // Install an ambient body-alias observation sink alongside the
+  // severity sink. Mirrors the install/clear pair: anything
+  // `readCommentArray` emits (a synonym-keyed populated body) lands
+  // in `bodyAliasObservations`, which `withParseWarnings` converts
+  // into `body-alias` ParseWarning entries for the artifact.
+  //
+  // Note on source attribution: `parseReviewPayload` parses
+  // `comments[]` first then `suppressed_comments[]`, so the
+  // observation's `commentIndex` is index-into-whichever-array, and
+  // we attribute source by range — observations with commentIndex
+  // < review.comments.length come from `comments`, the remainder
+  // from `suppressed_comments`. Robust for the common single-parse
+  // case; the parse-fail retry path is rare enough to ignore for
+  // T13's source attribution.
+  const bodyAliasObservations: BodyAliasObservation[] = [];
+  const observationSink = (observation: BodyAliasObservation) => {
+    bodyAliasObservations.push(observation);
+  };
+  setActiveParseObservationSink(observationSink);
   // Layer 2-C: when the CLI flag enables it, send the strict JSON-schema
   // response_format on the wire. Defaults to true so the model is
   // constrained at decode time; the in-context system prompt carries
@@ -181,6 +202,7 @@ export async function requestLiveReview(input: {
       provider: providerName,
       modelId,
       severityWarnings: severityWarnings.slice(),
+      bodyAliasObservations: bodyAliasObservations.slice(),
       diffText: input.diffText,
       verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
       confidenceFilter: verifyFilterResult.confidenceFilter,
@@ -226,6 +248,7 @@ export async function requestLiveReview(input: {
       provider: providerName,
       modelId,
       severityWarnings: severityWarnings.slice(),
+      bodyAliasObservations: bodyAliasObservations.slice(),
       diffText: input.diffText,
     });
   }
@@ -418,6 +441,9 @@ export async function requestLiveReview(input: {
     // Always clear the sink so a subsequent, unrelated request does not
     // inherit this request's warnings array.
     setActiveSeveritySink(null);
+    // Pair clear for the observation sink — concurrent reads in tests
+    // fail loudly if the slot is left non-null across requests.
+    setActiveParseObservationSink(null);
   }
 }
 
@@ -433,6 +459,7 @@ function withParseWarnings(input: {
   readonly provider: string;
   readonly modelId: string;
   readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
+  readonly bodyAliasObservations: readonly import("../provider/provider-parse.js").BodyAliasObservation[];
   readonly diffText: string;
   readonly verifiedFactsFilter?: import("./verify-findings.js").VerifiedFactsFilterResult;
   readonly confidenceFilter?: import("../review/filter-confidence.js").ConfidenceFilterResult;
@@ -446,6 +473,7 @@ function withParseWarnings(input: {
     parseWarnings: buildParseWarningsArtifact({
       review: input.review,
       diffText: input.diffText,
+      bodyAliasObservations: input.bodyAliasObservations,
     }).warnings,
     verifiedFactsFilter: input.verifiedFactsFilter ?? {
       kept: input.review.comments,
