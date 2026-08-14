@@ -29,10 +29,10 @@ The full input matrix from the published [`JosiahSiegel/umactually-action`](http
 | `api-key` | no | `""` | Provider API key. Default empty — forward via `with: api-key: ${{ secrets.UMACTUALLY_API_KEY }}`. |
 | `provider` | no | `openai-compatible` | Provider family: `openai-compatible`, `anthropic`, or `copilot`. |
 | `model` | no | `""` | Provider-specific model identifier (optional). |
-| `config-path` | no | `./umactually.review.json` | Declared for wizard back-compat; **not forwarded to the CLI** as of action release 1.0.1 — the CLI auto-discovers `umactually.review.json` from cwd. |
+| `config-path` | no | `./umactually.review.json` | Declared for wizard back-compat; **not forwarded to the CLI** as of `JosiahSiegel/umactually-action@317613a` (shipped in action release 1.0.1) — the CLI auto-discovers `umactually.review.json` from cwd. |
 | `output-artifact` | no | `umactually-review.json` | Path the CLI writes the review artifact to. |
-| `skip-draft` | no | `'true'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action release 1.0.1 — incremental review is per-PR via GitHub thread queries. |
-| `paths-ignore` | no | `'**/*.md,docs/**,**/*.lock'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action release 1.0.1 — the `--files` flag and the diff's own ignore list handle path filtering. |
+| `skip-draft` | no | `'true'` | Declared for wizard back-compat; **not forwarded to the CLI** as of `JosiahSiegel/umactually-action@317613a` (shipped in action release 1.0.1) — incremental review is per-PR via GitHub thread queries. |
+| `paths-ignore` | no | `'**/*.md,docs/**,**/*.lock'` | Declared for wizard back-compat; **not forwarded to the CLI** as of `JosiahSiegel/umactually-action@317613a` (shipped in action release 1.0.1) — the `--files` flag and the diff's own ignore list handle path filtering. |
 
 ## Outputs
 
@@ -54,7 +54,7 @@ The action reads `inputs.api-url` and `inputs.api-key` only. Pass repository sec
 
 ## CLI-flag passthrough
 
-As of action release 1.0.1 (`JosiahSiegel/umactually-action@317613a`), the action forwards only these action inputs as CLI flags on the `umactually review` invocation:
+As of `JosiahSiegel/umactually-action@317613a` (shipped in action release 1.0.1), the action forwards only these action inputs as CLI flags on the `umactually review` invocation:
 
 - `--provider` ← `${{ inputs.provider }}` (always forwarded; default `openai-compatible`)
 - `--model` ← `${{ inputs.model }}` (forwarded ONLY when non-empty; the action's default `""` would override the wizard's saved config if always forwarded)
@@ -88,11 +88,17 @@ The action exits with code 0 when `verdict === success`, code 3 when the first-r
 
 ## Versioning / auto-update
 
-The action ref itself should be SHA-pinned (`uses: JosiahSiegel/umactually-action@<full-sha>  # v1`) — see the install snippet above. Dependabot's `github-actions` ecosystem auto-updates both the `uses:` SHA and the `with:` block whenever a new release ships.
+Two distinct pin mechanisms apply; Dependabot's `github-actions` ecosystem (see [GitHub's Dependabot version updates guide](https://docs.github.com/en/code-security/dependabot/dependabot-version-updates), `package-ecosystem: github-actions` in a `dependabot.yml` — the operator's responsibility, not the action's) auto-updates both whenever a new release ships.
+
+### Action ref pinning (SHA)
+
+The action ref itself should be SHA-pinned (`uses: JosiahSiegel/umactually-action@<full-sha>  # v1`) — see the install snippet above. Dependabot bumps the `uses:` SHA to the latest tagged commit without hand edits.
+
+### CLI version pinning (`cli-version` input)
 
 The action tracks the latest CLI release by default. The `cli-version` input's default value `__UMACTUALLY_VERSION__` is the substitution point the `umactually init` wizard rewrites on emit; running the action with the wizard's output pins the CLI to the release the wizard was built against (the CLI release used to generate the workflow).
 
-To pin a specific CLI version, set `cli-version: <tag>` explicitly (e.g. `cli-version: 0.8.2`). To auto-update to the latest CLI release, enable Dependabot on your workflow file's `with:` block via a separate `dependabot.yml` — this is the operator's responsibility, not the action's. See [GitHub's Dependabot version updates guide](https://docs.github.com/en/code-security/dependabot/dependabot-version-updates) for the `package-ecosystem: github-actions` config.
+To pin a specific CLI version, set `cli-version: <tag>` explicitly (e.g. `cli-version: 0.8.2`).
 
 ## Reference
 

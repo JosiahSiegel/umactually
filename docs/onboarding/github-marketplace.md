@@ -29,14 +29,14 @@ jobs:
           api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
 
-Secrets are forwarded via the `with:` inputs (`api-url`, `api-key`). Composite Actions cannot access the `secrets.` context; a `secrets:` block on `uses:` is not honored here.
+Secrets are forwarded via the `with:` inputs (`api-url`, `api-key`). Composite Actions cannot access the `secrets.` context; a `secrets:` block on `uses:` is not honored here. The trigger is `pull_request`, not `pull_request_target` — fork PRs never get a privileged token against your code.
 
 ## Why the SHA pin
 
-`uses:` is pinned to a full commit SHA. Floating `@v1` accepts any future tag the action repo publishes; a compromised repo would run arbitrary code in your workflow with `pull-requests: write`. Enable Dependabot's `github-actions` ecosystem on the workflow file to auto-bump the SHA whenever a new release ships — no hand edits.
+`uses:` is pinned to a full commit SHA. Floating `@v1` accepts any future tag the action repo publishes; a compromised repo would run arbitrary code in your workflow with `pull-requests: write`. Enable Dependabot's `github-actions` ecosystem to auto-bump the SHA on new releases.
 
 ## What it does
 
-Installs the pinned `umactually` CLI on Node.js 24; posts an idempotent first-run bootstrap comment (marker `<!-- umactually-bootstrap -->`) when secrets are missing, exiting with the typed error `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3); runs the live review with inline findings; emits `verdict` / `inline-thread-count` / `review-id` outputs for branch protection.
+Installs the pinned `umactually` CLI on Node.js 24; posts an idempotent first-run bootstrap comment (marker `<!-- umactually-bootstrap -->`) when secrets are missing, exiting with typed error `UMACTUALLY_ERR_SECRET_BOOTSTRAP` (3); runs the live review with inline findings; emits `verdict` / `inline-thread-count` / `review-id` outputs for branch protection.
 
 Full reference: [`docs/install-action.md`](../install-action.md).
