@@ -16,7 +16,7 @@ ship a tag).
 
 ### Fixed
 
-- **Companion action repo + docs/onboarding cross-sync.** The companion `JosiahSiegel/umactually-action` release 1.0.1 (floating major tag `v1`, currently deref `043d607`) README now leads with the SHA-pin recommendation + Dependabot auto-update path; the `api-url` / `api-key` input descriptions in `action.yml` had a missing `${{ }}` typo that would have confused operators and is now fixed. The CLI repo's `docs/onboarding/github-marketplace.md` (the literal Marketplace listing copy) and `docs/install-action.md` are synced to match.
+- **Companion action repo + docs/onboarding cross-sync.** The companion `JosiahSiegel/umactually-action` release 1.0.1 (floating major tag `v1`, currently deref `043d607`) README now leads with the SHA-pin recommendation + Dependabot auto-update path; the `api-url` / `api-key` input descriptions in `action.yml` had a missing `${{ }}` typo that would have confused operators and is now fixed. The CLI repo's `docs/onboarding/github-marketplace.md` (the literal Marketplace listing copy) and `docs/install-action.md` are synced to match. This is a coordinated cross-repo docs bump: the CLI README Quickstart and wizard fixtures remain pinned at `317613a` (an ancestor of the new deref; 1.0.1 is docs-only, so action behavior is identical) and re-pin to `043d607` in a follow-up.
 
 ### Removed
 
