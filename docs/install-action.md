@@ -29,10 +29,10 @@ The full input matrix from the published [`JosiahSiegel/umactually-action`](http
 | `api-key` | no | `""` | Provider API key. Default empty — forward via `with: api-key: ${{ secrets.UMACTUALLY_API_KEY }}`. |
 | `provider` | no | `openai-compatible` | Provider family: `openai-compatible`, `anthropic`, or `copilot`. |
 | `model` | no | `""` | Provider-specific model identifier (optional). |
-| `config-path` | no | `./umactually.review.json` | Declared for wizard back-compat; **not forwarded to the CLI** as of action v1.0.1 — the CLI auto-discovers `umactually.review.json` from cwd. |
+| `config-path` | no | `./umactually.review.json` | Declared for wizard back-compat; **not forwarded to the CLI** as of action release 1.0.1 — the CLI auto-discovers `umactually.review.json` from cwd. |
 | `output-artifact` | no | `umactually-review.json` | Path the CLI writes the review artifact to. |
-| `skip-draft` | no | `'true'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action v1.0.1 — incremental review is per-PR via GitHub thread queries. |
-| `paths-ignore` | no | `'**/*.md,docs/**,**/*.lock'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action v1.0.1 — the `--files` flag and the diff's own ignore list handle path filtering. |
+| `skip-draft` | no | `'true'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action release 1.0.1 — incremental review is per-PR via GitHub thread queries. |
+| `paths-ignore` | no | `'**/*.md,docs/**,**/*.lock'` | Declared for wizard back-compat; **not forwarded to the CLI** as of action release 1.0.1 — the `--files` flag and the diff's own ignore list handle path filtering. |
 
 ## Outputs
 
@@ -54,7 +54,7 @@ The action reads `inputs.api-url` and `inputs.api-key` only. Pass repository sec
 
 ## CLI-flag passthrough
 
-As of action v1.0.1 (`JosiahSiegel/umactually-action@317613a`), the action forwards only these action inputs as CLI flags on the `umactually review` invocation:
+As of action release 1.0.1 (`JosiahSiegel/umactually-action@317613a`), the action forwards only these action inputs as CLI flags on the `umactually review` invocation:
 
 - `--provider` ← `${{ inputs.provider }}` (always forwarded; default `openai-compatible`)
 - `--model` ← `${{ inputs.model }}` (forwarded ONLY when non-empty; the action's default `""` would override the wizard's saved config if always forwarded)
