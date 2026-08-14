@@ -22,7 +22,7 @@ steps:
   # `umactually-action@v2` (target: 2026-Q4); migrate to the published
   # `UmActuallyReview@1` task via `umactually init --ci azure` for the new
   # shortform. See `docs/install-ado-task.md` for the task reference.
-  - script: npm install -g umactually@0.9.2
+  - script: npm install -g umactually@0.9.3
     displayName: Install umactually
   - script: umactually review --platform azure
     displayName: Run umactually PR review

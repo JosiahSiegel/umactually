@@ -624,7 +624,7 @@ The current canonical flow is to commit. The doc's [§ 5.5 npm publication](#55-
 ### 12.1 Confirm a release was published without trusting the GitHub Actions conclusion
 
 ```bash
-TAG="v0.9.2"
+TAG="v0.9.3"
 curl -fsSL "https://registry.npmjs.org/umactually" | jq --arg t "$TAG" '
   {
     "is_latest": (.dist-tags.latest == ($t | sub("^v";""))),
@@ -641,7 +641,7 @@ Returns `true` for every field if the publish landed. The `has_attestations` fie
 ### 12.2 Confirm the GitHub Release exists with all 6 assets
 
 ```bash
-gh release view "v0.9.2" --json name,assets,publishedAt | jq '
+gh release view "v0.9.3" --json name,assets,publishedAt | jq '
   {
     "name": .name,
     "published": .publishedAt,
@@ -657,7 +657,7 @@ Expected: `asset_count == 7` (six archives + `checksums.txt`). If the asset list
 ### 12.3 Confirm the post-release install path works end-to-end
 
 ```bash
-npm run test:post-release -- --tag v0.9.2
+npm run test:post-release -- --tag v0.9.3
 ```
 
 Downloads the published archive, verifies SHA-256 against `checksums.txt`, extracts the binary, spawns a mock LLM, and runs both `--provider openai-compatible` and `--provider anthropic` review paths against the prompt. Exit 0 with two `comments=2` lines is the canonical "the install path is healthy" signal. The artifacts live at `artifacts/post-release-e2e/` in the worktree.

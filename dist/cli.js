@@ -7723,13 +7723,9 @@ const AZURE_PIPELINE_FILENAME = "azure-pipelines.yml";
  * Node.js setup, npm install of the CLI, and the live review call; the
  * operator only wires credentials and config.
  *
- * Secret forwarding contract (Finding 1 fix): the action's `api-url` /
- * `api-key` input defaults are the empty string `""` (GitHub Actions
- * does not template `${{ secrets.* }}` inside `inputs.<key>.default`).
- * Secrets are forwarded via the `secrets:` block on `uses:` using the
- * action's declared secret names (`api-url`, `api-key`), NOT via the
- * `with:` block. The action reads from `secrets.* || inputs.*` so the
- * legacy `with:` form still works as a fallback.
+ * The action `uses:` line is SHA-pinned to the current `v1` tag deref
+ * (`@317613a... # v1`) for supply-chain integrity — operators should
+ * track the SHA via Dependabot, not via a floating `@v1` tag.
  *
  * `__UMACTUALLY_VERSION__` pins the action's `cli-version` input
  * (default for the npm install the action runs internally). It is
@@ -7739,7 +7735,30 @@ const AZURE_PIPELINE_FILENAME = "azure-pipelines.yml";
 const GITHUB_WORKFLOW_TEMPLATE = `# Runs umactually via the published GitHub Action for pull requests.
 # Action: https://github.com/JosiahSiegel/umactually-action
 name: PR review
-on: [pull_request]
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.ts"
+      - "**.tsx"
+      - "**.js"
+      - "**.jsx"
+      - "**.mjs"
+      - "**.cjs"
+      - "**.py"
+      - "**.go"
+      - "**.rs"
+      - "**.java"
+      - "**.kt"
+      - "**.swift"
+      - "**.rb"
+      - "**.sh"
+      - "**.yml"
+      - "**.yaml"
+      - "**.toml"
+      - "**.json"
+      - "Dockerfile"
+      - "!.github/workflows/pr-review.yml"
 concurrency:
   group: umactually-\${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -7752,16 +7771,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run umactually PR review
-        uses: JosiahSiegel/umactually-action@v1
+        uses: JosiahSiegel/umactually-action@317613abd39061d90f761e965dde1dee8f705e19  # v1
         with:
           cli-version: __UMACTUALLY_VERSION__
           provider: openai-compatible
           api-url: \${{ secrets.UMACTUALLY_API_URL }}
           api-key: \${{ secrets.UMACTUALLY_API_KEY }}
-          config-path: ./umactually.review.json
-          output-artifact: umactually-review.json
-          skip-draft: 'true'
-          paths-ignore: '**/*.md,docs/**,**/*.lock'
 `;
 /**
  * Longform — the prior inline `npm install -g` + `umactually review`
@@ -7772,7 +7787,30 @@ jobs:
  */
 const GITHUB_WORKFLOW_TEMPLATE_LONGFORM = `# Runs umactually as a pinned npm CLI for pull requests.
 name: PR review
-on: [pull_request]
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.ts"
+      - "**.tsx"
+      - "**.js"
+      - "**.jsx"
+      - "**.mjs"
+      - "**.cjs"
+      - "**.py"
+      - "**.go"
+      - "**.rs"
+      - "**.java"
+      - "**.kt"
+      - "**.swift"
+      - "**.rb"
+      - "**.sh"
+      - "**.yml"
+      - "**.yaml"
+      - "**.toml"
+      - "**.json"
+      - "Dockerfile"
+      - "!.github/workflows/pr-review.yml"
 concurrency:
   group: umactually-\${{ github.workflow }}-\${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
