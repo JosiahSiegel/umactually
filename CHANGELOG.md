@@ -8,7 +8,7 @@ For maintainers: see [docs/release-process.md](docs/release-process.md) for the
 release workflow (how to bump the version, fill in a `[X.Y.Z]` section, and
 ship a tag).
 
-## [Unreleased]
+## [0.9.4] - 2026-08-13
 
 ### Added
 
@@ -17,6 +17,7 @@ ship a tag).
 ### Fixed
 
 - **Companion action repo + docs/onboarding cross-sync.** The companion `JosiahSiegel/umactually-action` release 1.0.1 (floating major tag `v1`, currently deref `043d607`) README now leads with the SHA-pin recommendation + Dependabot auto-update path; the `api-url` / `api-key` input descriptions in `action.yml` had a missing `${{ }}` typo that would have confused operators and is now fixed. The CLI repo's `docs/onboarding/github-marketplace.md` (the literal Marketplace listing copy) and `docs/install-action.md` are synced to match. This is a coordinated cross-repo docs bump: the CLI README Quickstart and wizard fixtures remain pinned at `317613a` (an ancestor of the new deref; 1.0.1 is docs-only, so action behavior is identical) and re-pin to `043d607` in a follow-up.
+- **All SHA-pin surfaces now reference the companion action's v1.0.1 commit.** The canonical install example, the `umactually init` wizard template, and the README Quickstart now pin to the companion action's v1.0.1 commit (`043d6070a43a5f61aa6ede9efe60d0f47b76fc58`) instead of the previous v1 commit (`317613a...`). Behavior is identical; this is purely a doc refresh to keep all surfaces in lockstep with the companion repo's new docs-only release. `[examples/github/pr-review.yml.action-ref.yml] [README.md] [src/cli/init-templates.ts] [test/e2e/init-pty.test.ts] [test/unit/init-templates-drift.test.ts] [test/unit/readme-freshness.test.ts]` (PR #230)
 
 ### Removed
 
