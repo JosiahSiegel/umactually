@@ -1,5 +1,6 @@
 import type { LiveReviewComment } from "./live-shared.js";
 import { parseDiffPositions } from "../diff/parse-positions.js";
+import type { BodyAliasObservation } from "../provider/provider-parse.js";
 
 /**
  * A single off-diff or invalid-line finding the model emitted.
@@ -12,7 +13,7 @@ import { parseDiffPositions } from "../diff/parse-positions.js";
  */
 export type ParseWarning = {
   /** Why this comment was rejected. */
-  readonly reason: "path-not-in-diff" | "line-not-in-diff";
+  readonly reason: "path-not-in-diff" | "line-not-in-diff" | "empty-body" | "body-alias";
   /** Source of the comment: the model's `comments` array or `suppressed_comments` array. */
   readonly source: "comments" | "suppressed_comments";
   /** The index in the source array (matches `review.comments[i]` etc). */
@@ -25,6 +26,10 @@ export type ParseWarning = {
   readonly modelSeverity: string;
   /** The model's body excerpt (truncated to 200 chars to keep the artifact small). */
   readonly bodyExcerpt: string;
+  /** Alias-key name (body-alias reason only — the key that supplied the populated body). */
+  readonly field?: string;
+  /** Comment index from the observation sink (body-alias reason only — matches the readCommentArray input index). */
+  readonly commentIndex?: number;
 };
 
 /**
@@ -44,8 +49,10 @@ export type ParseWarning = {
  *     by the diff filter)
  *   - `line-not-in-diff` — the path appears in the diff but the
  *     specific line does not (off-by-one or hallucinated line number)
- *   - `path-and-line-not-in-diff` — neither the path nor the line
- *     matches anything in the diff
+ *   - `empty-body` — the model emitted a comment with an empty body;
+ *     if the same comment is also off-diff, BOTH warnings are emitted
+ *     (double-count is intentional per the live-provider.ts partition
+ *     contract: the two reasons are independently actionable)
  */
 export function collectParseWarnings(input: {
   readonly review: {
@@ -65,6 +72,36 @@ export function collectParseWarnings(input: {
     list.forEach((comment, index) => {
       const path = comment.path;
       const line = comment.line;
+      // empty-body check (must precede the diff-anchor check so a
+      // finding whose body the model failed to populate still surfaces
+      // in the artifact even when its (path, line) anchor is valid).
+      // Records the body-replacement failure rather than a citation
+      // failure so the operator can distinguish "model wrote nothing
+      // here" from "model cited a fake path".
+      //
+      // Source-gated to `comments`: the partition layer in
+      // `normalizeProviderReview` moves every trim-empty entry into
+      // `suppressedComments` and emits the warning explicitly with
+      // `source: "comments"`. Re-emitting here would double-count.
+      //
+      // Does NOT return early: an empty-body comment that ALSO has an
+      // off-diff citation is double-counted (intentional per the
+      // live-provider.ts partition contract: "two reasons are
+      // independently actionable"). Without this, operators triaging
+      // an attacker-supplied path/line + empty body would see only
+      // `empty-body` and miss the path fabrication.
+      if (source === "comments" && comment.body.trim().length === 0) {
+        warnings.push({
+          reason: "empty-body",
+          source,
+          index,
+          modelPath: path,
+          modelLine: line,
+          modelSeverity: comment.severity,
+          bodyExcerpt: "",
+        });
+        // Continue to off-diff check — do not return.
+      }
       // Defensive: a model might emit a non-integer line OR an
       // empty path. Treat both as off-diff (the most actionable
       // signal: the model fabricated the position) so the
@@ -112,6 +149,15 @@ export function buildParseWarningsArtifact(input: {
     readonly suppressedComments: readonly LiveReviewComment[];
   };
   readonly diffText: string;
+  readonly bodyAliasObservations?: readonly BodyAliasObservation[];
+  /**
+   * Length of the model's original `comments` array BEFORE the
+   * empty-body partition moved entries into `suppressedComments`.
+   * Required: the post-partition `review.comments.length` would
+   * misattribute observations whose original index falls in the
+   * partition range.
+   */
+  readonly originalCommentsLength: number;
 }): {
   readonly summary: {
     readonly totalComments: number;
@@ -122,10 +168,31 @@ export function buildParseWarningsArtifact(input: {
   };
   readonly warnings: readonly ParseWarning[];
 } {
-  const warnings = collectParseWarnings(input);
+  const diffWarnings = collectParseWarnings(input);
+  const aliasWarnings: ParseWarning[] = (input.bodyAliasObservations ?? []).map(
+    (obs) => {
+      const source: ParseWarning["source"] = obs.commentIndex < input.originalCommentsLength
+        ? "comments"
+        : "suppressed_comments";
+      return {
+        reason: "body-alias",
+        source,
+        index: obs.commentIndex,
+        modelPath: "",
+        modelLine: 0,
+        modelSeverity: "",
+        bodyExcerpt: "",
+        field: obs.field,
+        commentIndex: obs.commentIndex,
+      };
+    },
+  );
+  const warnings = [...diffWarnings, ...aliasWarnings];
   const byReason: Record<ParseWarning["reason"], number> = {
     "path-not-in-diff": 0,
     "line-not-in-diff": 0,
+    "empty-body": 0,
+    "body-alias": 0,
   };
   const bySource: Record<ParseWarning["source"], number> = {
     comments: 0,

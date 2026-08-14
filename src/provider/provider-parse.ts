@@ -127,6 +127,59 @@ function getActiveSeveritySink(): SeverityWarningSink | null {
 }
 
 /**
+ * Structured observation of a single body-key alias resolution — emitted
+ * when a synonym key (not the canonical `body`) supplied the populated
+ * comment body. `field` is the alias key that won; `commentIndex` is the
+ * index of the comment in its `readCommentArray` input (independent of
+ * which array — inline or suppressed — produced it).
+ */
+export type BodyAliasObservation = {
+  readonly kind: "body-alias";
+  readonly field: string;
+  readonly commentIndex: number;
+};
+
+/**
+ * Sink for surfacing body-key alias resolutions. Mirrors the severity
+ * sink: ambient module-singleton, installed before the provider call and
+ * cleared in `finally`, so `readCommentArray` can report which alias key
+ * supplied a body without threading a sink through every call site.
+ */
+export type ParseObservationSink = (observation: BodyAliasObservation) => void;
+
+/**
+ * Ambient (module-singleton) observation sink slot. Default value is
+ * `null` (no sink installed → no observations surfaced), preserving the
+ * previous silent-alias behavior for any caller that has not opted in.
+ *
+ * Concurrency note: mirrors the severity sink above — only safe when
+ * callers install → await → clear atomically. The guard below warns
+ * loudly on overwrite so the regression class surfaces at install time.
+ */
+let activeParseObservationSink: ParseObservationSink | null = null;
+
+export function setActiveParseObservationSink(sink: ParseObservationSink | null): void {
+  if (sink !== null && activeParseObservationSink !== null) {
+    // Concurrency footgun detected: a sink is already installed and the
+    // caller is overwriting it without clearing the previous one first.
+    // Log + warn loudly so the regression class surfaces in CI logs
+    // rather than silently corrupting telemetry.
+    // eslint-disable-next-line no-console -- provider parse-fail diagnostic
+    console.warn(
+      "[provider-parse] setActiveParseObservationSink: overwriting a non-null ambient sink. " +
+        "This usually means two requestLiveReview calls are running concurrently " +
+        "(Promise.all) — the second's sink will be cleared by the first's finally, " +
+        "corrupting the captured observations. Thread the sink via ParseContext instead.",
+    );
+  }
+  activeParseObservationSink = sink;
+}
+
+export function getActiveParseObservationSink(): ParseObservationSink | null {
+  return activeParseObservationSink;
+}
+
+/**
  * Shared options type threaded through `parseReviewPayload` →
  * `readCommentArray` → `normalizeProviderSeverity`. All fields are
  * optional — when omitted, behavior is byte-identical to the previous
@@ -172,6 +225,55 @@ export function isNonEmptyReview(review: ProviderReviewPayload | null): review i
     && (review.summary.length > 0 || review.verdict.length > 0 || review.comments.length > 0);
 }
 
+/**
+ * Returns true when the review carries findings but every one of them has
+ * an empty or whitespace-only body — the schema-valid-but-useless shape
+ * a model can emit when it collapses under output-token pressure.
+ *
+ * Origin: the Minimax-M3 empty-body incident (waffle-house-menu PR,
+ * workflow run 31801055564). The model returned a review whose comment
+ * bodies were all empty strings while the surrounding JSON was perfectly
+ * schema-valid, so the payload sailed through validation and posted an
+ * empty findings table as if it were a real review. These predicates let
+ * callers detect that shape and route to the soft-fail/retry path
+ * instead of publishing the hollow output (wiring lands in T10).
+ *
+ * Semantics:
+ *   - Vacuous-truth guard: zero comments → false. A clean 0-finding
+ *     review must NOT trigger the soft-fail path.
+ *   - `suppressed_comments` are deliberately EXCLUDED — only the
+ *     published `comments` array decides.
+ */
+/**
+ * Defense-in-depth coercion: treats any non-string body as effectively
+ * empty. The type system guarantees `ProviderComment.body` is `string`,
+ * but the soft-fail predicates in this module operate on the parse-result
+ * `ProviderReviewPayload` shape — a caller that bypasses the parser (or a
+ * future schema relaxation) could surface `null`/`undefined`/numeric bodies
+ * that would otherwise throw at the `.trim()` call. Coercing to "" here is
+ * cheap and keeps the predicates total.
+ */
+function bodyIsEffectivelyEmpty(body: unknown): boolean {
+  return typeof body !== "string" || body.trim().length === 0;
+}
+
+export function hasOnlyEmptyBodyFindings(review: ProviderReviewPayload): boolean {
+  return review.comments.length > 0 && review.comments.every(c => bodyIsEffectivelyEmpty(c.body));
+}
+
+/**
+ * Counts how many comments in the review carry non-whitespace body text.
+ *
+ * Companion to {@link hasOnlyEmptyBodyFindings} for the same Minimax-M3
+ * empty-body incident (waffle-house-menu PR, workflow run 31801055564):
+ * callers use it to distinguish "all bodies hollow" from "some bodies
+ * survived" when deciding how degraded a parsed review actually is
+ * (wiring lands in T10). Pure — no logging, no telemetry.
+ */
+export function countPopulatedBodies(review: ProviderReviewPayload): number {
+  return review.comments.filter(c => !bodyIsEffectivelyEmpty(c.body)).length;
+}
+
 export type RequestBody = Record<string, unknown>;
 
 /**
@@ -205,7 +307,13 @@ export type RequestBody = Record<string, unknown>;
 export const PARSE_FAIL_RETRY_PROMPT =
   "Your previous response did not contain a valid JSON review payload. " +
   "Please respond with ONLY a JSON object matching this schema (no prose, no fences): " +
-  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n\n' +
+  '{"summary": "...", "verdict": "NEEDS_FIX|APPROVED|COMMENT|DISCUSS|SHIP", "comments": [...], "suppressed_comments": [...]}.\n' +
+  "Each item in comments and suppressed_comments is an object with exactly these fields: " +
+  '"path" (string — the file path from the diff), ' +
+  '"line" (integer ≥ 1 — the line in that file the finding applies to), ' +
+  '"body" (string — must be a non-empty string explaining the issue; never emit ""), ' +
+  '"severity" (string), "category" (string). ' +
+  "Do not omit any field and do not leave any body empty.\n\n" +
   "Original review request follows:\n\n";
 
 /**
@@ -931,6 +1039,30 @@ function parseRawRemediation(value: unknown): { readonly rawRemediation?: import
   };
 }
 
+/**
+ * Ordered body-key fallback chain. Providers occasionally emit the finding
+ * text under a synonym of `body`; without this chain those findings land
+ * with an empty body and post as empty inline comments.
+ *
+ * A key wins only when it holds a trim-nonempty string — fallthrough is
+ * triggered by a missing, non-string, or whitespace-only value. A
+ * populated canonical `body` therefore always wins outright.
+ */
+const BODY_KEY_ALIAS_ORDER = ["body", "description", "message", "comment", "issue", "detail"] as const;
+
+function readBodyWithAlias(entry: Record<string, unknown>, commentIndex: number): { readonly body: string } {
+  for (const key of BODY_KEY_ALIAS_ORDER) {
+    const value = readStringField(entry, key);
+    if (value !== null && value.trim().length > 0) {
+      if (key !== "body") {
+        getActiveParseObservationSink()?.({ kind: "body-alias", field: key, commentIndex });
+      }
+      return { body: value };
+    }
+  }
+  return { body: "" };
+}
+
 function readCommentArray(
   value: unknown,
   context?: ParseContext,
@@ -951,7 +1083,7 @@ function readCommentArray(
     const path = entry["path"];
     const line = readSafeIntegerField(entry, "line");
     if (typeof path === "string" && line !== null) {
-      const body = readStringField(entry, "body") ?? "";
+      const { body } = readBodyWithAlias(entry, index);
       comments.push({
         path,
         line,

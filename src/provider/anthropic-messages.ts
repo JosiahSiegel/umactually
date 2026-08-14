@@ -42,8 +42,10 @@
  * provider family the operator picks.
  */
 import {
+  countPopulatedBodies,
   detectProviderError,
   diagnoseParseFailure,
+  hasOnlyEmptyBodyFindings,
   isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
   parseReviewPayload,
@@ -57,6 +59,7 @@ import {
 import { buildParseFailError, computeBumpedMaxOutput, runWithRetry } from "./provider-retry.js";
 import { performProviderFetch, readResponseText } from "./http.js";
 import { composeSignal } from "../util/async.js";
+import { isDebugRawActive } from "../util/debug-raw.js";
 import {
   createRequestId,
   resolveAnthropicMessagesUrl,
@@ -423,23 +426,41 @@ async function runOnce(
   }
 
   const review = parseReviewPayload(textPayload);
+  // Soft-fail detection (Minimax-M3 empty-body incident): a review whose
+  // comment bodies are ALL empty is schema-valid but hollow. Do NOT
+  // return it — fall through to the same self-healing retry the hard
+  // parse-fail uses. The original review is the fallback: a retry that
+  // throws, HTTP-fails, or parses no better resolves to the ORIGINAL
+  // review, never to the parse-fail error path.
+  let softFailOriginal: ProviderReviewPayload | null = null;
   if (isNonEmptyReview(review)) {
-    // Try to read usage from the response body even on the success
-    // path so the local audit artifact can compute cost estimates.
-    let successUsage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
-    try {
-      const parsedRaw: unknown = JSON.parse(rawText);
-      successUsage = readUsage(parsedRaw);
-    } catch {
-      // rawText wasn't JSON; no usage to surface.
+    if (!hasOnlyEmptyBodyFindings(review)) {
+      // Try to read usage from the response body even on the success
+      // path so the local audit artifact can compute cost estimates.
+      let successUsage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
+      try {
+        const parsedRaw: unknown = JSON.parse(rawText);
+        successUsage = readUsage(parsedRaw);
+      } catch {
+        // rawText wasn't JSON; no usage to surface.
+      }
+      return {
+        ok: true,
+        endpoint: ENDPOINT,
+        review,
+        requestId,
+        ...(successUsage !== undefined ? { usage: successUsage } : {}),
+      };
     }
-    return {
-      ok: true,
-      endpoint: ENDPOINT,
-      review,
-      requestId,
-      ...(successUsage !== undefined ? { usage: successUsage } : {}),
-    };
+    softFailOriginal = review;
+    // [DEBUG-RAW] Trace the soft-fail decision so a production run can
+    // show WHY a second request fired despite a 200-OK schema-valid
+    // response. Mirrors the openai-compatible [DEBUG-RAW] style.
+    if (isDebugRawActive()) {
+      writeDebugRaw(
+        `[DEBUG-RAW] soft-fail: all ${review.comments.length} finding bodies empty; retrying\n`,
+      );
+    }
   }
 
   // Empty JSON or "truncated stream" parse-fail path. We check
@@ -502,7 +523,21 @@ async function runOnce(
   }
 
   if (retryReview !== null) {
+    // Soft-fail: adopt the retry ONLY when it strictly improved the
+    // populated-body count. A retry that parses but is no better (or
+    // worse) keeps the original verdict/summary.
+    if (softFailOriginal !== null && countPopulatedBodies(retryReview) <= countPopulatedBodies(softFailOriginal)) {
+      return softFailSuccess(softFailOriginal, rawText, requestId);
+    }
     return { ok: true, endpoint: ENDPOINT, review: retryReview, requestId };
+  }
+
+  // Soft-fail: the original parsed review is the safety net. A retry
+  // that throws, HTTP-fails, or stays unparseable resolves here — the
+  // original verdict/summary stand and the caller sees a success, NOT
+  // a parse-fail error.
+  if (softFailOriginal !== null) {
+    return softFailSuccess(softFailOriginal, rawText, requestId);
   }
 
   // Distinguish "truncated stream" from "completed but malformed" by
@@ -531,6 +566,37 @@ async function runOnce(
       ...(usage !== undefined ? { usage } : {}),
     }),
   };
+}
+
+/**
+ * Build the soft-fail resolution: the original (hollow-bodies) review
+ * with the original response's usage block. The soft-fail contract
+ * mandates this shape on EVERY failed retry branch — throw, HTTP
+ * failure, unparseable payload, or no-better payload.
+ */
+function softFailSuccess(
+  review: ProviderReviewPayload,
+  rawText: string,
+  requestId: string,
+): AnthropicProviderCallResult {
+  let successUsage: { input_tokens?: number; output_tokens?: number; total_tokens?: number } | undefined;
+  try {
+    const parsedRaw: unknown = JSON.parse(rawText);
+    successUsage = readUsage(parsedRaw);
+  } catch {
+    // rawText wasn't JSON; no usage to surface.
+  }
+  return {
+    ok: true,
+    endpoint: ENDPOINT,
+    review,
+    requestId,
+    ...(successUsage !== undefined ? { usage: successUsage } : {}),
+  };
+}
+
+function writeDebugRaw(message: string): void {
+  process.stderr.write(message);
 }
 
 /**

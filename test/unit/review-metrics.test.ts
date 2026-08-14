@@ -214,6 +214,7 @@ describe("review-metrics: considered/kept/downgraded/suppressed/off-diff counts 
       "carried-over": 0,
       "unchanged": 0,
       "manual-full": 0,
+      "empty-body": 0,
     };
     expect(initial.reasons).toEqual(zeroHistogram);
   });
@@ -250,7 +251,7 @@ describe("review-metrics: considered/kept/downgraded/suppressed/off-diff counts 
   });
 
   it("exports the full closed enum so test code can iterate over it", () => {
-    expect(ALL_REASON_KINDS).toHaveLength(11);
+    expect(ALL_REASON_KINDS).toHaveLength(12);
     expect(REASON_KIND_VALUES).toContain("off-diff");
     expect(REASON_KIND_VALUES).toContain("truncation");
     expect(REASON_KIND_VALUES).toContain("parse-failure");
@@ -262,6 +263,7 @@ describe("review-metrics: considered/kept/downgraded/suppressed/off-diff counts 
     expect(REASON_KIND_VALUES).toContain("carried-over");
     expect(REASON_KIND_VALUES).toContain("unchanged");
     expect(REASON_KIND_VALUES).toContain("manual-full");
+    expect(ALL_REASON_KINDS).toContain("empty-body");
   });
 });
 
@@ -500,6 +502,7 @@ describe("review-metrics: snapshot guards for additive compatibility", () => {
         "carried-over": 0,
         "unchanged": 0,
         "manual-full": 0,
+        "empty-body": 0,
       },
       usage: expectedUsage,
       usageRoundTrips: 2,

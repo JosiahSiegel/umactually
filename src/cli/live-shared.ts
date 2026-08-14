@@ -237,6 +237,17 @@ export type LiveProviderOutcome = {
    * the response.completed event. NEVER zero-invented.
    */
   readonly usage?: import("../provider/provider-error.js").ProviderUsage;
+  /**
+   * Number of comments the partition layer in
+   * `normalizeProviderReview` (src/cli/live-provider.ts) moved from
+   * `review.comments` into `review.suppressedComments` because the
+   * model emitted an empty (trim-empty) `body`. Drives the
+   * "empty-body" audit-reason counter and the operator-facing
+   * `::notice::` disclosure. Optional: synthesized fixtures and
+   * malformed-fallback paths omit it (the field is undefined when
+   * the partition did not run).
+   */
+  readonly emptyBodyDroppedCount?: number;
 };
 
 /**

@@ -10,7 +10,9 @@ import {
   type AnthropicProviderCallResult,
 } from "../provider/anthropic-messages.js";
 import {
+  setActiveParseObservationSink,
   setActiveSeveritySink,
+  type BodyAliasObservation,
   type ResponseFormat,
   type SeverityWarning,
   type SeverityWarningSink,
@@ -130,6 +132,25 @@ export async function requestLiveReview(input: {
     });
   };
   setActiveSeveritySink(sink);
+  // Install an ambient body-alias observation sink alongside the
+  // severity sink. Mirrors the install/clear pair: anything
+  // `readCommentArray` emits (a synonym-keyed populated body) lands
+  // in `bodyAliasObservations`, which `withParseWarnings` converts
+  // into `body-alias` ParseWarning entries for the artifact.
+  //
+  // Note on source attribution: `parseReviewPayload` parses
+  // `comments[]` first then `suppressed_comments[]`, so the
+  // observation's `commentIndex` is index-into-whichever-array, and
+  // we attribute source by range — observations with commentIndex
+  // < review.comments.length come from `comments`, the remainder
+  // from `suppressed_comments`. Robust for the common single-parse
+  // case; the parse-fail retry path is rare enough to ignore for
+  // T13's source attribution.
+  const bodyAliasObservations: BodyAliasObservation[] = [];
+  const observationSink = (observation: BodyAliasObservation) => {
+    bodyAliasObservations.push(observation);
+  };
+  setActiveParseObservationSink(observationSink);
   // Layer 2-C: when the CLI flag enables it, send the strict JSON-schema
   // response_format on the wire. Defaults to true so the model is
   // constrained at decode time; the in-context system prompt carries
@@ -159,7 +180,7 @@ export async function requestLiveReview(input: {
     result: { readonly ok: true; readonly endpoint: string; readonly review: ProviderReviewPayload; readonly usage?: import("../provider/provider-error.js").ProviderUsage },
     providerName: string,
   ): LiveProviderOutcome {
-    const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+    const { review: preVerifyReview, emptyBodyDropped, originalCommentsLength } = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
     const verifyFilterResult = input.parsed.verifyFindings !== false
       ? applyVerifyFilter(preVerifyReview, input.diffText)
       : {
@@ -181,14 +202,28 @@ export async function requestLiveReview(input: {
       provider: providerName,
       modelId,
       severityWarnings: severityWarnings.slice(),
+      bodyAliasObservations: bodyAliasObservations.slice(),
       diffText: input.diffText,
       verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
       confidenceFilter: verifyFilterResult.confidenceFilter,
+      emptyBodyDropped,
+      originalCommentsLength,
     });
+    const emptyBodyDroppedCount = emptyBodyDropped.length;
+    // `::notice::` disclosure when the provider emitted any
+    // empty-body findings; mirrors src/cli/simulate-findings.ts:27-29.
+    // Sanitized so secret-bearing model output can't slip into the
+    // GitHub Actions notice metadata.
+    if (emptyBodyDroppedCount > 0) {
+      const message = `${BRAND_PREFIX}${emptyBodyDroppedCount} finding(s) had no body from the provider and were suppressed (see parse-warnings artifact); re-run or switch model if this persists.`;
+      const sanitized = sanitizeForPost(message, [providerApiKey, input.platformToken]);
+      process.stderr.write(`::notice::${sanitized}\n`);
+    }
     return {
       ...preVerifyOutcome,
       review: verifyFilterResult.review,
       ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      ...(emptyBodyDroppedCount > 0 ? { emptyBodyDroppedCount } : {}),
     };
   }
 
@@ -226,7 +261,9 @@ export async function requestLiveReview(input: {
       provider: providerName,
       modelId,
       severityWarnings: severityWarnings.slice(),
+      bodyAliasObservations: bodyAliasObservations.slice(),
       diffText: input.diffText,
+      originalCommentsLength: review.comments.length,
     });
   }
 
@@ -418,6 +455,9 @@ export async function requestLiveReview(input: {
     // Always clear the sink so a subsequent, unrelated request does not
     // inherit this request's warnings array.
     setActiveSeveritySink(null);
+    // Pair clear for the observation sink — concurrent reads in tests
+    // fail loudly if the slot is left non-null across requests.
+    setActiveParseObservationSink(null);
   }
 }
 
@@ -433,20 +473,48 @@ function withParseWarnings(input: {
   readonly provider: string;
   readonly modelId: string;
   readonly severityWarnings: readonly import("../provider/provider-parse.js").SeverityWarning[];
+  readonly bodyAliasObservations: readonly import("../provider/provider-parse.js").BodyAliasObservation[];
   readonly diffText: string;
   readonly verifiedFactsFilter?: import("./verify-findings.js").VerifiedFactsFilterResult;
   readonly confidenceFilter?: import("../review/filter-confidence.js").ConfidenceFilterResult;
+  // Empty-body entries moved out of `comments` by the partition layer,
+  // each carrying the ORIGINAL index in the model's emitted comments
+  // array so the parse-warnings artifact records `source: "comments"`.
+  readonly emptyBodyDropped?: readonly { readonly index: number; readonly comment: LiveReviewComment }[];
+  readonly originalCommentsLength: number;
 }): LiveProviderOutcome {
+  const emptyBodyDropped = input.emptyBodyDropped ?? [];
+  const emptyBodyWarnings: import("./parse-warnings.js").ParseWarning[] = emptyBodyDropped.map((d) => ({
+    reason: "empty-body" as const,
+    source: "comments" as const,
+    index: d.index,
+    modelPath: d.comment.path,
+    modelLine: d.comment.line,
+    modelSeverity: d.comment.severity,
+    bodyExcerpt: "",
+  }));
+  // An empty-body comment that is also off-diff appears in BOTH the
+  // explicit "empty-body" warnings above AND the
+  // "line-not-in-diff" / "path-not-in-diff" warnings from
+  // `collectParseWarnings` (after the partition, the moved entry sits
+  // in `review.suppressedComments` and re-enters the off-diff scan).
+  // This double-count is intentional — the two reasons are
+  // independently actionable and operators triage them separately.
   return {
     review: input.review,
     endpoint: input.endpoint,
     provider: input.provider,
     modelId: input.modelId,
     severityWarnings: input.severityWarnings,
-    parseWarnings: buildParseWarningsArtifact({
-      review: input.review,
-      diffText: input.diffText,
-    }).warnings,
+    parseWarnings: [
+      ...emptyBodyWarnings,
+      ...buildParseWarningsArtifact({
+        review: input.review,
+        diffText: input.diffText,
+        bodyAliasObservations: input.bodyAliasObservations,
+        originalCommentsLength: input.originalCommentsLength,
+      }).warnings,
+    ],
     verifiedFactsFilter: input.verifiedFactsFilter ?? {
       kept: input.review.comments,
       downgraded: [],
@@ -536,10 +604,23 @@ function applyVerifyFilter(review: LiveReview, diffText: string): {
   };
 }
 
+// Pair the post-partition LiveReview with the original-index map of
+// empty-body entries that were moved out of `comments`. The
+// parse-warnings artifact reads `emptyBodyDropped` to emit one
+// `reason: "empty-body"` warning per moved entry with
+// `source: "comments"` and the index in the model's emitted
+// comments array — mirroring the un-partitioned indexing that the
+// T12 contract pinned.
+type NormalizeResult = {
+  readonly review: LiveReview;
+  readonly emptyBodyDropped: readonly { readonly index: number; readonly comment: LiveReviewComment }[];
+  readonly originalCommentsLength: number;
+};
+
 function normalizeProviderReview(
   payload: ProviderReviewPayload,
   secrets: readonly string[],
-): LiveReview {
+): NormalizeResult {
   // Layer 4 deterministic verification is applied in the caller
   // (see `applyVerifyFilter` in `live-provider.ts`) AFTER the
   // parse-warnings artifact is built. Doing it in the caller means
@@ -547,11 +628,42 @@ function normalizeProviderReview(
   // inline filter drops. Don't re-add the filter here — see
   // the three-step flow in the Copilot/openai-compatible
   // branches.
+  //
+  // Identity enrichment runs before the empty-body partition so the
+  // moved entries retain durableIdentity for fingerprinting / dedup.
+  const sanitizedComments = payload.comments.map((comment) => normalizeProviderComment(comment, secrets));
+  const sanitizedSuppressed = payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets));
+  const keptComments: LiveReviewComment[] = [];
+  const emptyBodyDropped: { readonly index: number; readonly comment: LiveReviewComment }[] = [];
+  for (let i = 0; i < sanitizedComments.length; i += 1) {
+    const entry = sanitizedComments[i];
+    if (entry === undefined) continue;
+    if (entry.body.trim().length === 0) {
+      emptyBodyDropped.push({ index: i, comment: entry });
+    } else {
+      keptComments.push(entry);
+    }
+  }
+  // Defense-in-depth: if the model emits the same empty-body finding in both
+  // `comments` and `suppressed_comments`, count it exactly once. (path, line,
+  // body) uniquely identifies the finding — body is included so a model that
+  // emits a populated body in suppressed_comments at the same path/line still
+  // surfaces it.
+  const droppedKeys = new Set(
+    emptyBodyDropped.map((d) => `${d.comment.path}:${d.comment.line}:${d.comment.body}`),
+  );
+  const dedupedSuppressed = sanitizedSuppressed.filter(
+    (s) => !droppedKeys.has(`${s.path}:${s.line}:${s.body}`),
+  );
   return {
-    summary: sanitizeForPost(payload.summary, secrets),
-    verdict: payload.verdict,
-    comments: payload.comments.map((comment) => normalizeProviderComment(comment, secrets)),
-    suppressedComments: payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets)),
+    review: {
+      summary: sanitizeForPost(payload.summary, secrets),
+      verdict: payload.verdict,
+      comments: keptComments,
+      suppressedComments: [...dedupedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
+    },
+    emptyBodyDropped,
+    originalCommentsLength: sanitizedComments.length,
   };
 }
 

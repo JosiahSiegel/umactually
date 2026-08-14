@@ -8,6 +8,13 @@ For maintainers: see [docs/release-process.md](docs/release-process.md) for the
 release workflow (how to bump the version, fill in a `[X.Y.Z]` section, and
 ship a tag).
 
+## [Unreleased]
+
+### Fixed
+
+- **Findings with provider-empty `body` are no longer posted as `Finding at <path>:<line>.` placeholders.** When every inline finding body is empty (the same symptom class the v0.9.2 entry pinned), the self-healing retry now fires on the empty-body condition (previously it only fired on parse failure), the parser accepts the common body-key aliases `description`, `message`, `comment`, `issue`, and `detail` (the v0.9.2 schema rejected any key other than the literal `body`), and findings that are still empty after the retry are suppressed with full disclosure (suppressed count, per-finding `parse-warnings.json` entries, the new `empty-body` audit reason in `suppressed_comments[i].reason`, and a `::notice::` line on the step summary) instead of being posted as location-only inline threads. User-observed symptom: review payload posted 2 inline findings with empty bodies that rendered as `Finding at .github/workflows/pr-review.yml:9.` — where the finding is, but not what's wrong. The `umactually init` wizard templates, README Quickstart, and example fixtures are unchanged (no user-facing config change). `[src/cli/live-shared.ts] [src/cli/provider-prompts.ts] [src/cli/review-metrics.ts] [test/unit/live-shared-empty-body.test.ts] [test/unit/review-metrics-empty-body.test.ts]` (target version: 0.10.0)
+- **`docs/configuration.md` documented a nonexistent `UMACTUALLY_DEBUG_RAW_RESPONSE` env var**; corrected to `UMACTUALLY_DEBUG_RAW` with the GitHub Actions job-env workaround (the var is read in the local CLI process, not inside the action's composite step, so it must be exported in the calling workflow's `env:` block or passed via `UMACTUALLY_DEBUG_RAW: ${{ secrets.<...> }}`). `[docs/configuration.md]`
+
 ## [0.9.4] - 2026-08-13
 
 ### Added

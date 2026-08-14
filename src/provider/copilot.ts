@@ -1,8 +1,10 @@
 import {
   buildChatBody,
+  countPopulatedBodies,
   detectProviderError,
   diagnoseParseFailure,
   extractTextPayload,
+  hasOnlyEmptyBodyFindings,
   isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
   parseProviderUsage,
@@ -23,6 +25,7 @@ import {
 import { createRequestId, joinUrl } from "../util/url.js";
 import { BRAND } from "../util/brand.js";
 import { composeSignal } from "../util/async.js";
+import { isDebugRawActive } from "../util/debug-raw.js";
 import { DEFAULT_GITHUB_API_BASE } from "../util/provider-defaults.js";
 
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
@@ -188,22 +191,46 @@ async function runChatCall(
   // a parse failure even when extractJsonBlock returned an object. This
   // catches chat-format responses fed to the responses endpoint and
   // similar misconfigurations.
+  //
+  // Soft-fail detection (Minimax-M3 empty-body incident): a review whose
+  // comment bodies are ALL empty is schema-valid but hollow. Do NOT
+  // return it — fall through to the same self-healing retry the hard
+  // parse-fail uses. The original review is the fallback: a retry that
+  // throws, HTTP-fails, or parses no better resolves to the ORIGINAL
+  // review, never to the parse-fail error path.
+  let softFailOriginal: ProviderReviewPayload | null = null;
   if (isNonEmptyReview(review)) {
-    const usage = parseProviderUsage(rawText);
-    return {
-      ok: true,
-      endpoint: ENDPOINT_CHAT,
-      review,
-      requestId,
-      ...(usage !== undefined ? { usage } : {}),
-    };
+    if (!hasOnlyEmptyBodyFindings(review)) {
+      const usage = parseProviderUsage(rawText);
+      return {
+        ok: true,
+        endpoint: ENDPOINT_CHAT,
+        review,
+        requestId,
+        ...(usage !== undefined ? { usage } : {}),
+      };
+    }
+    softFailOriginal = review;
+    // [DEBUG-RAW] Trace the soft-fail decision so a production run can
+    // show WHY a second request fired despite a 200-OK schema-valid
+    // response. Mirrors the openai-compatible [DEBUG-RAW] style.
+    if (isDebugRawActive()) {
+      writeDebugRaw(
+        `[DEBUG-RAW] soft-fail: all ${review.comments.length} finding bodies empty; retrying\n`,
+      );
+    }
   }
 
   // Provider-error detection: check for router/proxy misconfiguration
   // before the self-healing retry. See openai-compatible.ts for the
   // full rationale — the short version: retrying won't help when no
   // model was invoked.
-  const providerError = detectProviderError(rawText);
+  //
+  // Soft-fail NOTE: a soft-fail response PARSED successfully, so it
+  // cannot be a provider error envelope — and the soft path must never
+  // resolve to an error. Skip the check there; the hard path below it
+  // is byte-identical to before.
+  const providerError = softFailOriginal === null ? detectProviderError(rawText) : null;
   if (providerError !== null) {
     return {
       ok: false,
@@ -248,9 +275,14 @@ async function runChatCall(
       buildHeaders: () => buildChatHeaders(session.token),
     });
   } catch {
-    // Retry HTTP call itself failed — surface the ORIGINAL parse failure
-    // (not the retry's network error) so the parse-fail path's diagnostic
-    // captures the actual root cause.
+    // Retry HTTP call itself failed. Hard path: surface the ORIGINAL
+    // parse failure (not the retry's network error) so the parse-fail
+    // path's diagnostic captures the actual root cause. Soft path: the
+    // original review is the safety net — resolve to it, never to an
+    // error.
+    if (softFailOriginal !== null) {
+      return softFailSuccess(softFailOriginal, rawText, requestId);
+    }
     return {
       ok: false,
       error: new ProviderError(
@@ -264,6 +296,9 @@ async function runChatCall(
     };
   }
   if (!retryResponse.ok) {
+    if (softFailOriginal !== null) {
+      return softFailSuccess(softFailOriginal, rawText, requestId);
+    }
     return {
       ok: false,
       error: new ProviderError(
@@ -276,7 +311,15 @@ async function runChatCall(
       ),
     };
   }
-  const retryRawText = await readResponseText(retryResponse, ENDPOINT_CHAT, requestId);
+  let retryRawText: string;
+  try {
+    retryRawText = await readResponseText(retryResponse, ENDPOINT_CHAT, requestId);
+  } catch (error) {
+    if (softFailOriginal !== null) {
+      return softFailSuccess(softFailOriginal, rawText, requestId);
+    }
+    throw error;
+  }
   const retryTextPayload = extractTextPayload(ENDPOINT_CHAT, retryRawText);
   let retryReview: ProviderReviewPayload | null = null;
   const parsedRetry = parseReviewPayload(retryTextPayload);
@@ -284,6 +327,9 @@ async function runChatCall(
     retryReview = parsedRetry;
   }
   if (retryReview === null) {
+    if (softFailOriginal !== null) {
+      return softFailSuccess(softFailOriginal, rawText, requestId);
+    }
     const diagnosis = diagnoseParseFailure({ rawText });
     return {
       ok: false,
@@ -299,7 +345,39 @@ async function runChatCall(
     };
   }
 
+  // Soft-fail: adopt the retry ONLY when it strictly improved the
+  // populated-body count. A retry that parses but is no better (or
+  // worse) keeps the original verdict/summary.
+  if (softFailOriginal !== null && countPopulatedBodies(retryReview) <= countPopulatedBodies(softFailOriginal)) {
+    return softFailSuccess(softFailOriginal, rawText, requestId);
+  }
+
   return { ok: true, endpoint: ENDPOINT_CHAT, review: retryReview, requestId };
+}
+
+/**
+ * Build the soft-fail resolution: the original (hollow-bodies) review
+ * with the original response's usage block. The soft-fail contract
+ * mandates this shape on EVERY failed retry branch — throw, HTTP
+ * failure, unparseable payload, or no-better payload.
+ */
+function softFailSuccess(
+  review: ProviderReviewPayload,
+  rawText: string,
+  requestId: string,
+): CopilotCallResult {
+  const usage = parseProviderUsage(rawText);
+  return {
+    ok: true,
+    endpoint: ENDPOINT_CHAT,
+    review,
+    requestId,
+    ...(usage !== undefined ? { usage } : {}),
+  };
+}
+
+function writeDebugRaw(message: string): void {
+  process.stderr.write(message);
 }
 
 function buildTokenHeaders(githubToken: string): Record<string, string> {
