@@ -25,8 +25,13 @@ describe("docs/debug-raw env-var name consistency", () => {
   });
 
   it("DOCS-DEBUG-RAW-003: docs/configuration.md does not reference the stale env-var name", () => {
-    // Derived from DEBUG_RAW_ENV so the stale literal is never hardcoded here.
-    const staleName = `${DEBUG_RAW_ENV}_RESPONSE`;
+    // Hardcoded on purpose: this is the exact v0.9.3 docs-drift literal cited by
+    // CHANGELOG.md. Deriving it from DEBUG_RAW_ENV (e.g. `${DEBUG_RAW_ENV}_RESPONSE`)
+    // would make the test tautological — it would silently pass for any canonical
+    // name and never flag a future regression where this stale literal reappears
+    // in the docs. Pinning the historical string keeps the regression net live
+    // even if DEBUG_RAW_ENV itself changes again.
+    const staleName = "UMACTUALLY_DEBUG_RAW_RESPONSE";
     expect(docs).not.toContain(staleName);
   });
 });
