@@ -13355,8 +13355,20 @@ function isNonEmptyReview(review) {
  *   - `suppressed_comments` are deliberately EXCLUDED — only the
  *     published `comments` array decides.
  */
+/**
+ * Defense-in-depth coercion: treats any non-string body as effectively
+ * empty. The type system guarantees `ProviderComment.body` is `string`,
+ * but the soft-fail predicates in this module operate on the parse-result
+ * `ProviderReviewPayload` shape — a caller that bypasses the parser (or a
+ * future schema relaxation) could surface `null`/`undefined`/numeric bodies
+ * that would otherwise throw at the `.trim()` call. Coercing to "" here is
+ * cheap and keeps the predicates total.
+ */
+function bodyIsEffectivelyEmpty(body) {
+    return typeof body !== "string" || body.trim().length === 0;
+}
 function hasOnlyEmptyBodyFindings(review) {
-    return review.comments.length > 0 && review.comments.every(c => c.body.trim().length === 0);
+    return review.comments.length > 0 && review.comments.every(c => bodyIsEffectivelyEmpty(c.body));
 }
 /**
  * Counts how many comments in the review carry non-whitespace body text.
@@ -13368,7 +13380,7 @@ function hasOnlyEmptyBodyFindings(review) {
  * (wiring lands in T10). Pure — no logging, no telemetry.
  */
 function countPopulatedBodies(review) {
-    return review.comments.filter(c => c.body.trim().length > 0).length;
+    return review.comments.filter(c => !bodyIsEffectivelyEmpty(c.body)).length;
 }
 /**
  * Self-healing follow-up prefix prepended to the original user
@@ -18725,32 +18737,6 @@ function extractFirstSentence(body) {
 function isStructurallyEmptyReview(review) {
     return review.comments.length === 0 && review.suppressedComments.length === 0;
 }
-/**
- * Move every trim-empty entry from `review.comments` into
- * `review.suppressedComments`. Appends the moved entries (no-op
- * when none). Exported so unit tests can exercise the partition
- * shape independently of the live pipeline.
- */
-function partitionEmptyBodyComments(review) {
-    const kept = [];
-    const moved = [];
-    for (const comment of review.comments) {
-        if (comment.body.trim().length === 0) {
-            moved.push(comment);
-        }
-        else {
-            kept.push(comment);
-        }
-    }
-    if (moved.length === 0) {
-        return review;
-    }
-    return {
-        ...review,
-        comments: kept,
-        suppressedComments: [...review.suppressedComments, ...moved],
-    };
-}
 class LiveReviewError extends Error {
     code;
     name = "LiveReviewError";
@@ -19202,12 +19188,6 @@ function countSuppressedComments(review, diffText) {
  */
 function preparePostedReview(input) {
     const suggestionMode = input.suggestionMode ?? "off";
-    // Re-partition empty-body entries so the suppression contract
-    // holds for direct LiveReview callers (the production pipeline
-    // already partitions in `normalizeProviderReview`, so this is a
-    // no-op there but a contract-required defense for tests / fixture
-    // builders).
-    const partitionedReview = partitionEmptyBodyComments(input.review);
     // Parse the diff ONCE and pass the index to all three selectors.
     // Each of the public selectors (`selectPostableComments`,
     // `selectOffDiffComments`, `countSuppressedComments`) was
@@ -19216,7 +19196,7 @@ function preparePostedReview(input) {
     // index so the parse runs exactly once.
     const positions = parse_positions_parseDiffPositions(input.diffText);
     const postableComments = selectPostableCommentsWithPositions({
-        review: partitionedReview,
+        review: input.review,
         positions,
         parsed: input.parsed,
         secrets: input.secrets,
@@ -19243,8 +19223,8 @@ function preparePostedReview(input) {
     // re-parses the diff and re-runs the filter. `preparePostedReview`
     // already has `positions` and the off-diff array, so it computes
     // the count inline rather than calling the helper.
-    const offDiffFromComments = selectOffDiffCommentsWithPositions(partitionedReview, positions);
-    const suppressedCommentCount = partitionedReview.suppressedComments.length + offDiffFromComments.length;
+    const offDiffFromComments = selectOffDiffCommentsWithPositions(input.review, positions);
+    const suppressedCommentCount = input.review.suppressedComments.length + offDiffFromComments.length;
     const severityCounts = countBySeverity(validatedCommentsResult.comments);
     // Reconcile the model's raw verdict against the postable severity
     // counts. The body would render a `⛔ NEEDS_FIX` headline against a
@@ -19542,8 +19522,10 @@ function passesSeverityPolicy(comment, parsed) {
  *     by the diff filter)
  *   - `line-not-in-diff` — the path appears in the diff but the
  *     specific line does not (off-by-one or hallucinated line number)
- *   - `path-and-line-not-in-diff` — neither the path nor the line
- *     matches anything in the diff
+ *   - `empty-body` — the model emitted a comment with an empty body;
+ *     if the same comment is also off-diff, BOTH warnings are emitted
+ *     (double-count is intentional per the live-provider.ts partition
+ *     contract: the two reasons are independently actionable)
  */
 function collectParseWarnings(input) {
     const positions = parse_positions_parseDiffPositions(input.diffText);
@@ -19567,6 +19549,13 @@ function collectParseWarnings(input) {
             // `normalizeProviderReview` moves every trim-empty entry into
             // `suppressedComments` and emits the warning explicitly with
             // `source: "comments"`. Re-emitting here would double-count.
+            //
+            // Does NOT return early: an empty-body comment that ALSO has an
+            // off-diff citation is double-counted (intentional per the
+            // live-provider.ts partition contract: "two reasons are
+            // independently actionable"). Without this, operators triaging
+            // an attacker-supplied path/line + empty body would see only
+            // `empty-body` and miss the path fabrication.
             if (source === "comments" && comment.body.trim().length === 0) {
                 warnings.push({
                     reason: "empty-body",
@@ -19577,7 +19566,7 @@ function collectParseWarnings(input) {
                     modelSeverity: comment.severity,
                     bodyExcerpt: "",
                 });
-                return;
+                // Continue to off-diff check — do not return.
             }
             // Defensive: a model might emit a non-integer line OR an
             // empty path. Treat both as off-diff (the most actionable
@@ -19622,7 +19611,7 @@ function collectParseWarnings(input) {
 function buildParseWarningsArtifact(input) {
     const diffWarnings = collectParseWarnings(input);
     const aliasWarnings = (input.bodyAliasObservations ?? []).map((obs) => {
-        const source = obs.commentIndex < input.review.comments.length
+        const source = obs.commentIndex < input.originalCommentsLength
             ? "comments"
             : "suppressed_comments";
         return {
@@ -22352,7 +22341,7 @@ async function requestLiveReview(input) {
      * regardless of provider.
      */
     function handleSuccess(result, providerName) {
-        const { review: preVerifyReview, emptyBodyDropped } = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+        const { review: preVerifyReview, emptyBodyDropped, originalCommentsLength } = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
         const verifyFilterResult = input.parsed.verifyFindings !== false
             ? applyVerifyFilter(preVerifyReview, input.diffText)
             : {
@@ -22379,6 +22368,7 @@ async function requestLiveReview(input) {
             verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
             confidenceFilter: verifyFilterResult.confidenceFilter,
             emptyBodyDropped,
+            originalCommentsLength,
         });
         const emptyBodyDroppedCount = emptyBodyDropped.length;
         // `::notice::` disclosure when the provider emitted any
@@ -22420,6 +22410,7 @@ async function requestLiveReview(input) {
             severityWarnings: severityWarnings.slice(),
             bodyAliasObservations: bodyAliasObservations.slice(),
             diffText: input.diffText,
+            originalCommentsLength: review.comments.length,
         });
     }
     try {
@@ -22618,6 +22609,7 @@ function withParseWarnings(input) {
                 review: input.review,
                 diffText: input.diffText,
                 bodyAliasObservations: input.bodyAliasObservations,
+                originalCommentsLength: input.originalCommentsLength,
             }).warnings,
         ],
         verifiedFactsFilter: input.verifiedFactsFilter ?? {
@@ -22729,14 +22721,22 @@ function normalizeProviderReview(payload, secrets) {
             keptComments.push(entry);
         }
     }
+    // Defense-in-depth: if the model emits the same empty-body finding in both
+    // `comments` and `suppressed_comments`, count it exactly once. (path, line,
+    // body) uniquely identifies the finding — body is included so a model that
+    // emits a populated body in suppressed_comments at the same path/line still
+    // surfaces it.
+    const droppedKeys = new Set(emptyBodyDropped.map((d) => `${d.comment.path}:${d.comment.line}:${d.comment.body}`));
+    const dedupedSuppressed = sanitizedSuppressed.filter((s) => !droppedKeys.has(`${s.path}:${s.line}:${s.body}`));
     return {
         review: {
             summary: sanitizeForPost(payload.summary, secrets),
             verdict: payload.verdict,
             comments: keptComments,
-            suppressedComments: [...sanitizedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
+            suppressedComments: [...dedupedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
         },
         emptyBodyDropped,
+        originalCommentsLength: sanitizedComments.length,
     };
 }
 function normalizeProviderComment(comment, secrets) {
