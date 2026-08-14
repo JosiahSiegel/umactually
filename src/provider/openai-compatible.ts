@@ -1,9 +1,11 @@
 import {
   buildChatBody,
   buildResponsesBody,
+  countPopulatedBodies,
   detectProviderError,
   diagnoseParseFailure,
   extractTextPayload,
+  hasOnlyEmptyBodyFindings,
   isNonEmptyReview,
   PARSE_FAIL_RETRY_PROMPT,
   parseProviderUsage,
@@ -314,15 +316,35 @@ async function callEndpoint(
   // for any JSON object), so a chat-format response (`{choices: [...]}`)
   // fed to the responses endpoint can otherwise pass as a 0-finding
   // "empty review" — see CLARITY-10.
+  // Soft-fail detection (Minimax-M3 empty-body incident): a review whose
+  // comment bodies are ALL empty is schema-valid but hollow. Do NOT
+  // return it — fall through to the same self-healing retry the hard
+  // parse-fail uses. The original review is preserved as the fallback:
+  // if the retry throws, HTTP-fails, or parses worse, we resolve to the
+  // ORIGINAL review (verdict/summary preserved), never to the parse-fail
+  // throw path that the hard flow uses below.
+  let softFailOriginal: ProviderReviewPayload | null = null;
   if (isNonEmptyReview(review)) {
-    const usage = parseProviderUsage(rawText);
-    return {
-      ok: true,
-      endpoint,
-      review,
-      requestId,
-      ...(usage !== undefined ? { usage } : {}),
-    };
+    if (!hasOnlyEmptyBodyFindings(review)) {
+      const usage = parseProviderUsage(rawText);
+      return {
+        ok: true,
+        endpoint,
+        review,
+        requestId,
+        ...(usage !== undefined ? { usage } : {}),
+      };
+    }
+    softFailOriginal = review;
+    // [DEBUG-RAW] Trace the soft-fail decision so a production run can
+    // show WHY a second request fired despite a 200-OK schema-valid
+    // response. Mirrors the [DEBUG-RAW] style above.
+    if (isDebugRawActive()) {
+      writeDebugRaw(
+        `[DEBUG-RAW] soft-fail: all ${review.comments.length} finding bodies empty; retrying\n`,
+        config,
+      );
+    }
   }
 
   // Provider-error detection: before attempting the self-healing
@@ -334,7 +356,12 @@ async function callEndpoint(
   // saves a wasted retry and surfaces a specific error code
   // (`provider_error`) so the live-review layer can hard-fail instead
   // of posting a 0-finding COMMENT review that exits 0.
-  const providerError = detectProviderError(rawText);
+  //
+  // Soft-fail NOTE: a soft-fail response PARSED successfully, so it
+  // cannot be a provider error envelope — and the soft path must never
+  // resolve to a throw. Skip the check there; the hard path below it
+  // is byte-identical to before.
+  const providerError = softFailOriginal === null ? detectProviderError(rawText) : null;
   if (providerError !== null) {
     throw new ProviderError(
       "provider_error",
@@ -449,6 +476,20 @@ async function callEndpoint(
     // ORIGINAL rawText. retryResponseStatus stays null in this branch.
   }
   if (retryReview === null) {
+    // Soft-fail: the original parsed review is the safety net. A retry
+    // that throws, HTTP-fails, or stays unparseable resolves here — the
+    // original verdict/summary stand and the caller sees a success, NOT
+    // a parse-fail throw.
+    if (softFailOriginal !== null) {
+      const usage = parseProviderUsage(rawText);
+      return {
+        ok: true,
+        endpoint,
+        review: softFailOriginal,
+        requestId,
+        ...(usage !== undefined ? { usage } : {}),
+      };
+    }
     const diagnosis = diagnoseParseFailure({ rawText });
     throw buildParseFailError({
       endpoint,
@@ -459,6 +500,20 @@ async function callEndpoint(
       truncated: diagnosis.truncated,
       ...(diagnosis.usage !== undefined ? { usage: diagnosis.usage } : {}),
     });
+  }
+
+  // Soft-fail: adopt the retry ONLY when it strictly improved the
+  // populated-body count. A retry that parses but is no better (or
+  // worse) keeps the original verdict/summary.
+  if (softFailOriginal !== null && countPopulatedBodies(retryReview) <= countPopulatedBodies(softFailOriginal)) {
+    const usage = parseProviderUsage(rawText);
+    return {
+      ok: true,
+      endpoint,
+      review: softFailOriginal,
+      requestId,
+      ...(usage !== undefined ? { usage } : {}),
+    };
   }
 
   return { ok: true, endpoint, review: retryReview, requestId };
