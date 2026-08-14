@@ -16,11 +16,15 @@ ship a tag).
 
 ### Fixed
 
-- **Canonical install example, README Quickstart, and wizard template now ship with safer workflow defaults.** All three emit a SHA-pinned `uses:` reference to the action (`@317613a... # v1` instead of floating `@v1`), a `paths:` trigger filter that scopes review to code/config files (excludes `data/` and `.md`), a `branches: [main]` filter so contributors don't see noisy red Xs on fork PRs, and a `concurrency:` group with `cancel-in-progress: true` so retries don't thunder. The README Quickstart now also documents the Dependabot-update path for keeping the SHA-pin current. Matches findings 1-4 from the first end-to-end waffle-house-menu run.
-
 ### Removed
 
 ### Security
+
+## [0.9.3] - 2026-08-13
+
+### Fixed
+
+- **Canonical install example, README Quickstart, and `umactually init` wizard template now ship with safer workflow defaults.** All three emit a SHA-pinned `uses:` reference to the action (`@317613a... # v1` instead of floating `@v1`), a `paths:` trigger filter that scopes review to code/config files (excludes `data/` and `.md`), a `branches: [main]` filter so contributors don't see noisy red Xs on fork PRs, and a `concurrency:` group with `cancel-in-progress: true` so retries don't thunder. The README Quickstart now also documents the Dependabot-update path for keeping the SHA-pin current. Matches findings 1-4 from the first end-to-end waffle-house-menu run.
 
 ## [0.9.2] - 2026-08-13
 
