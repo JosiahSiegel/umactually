@@ -1,6 +1,32 @@
 # Runs umactually as a pinned npm CLI for pull requests.
+# This is the longform/inline variant — no action SHA to pin because the
+# workflow is fully inline (`npm install -g umactually@<version>` + `umactually
+# review`). The same trigger, paths-filter, and concurrency posture apply.
 name: PR review
-on: [pull_request]
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.ts"
+      - "**.tsx"
+      - "**.js"
+      - "**.jsx"
+      - "**.mjs"
+      - "**.cjs"
+      - "**.py"
+      - "**.go"
+      - "**.rs"
+      - "**.java"
+      - "**.kt"
+      - "**.swift"
+      - "**.rb"
+      - "**.sh"
+      - "**.yml"
+      - "**.yaml"
+      - "**.toml"
+      - "**.json"
+      - "Dockerfile"
+      - "!.github/workflows/pr-review.yml"
 concurrency:
   group: umactually-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

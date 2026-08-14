@@ -32,7 +32,7 @@ describe("init CI templates drift contract", () => {
   // is against the actual rendered workflow body only (mirrors the
   // shortform `shortformFixtureDocComment` pattern above).
   const longformFixtureDeprecationComment =
-    /^[ \t]*#\s*(Inline-form|Inline longform|Removal of the inline|longform kept|umactually init --ci azure)[^\n]*\n(?:^[ \t]*#\s*[^\n]*\n)*/gum;
+    /^[ \t]*#\s*(Inline-form|Inline longform|Removal of the inline|longform kept|umactually init --ci azure|This is the longform)[^\n]*\n(?:^[ \t]*#\s*[^\n]*\n)*/gum;
   for (const [target, relativePath] of Object.entries(longformFiles)) {
     it(`${target} longform bytes equal the canonical file modulo the one version pin`, async () => {
       // Given: the checked-in canonical longform workflow, independent from generated output.
@@ -94,10 +94,11 @@ describe("init CI templates drift contract", () => {
   // `permissions:` block, the env-var forwarding) is caught even if the
   // byte-equality assertion above keeps passing. Each test pins the unique
   // structural fingerprints of one canonical example file.
-  it("github longform: canonical example pins the install version, forwards UMACTUALLY_API_KEY, and posts on `pull_request`", () => {
+  it("github longform: canonical example pins the install version, forwards UMACTUALLY_API_KEY, and runs on pull_request targeting main", () => {
     const body = readFileSync(resolve(longformFiles.github), "utf8");
     expect(body).toMatch(/npm install -g umactually@/u);
-    expect(body).toMatch(/on:\s*\[pull_request\]/u);
+    expect(body).toMatch(/pull_request:\s*\n\s*branches:\s*\[main\]/u);
+    expect(body).toMatch(/paths:\s*\n\s*-\s*"\*\*\.ts"/u);
     expect(body).toMatch(/concurrency:/u);
     expect(body).toMatch(/cancel-in-progress:\s*true/u);
     expect(body).toMatch(/contents:\s*read/u);
@@ -130,10 +131,11 @@ describe("init CI templates drift contract", () => {
   // key enumerated in T12 acceptance criteria so a future regression that
   // drops a key (e.g. `paths-ignore`, `output-artifact`) is caught
   // independent of the byte-equality check above.
-  it("github shortform: canonical action-ref fixture references the published action and lists every documented `with:` input", () => {
+  it("github shortform: canonical action-ref fixture references the published action (SHA-pinned) and lists every documented `with:` input", () => {
     const body = readFileSync(resolve(shortformFiles.github), "utf8");
-    expect(body).toMatch(/JosiahSiegel\/umactually-action@v1/u);
-    expect(body).toMatch(/on:\s*\[pull_request\]/u);
+    expect(body).toMatch(/JosiahSiegel\/umactually-action@317613abd39061d90f761e965dde1dee8f705e19\s+# v1/u);
+    expect(body).toMatch(/pull_request:\s*\n\s*branches:\s*\[main\]/u);
+    expect(body).toMatch(/paths:\s*\n\s*-\s*"\*\*\.ts"/u);
     expect(body).toMatch(/concurrency:/u);
     expect(body).toMatch(/cancel-in-progress:\s*true/u);
     expect(body).toMatch(/contents:\s*read/u);
@@ -144,14 +146,16 @@ describe("init CI templates drift contract", () => {
     expect(body).toMatch(/with:\s*\n(?:\s*[^\n]+\n)*?\s*api-key:\s*\$\{\{\s*secrets\.UMACTUALLY_API_KEY\s*\}\}/u);
     expect(body).not.toMatch(/^\s*secrets:/mu);
     expect(body).toMatch(/provider:\s*openai-compatible/u);
-    expect(body).toMatch(/config-path:\s*\.\/umactually\.review\.json/u);
-    expect(body).toMatch(/output-artifact:\s*umactually-review\.json/u);
-    expect(body).toMatch(/skip-draft:\s*'true'/u);
-    expect(body).toMatch(/paths-ignore:\s*'\*\*\/\*\.md,docs\/\*\*,\*\*\/\*\.lock'/u);
     // The shortform MUST NOT carry the inline `npm install -g umactually@...`
     // step — that responsibility is delegated to the action.
     expect(body).not.toMatch(/npm install -g umactually@/u);
     expect(body).not.toMatch(/actions\/setup-node/u);
+    // Dead config removed: skip-draft and paths-ignore are no longer
+    // forwarded to the action (the on.paths filter handles path scoping).
+    expect(body).not.toMatch(/skip-draft/u);
+    expect(body).not.toMatch(/paths-ignore/u);
+    expect(body).not.toMatch(/config-path/u);
+    expect(body).not.toMatch(/output-artifact/u);
   });
 
   it("azure shortform: canonical task-ref fixture references the published task and lists every documented `inputs:` key", () => {

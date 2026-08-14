@@ -6,17 +6,18 @@ A Node.js 24 CLI for auditable, policy-aware pull-request review. It posts valid
 [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
-
 Latest release: **[v0.9.2](https://github.com/JosiahSiegel/umactually/releases/tag/v0.9.2)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 ## Quickstart
 
 Add `umactually-action` to a pull-request workflow, configure two repo secrets, ship. The action owns Node.js 24 setup, `npm install -g umactually`, the first-run secret bootstrap, the live review, and the verdict output for branch protection. Full reference: [`docs/install-action.md`](docs/install-action.md).
 
-1. **Add the action** to `.github/workflows/umactually-pr-review.yml`:
+1. **Add the action** to `.github/workflows/umactually-pr-review.yml` (SHA-pinned; enable Dependabot on `uses:` to auto-bump the SHA):
 
    ```yaml
-   - uses: JosiahSiegel/umactually-action@v1
+   - uses: JosiahSiegel/umactually-action@317613abd39061d90f761e965dde1dee8f705e19  # v1
      with:
+       cli-version: 0.9.2
+       provider: openai-compatible
        api-url: ${{ secrets.UMACTUALLY_API_URL }}
        api-key: ${{ secrets.UMACTUALLY_API_KEY }}
    ```
