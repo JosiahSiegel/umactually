@@ -49,8 +49,10 @@ export type ParseWarning = {
  *     by the diff filter)
  *   - `line-not-in-diff` — the path appears in the diff but the
  *     specific line does not (off-by-one or hallucinated line number)
- *   - `path-and-line-not-in-diff` — neither the path nor the line
- *     matches anything in the diff
+ *   - `empty-body` — the model emitted a comment with an empty body;
+ *     if the same comment is also off-diff, BOTH warnings are emitted
+ *     (double-count is intentional per the live-provider.ts partition
+ *     contract: the two reasons are independently actionable)
  */
 export function collectParseWarnings(input: {
   readonly review: {
@@ -81,6 +83,13 @@ export function collectParseWarnings(input: {
       // `normalizeProviderReview` moves every trim-empty entry into
       // `suppressedComments` and emits the warning explicitly with
       // `source: "comments"`. Re-emitting here would double-count.
+      //
+      // Does NOT return early: an empty-body comment that ALSO has an
+      // off-diff citation is double-counted (intentional per the
+      // live-provider.ts partition contract: "two reasons are
+      // independently actionable"). Without this, operators triaging
+      // an attacker-supplied path/line + empty body would see only
+      // `empty-body` and miss the path fabrication.
       if (source === "comments" && comment.body.trim().length === 0) {
         warnings.push({
           reason: "empty-body",
@@ -91,7 +100,7 @@ export function collectParseWarnings(input: {
           modelSeverity: comment.severity,
           bodyExcerpt: "",
         });
-        return;
+        // Continue to off-diff check — do not return.
       }
       // Defensive: a model might emit a non-integer line OR an
       // empty path. Treat both as off-diff (the most actionable

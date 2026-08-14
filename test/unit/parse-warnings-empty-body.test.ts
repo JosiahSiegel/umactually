@@ -413,3 +413,84 @@ describe("body-alias source attribution — pre-partition threshold", () => {
     expect(aliasWarning?.source).toBe("suppressed_comments");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Group 7 — empty-body + off-diff double-count (F4 fix)
+// ---------------------------------------------------------------------------
+
+describe("empty-body + off-diff double-count (F4)", () => {
+  // A comment with an empty body AND an off-diff path must produce BOTH
+  // an "empty-body" warning AND a "path-not-in-diff" warning. The
+  // live-provider.ts partition contract documents this double-count as
+  // intentional ("the two reasons are independently actionable").
+  it("emits both empty-body and path-not-in-diff for empty body + off-diff path", () => {
+    const artifact = buildParseWarningsArtifact({
+      review: {
+        comments: [
+          {
+            path: "src/nonexistent.ts",
+            line: 1,
+            body: "",
+            severity: "high",
+            category: "security",
+          },
+        ],
+        suppressedComments: [],
+      },
+      diffText: FIXTURE_DIFF,
+    });
+    const reasons = artifact.warnings.map((w) => w.reason);
+    expect(reasons).toContain("empty-body");
+    expect(reasons).toContain("path-not-in-diff");
+    // Both warnings reference the same comment index.
+    const emptyBody = artifact.warnings.find((w) => w.reason === "empty-body");
+    const offDiff = artifact.warnings.find((w) => w.reason === "path-not-in-diff");
+    expect(emptyBody?.index).toBe(0);
+    expect(offDiff?.index).toBe(0);
+    expect(emptyBody?.modelPath).toBe("src/nonexistent.ts");
+    expect(offDiff?.modelPath).toBe("src/nonexistent.ts");
+  });
+
+  it("emits both empty-body and line-not-in-diff for empty body + off-diff line", () => {
+    const artifact = buildParseWarningsArtifact({
+      review: {
+        comments: [
+          {
+            path: "src/example.ts",
+            line: 999,
+            body: "",
+            severity: "medium",
+            category: "correctness",
+          },
+        ],
+        suppressedComments: [],
+      },
+      diffText: FIXTURE_DIFF,
+    });
+    const reasons = artifact.warnings.map((w) => w.reason);
+    expect(reasons).toContain("empty-body");
+    expect(reasons).toContain("line-not-in-diff");
+  });
+
+  it("does NOT double-count when body is empty but anchor is valid", () => {
+    const artifact = buildParseWarningsArtifact({
+      review: {
+        comments: [
+          {
+            path: "src/example.ts",
+            line: 1,
+            body: "",
+            severity: "low",
+            category: "style",
+          },
+        ],
+        suppressedComments: [],
+      },
+      diffText: FIXTURE_DIFF,
+    });
+    const reasons = artifact.warnings.map((w) => w.reason);
+    expect(reasons).toContain("empty-body");
+    expect(reasons).not.toContain("path-not-in-diff");
+    expect(reasons).not.toContain("line-not-in-diff");
+  });
+});
