@@ -180,7 +180,7 @@ export async function requestLiveReview(input: {
     result: { readonly ok: true; readonly endpoint: string; readonly review: ProviderReviewPayload; readonly usage?: import("../provider/provider-error.js").ProviderUsage },
     providerName: string,
   ): LiveProviderOutcome {
-    const preVerifyReview = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
+    const { review: preVerifyReview, emptyBodyDropped } = normalizeProviderReview(result.review, [providerApiKey, input.platformToken]);
     const verifyFilterResult = input.parsed.verifyFindings !== false
       ? applyVerifyFilter(preVerifyReview, input.diffText)
       : {
@@ -206,11 +206,23 @@ export async function requestLiveReview(input: {
       diffText: input.diffText,
       verifiedFactsFilter: verifyFilterResult.verifiedFactsFilter,
       confidenceFilter: verifyFilterResult.confidenceFilter,
+      emptyBodyDropped,
     });
+    const emptyBodyDroppedCount = emptyBodyDropped.length;
+    // `::notice::` disclosure when the provider emitted any
+    // empty-body findings; mirrors src/cli/simulate-findings.ts:27-29.
+    // Sanitized so secret-bearing model output can't slip into the
+    // GitHub Actions notice metadata.
+    if (emptyBodyDroppedCount > 0) {
+      const message = `${BRAND_PREFIX}${emptyBodyDroppedCount} finding(s) had no body from the provider and were suppressed (see parse-warnings artifact); re-run or switch model if this persists.`;
+      const sanitized = sanitizeForPost(message, [providerApiKey, input.platformToken]);
+      process.stderr.write(`::notice::${sanitized}\n`);
+    }
     return {
       ...preVerifyOutcome,
       review: verifyFilterResult.review,
       ...(result.usage !== undefined ? { usage: result.usage } : {}),
+      ...(emptyBodyDroppedCount > 0 ? { emptyBodyDroppedCount } : {}),
     };
   }
 
@@ -463,18 +475,42 @@ function withParseWarnings(input: {
   readonly diffText: string;
   readonly verifiedFactsFilter?: import("./verify-findings.js").VerifiedFactsFilterResult;
   readonly confidenceFilter?: import("../review/filter-confidence.js").ConfidenceFilterResult;
+  // Empty-body entries moved out of `comments` by the partition layer,
+  // each carrying the ORIGINAL index in the model's emitted comments
+  // array so the parse-warnings artifact records `source: "comments"`.
+  readonly emptyBodyDropped?: readonly { readonly index: number; readonly comment: LiveReviewComment }[];
 }): LiveProviderOutcome {
+  const emptyBodyDropped = input.emptyBodyDropped ?? [];
+  const emptyBodyWarnings: import("./parse-warnings.js").ParseWarning[] = emptyBodyDropped.map((d) => ({
+    reason: "empty-body" as const,
+    source: "comments" as const,
+    index: d.index,
+    modelPath: d.comment.path,
+    modelLine: d.comment.line,
+    modelSeverity: d.comment.severity,
+    bodyExcerpt: "",
+  }));
+  // An empty-body comment that is also off-diff appears in BOTH the
+  // explicit "empty-body" warnings above AND the
+  // "line-not-in-diff" / "path-not-in-diff" warnings from
+  // `collectParseWarnings` (after the partition, the moved entry sits
+  // in `review.suppressedComments` and re-enters the off-diff scan).
+  // This double-count is intentional — the two reasons are
+  // independently actionable and operators triage them separately.
   return {
     review: input.review,
     endpoint: input.endpoint,
     provider: input.provider,
     modelId: input.modelId,
     severityWarnings: input.severityWarnings,
-    parseWarnings: buildParseWarningsArtifact({
-      review: input.review,
-      diffText: input.diffText,
-      bodyAliasObservations: input.bodyAliasObservations,
-    }).warnings,
+    parseWarnings: [
+      ...emptyBodyWarnings,
+      ...buildParseWarningsArtifact({
+        review: input.review,
+        diffText: input.diffText,
+        bodyAliasObservations: input.bodyAliasObservations,
+      }).warnings,
+    ],
     verifiedFactsFilter: input.verifiedFactsFilter ?? {
       kept: input.review.comments,
       downgraded: [],
@@ -564,10 +600,22 @@ function applyVerifyFilter(review: LiveReview, diffText: string): {
   };
 }
 
+// Pair the post-partition LiveReview with the original-index map of
+// empty-body entries that were moved out of `comments`. The
+// parse-warnings artifact reads `emptyBodyDropped` to emit one
+// `reason: "empty-body"` warning per moved entry with
+// `source: "comments"` and the index in the model's emitted
+// comments array — mirroring the un-partitioned indexing that the
+// T12 contract pinned.
+type NormalizeResult = {
+  readonly review: LiveReview;
+  readonly emptyBodyDropped: readonly { readonly index: number; readonly comment: LiveReviewComment }[];
+};
+
 function normalizeProviderReview(
   payload: ProviderReviewPayload,
   secrets: readonly string[],
-): LiveReview {
+): NormalizeResult {
   // Layer 4 deterministic verification is applied in the caller
   // (see `applyVerifyFilter` in `live-provider.ts`) AFTER the
   // parse-warnings artifact is built. Doing it in the caller means
@@ -575,11 +623,30 @@ function normalizeProviderReview(
   // inline filter drops. Don't re-add the filter here — see
   // the three-step flow in the Copilot/openai-compatible
   // branches.
+  //
+  // Identity enrichment runs before the empty-body partition so the
+  // moved entries retain durableIdentity for fingerprinting / dedup.
+  const sanitizedComments = payload.comments.map((comment) => normalizeProviderComment(comment, secrets));
+  const sanitizedSuppressed = payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets));
+  const keptComments: LiveReviewComment[] = [];
+  const emptyBodyDropped: { readonly index: number; readonly comment: LiveReviewComment }[] = [];
+  for (let i = 0; i < sanitizedComments.length; i += 1) {
+    const entry = sanitizedComments[i];
+    if (entry === undefined) continue;
+    if (entry.body.trim().length === 0) {
+      emptyBodyDropped.push({ index: i, comment: entry });
+    } else {
+      keptComments.push(entry);
+    }
+  }
   return {
-    summary: sanitizeForPost(payload.summary, secrets),
-    verdict: payload.verdict,
-    comments: payload.comments.map((comment) => normalizeProviderComment(comment, secrets)),
-    suppressedComments: payload.suppressed_comments.map((comment) => normalizeProviderComment(comment, secrets)),
+    review: {
+      summary: sanitizeForPost(payload.summary, secrets),
+      verdict: payload.verdict,
+      comments: keptComments,
+      suppressedComments: [...sanitizedSuppressed, ...emptyBodyDropped.map((d) => d.comment)],
+    },
+    emptyBodyDropped,
   };
 }
 

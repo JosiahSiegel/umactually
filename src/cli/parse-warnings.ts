@@ -76,7 +76,12 @@ export function collectParseWarnings(input: {
       // Records the body-replacement failure rather than a citation
       // failure so the operator can distinguish "model wrote nothing
       // here" from "model cited a fake path".
-      if (comment.body.trim().length === 0) {
+      //
+      // Source-gated to `comments`: the partition layer in
+      // `normalizeProviderReview` moves every trim-empty entry into
+      // `suppressedComments` and emits the warning explicitly with
+      // `source: "comments"`. Re-emitting here would double-count.
+      if (source === "comments" && comment.body.trim().length === 0) {
         warnings.push({
           reason: "empty-body",
           source,

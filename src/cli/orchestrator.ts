@@ -571,6 +571,9 @@ function attachConsideredCountsToMetrics(metrics: ReviewMetricsBuilder, outcome:
   if (offDiff > 0) {
     metrics.incrementReason("off-diff", offDiff);
   }
+  if ((outcome.emptyBodyDroppedCount ?? 0) > 0) {
+    metrics.incrementReason("empty-body", outcome.emptyBodyDroppedCount);
+  }
   if (outcome.review.parseFailed === true) {
     metrics.incrementReason("parse-failed", 1);
   }
