@@ -244,8 +244,21 @@ export function isNonEmptyReview(review: ProviderReviewPayload | null): review i
  *   - `suppressed_comments` are deliberately EXCLUDED — only the
  *     published `comments` array decides.
  */
+/**
+ * Defense-in-depth coercion: treats any non-string body as effectively
+ * empty. The type system guarantees `ProviderComment.body` is `string`,
+ * but the soft-fail predicates in this module operate on the parse-result
+ * `ProviderReviewPayload` shape — a caller that bypasses the parser (or a
+ * future schema relaxation) could surface `null`/`undefined`/numeric bodies
+ * that would otherwise throw at the `.trim()` call. Coercing to "" here is
+ * cheap and keeps the predicates total.
+ */
+function bodyIsEffectivelyEmpty(body: unknown): boolean {
+  return typeof body !== "string" || body.trim().length === 0;
+}
+
 export function hasOnlyEmptyBodyFindings(review: ProviderReviewPayload): boolean {
-  return review.comments.length > 0 && review.comments.every(c => c.body.trim().length === 0);
+  return review.comments.length > 0 && review.comments.every(c => bodyIsEffectivelyEmpty(c.body));
 }
 
 /**
@@ -258,7 +271,7 @@ export function hasOnlyEmptyBodyFindings(review: ProviderReviewPayload): boolean
  * (wiring lands in T10). Pure — no logging, no telemetry.
  */
 export function countPopulatedBodies(review: ProviderReviewPayload): number {
-  return review.comments.filter(c => c.body.trim().length > 0).length;
+  return review.comments.filter(c => !bodyIsEffectivelyEmpty(c.body)).length;
 }
 
 export type RequestBody = Record<string, unknown>;

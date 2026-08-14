@@ -117,6 +117,22 @@ describe("hasOnlyEmptyBodyFindings — all-empty-bodies trigger (suppressed excl
       reviewPayload: review([comment(""), comment("   ")], [comment("suppressed finding")]),
       expected: true,
     },
+    {
+      label: "comment with body:null (defense-in-depth coerce) → true",
+      reviewPayload: {
+        ...review([]),
+        comments: [{ path: "src/example.ts", line: 1, body: null, severity: "medium", category: "correctness" } as unknown as ProviderComment],
+      },
+      expected: true,
+    },
+    {
+      label: "comment with body:undefined (defense-in-depth coerce) → true",
+      reviewPayload: {
+        ...review([]),
+        comments: [{ path: "src/example.ts", line: 1, body: undefined, severity: "medium", category: "correctness" } as unknown as ProviderComment],
+      },
+      expected: true,
+    },
   ];
 
   for (const c of cases) {
@@ -159,6 +175,22 @@ describe("countPopulatedBodies — non-whitespace body counter", () => {
     {
       label: "whitespace-only body counts as empty → 0",
       reviewPayload: review([comment("   ")]),
+      expected: 0,
+    },
+    {
+      label: "comment with body:null counts as empty (defense-in-depth coerce) → 0",
+      reviewPayload: {
+        ...review([]),
+        comments: [{ path: "src/example.ts", line: 1, body: null, severity: "medium", category: "correctness" } as unknown as ProviderComment],
+      },
+      expected: 0,
+    },
+    {
+      label: "comment with body:undefined counts as empty (defense-in-depth coerce) → 0",
+      reviewPayload: {
+        ...review([]),
+        comments: [{ path: "src/example.ts", line: 1, body: undefined, severity: "medium", category: "correctness" } as unknown as ProviderComment],
+      },
       expected: 0,
     },
   ];
