@@ -10,6 +10,10 @@ ship a tag).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Clearer copy for the `cli-version` placeholder and `UMACTUALLY_ERR_CLI_VERSION_UNRESOLVED` runtime error.** The action input description, ADO task helpMarkDown, `docs/install-action.md`, the published-action README, and the runtime `::error::` strings (in both `action.yml` and `ado-task/UmActuallyReview/src/index.ts`) now read identically (modulo platform-specific input names) and explicitly direct the operator to either pin a CLI version (e.g. `0.10.0`) or regenerate the workflow via `umactually init`. The error-code literal, exit code (1 for unresolved-version, 3 for secret bootstrap), and the placeholder sentinel stay byte-identical. No behavior change. `[umactually-action/action.yml] [umactually-action/README.md] [umactually/ado-task/UmActuallyReview/src/index.ts] [umactually/ado-task/UmActuallyReview/task.json] [umactually/docs/install-action.md]`
+
 ## [0.10.0] - 2026-08-14
 
 ### Fixed

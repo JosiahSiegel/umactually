@@ -20,7 +20,7 @@
       "label": "CLI version",
       "defaultValue": "__UMACTUALLY_VERSION__",
       "required": false,
-      "helpMarkDown": "Version of the `umactually` CLI to install via `npm install -g`. Default `__UMACTUALLY_VERSION__` is the substitution point the `umactually init` wizard uses to track the CLI release; pin a specific tag (e.g. `0.8.2`) to disable auto-update."
+      "helpMarkDown": "Version of the `umactually` CLI to install via `npm install -g`. Default is a placeholder that `umactually init` replaces with the current CLI version. Pin a specific version (e.g. `0.10.0`) if not using the wizard."
     },
     {
       "name": "apiUrl",

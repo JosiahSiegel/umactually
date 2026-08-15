@@ -94,7 +94,7 @@ function installCli() {
   // CLI_VERSION_UNRESOLVED` log is a `::error::` string only — it is
   // intentionally NOT a numeric exit code (see `src/util/exit-codes.ts`).
   if (cliVersion === "__UMACTUALLY_VERSION__") {
-    console.error("::error::UMACTUALLY_ERR_CLI_VERSION_UNRESOLVED — cliVersion input is the literal `__UMACTUALLY_VERSION__` placeholder; rebuild the wizard output or pin cliVersion explicitly (e.g. `0.8.2`).");
+    console.error("::error::UMACTUALLY_ERR_CLI_VERSION_UNRESOLVED — cliVersion is the un-substituted wizard placeholder; pin it to a CLI version (e.g. `0.10.0`) or regenerate the workflow via `umactually init`.");
     process.exit(UMACTUALLY_TYPED_EXIT_CODES.RUNTIME_ERROR);
   }
   const install = spawnSync("npm", ["install", "-g", `umactually@${cliVersion}`], { stdio: "inherit" });
