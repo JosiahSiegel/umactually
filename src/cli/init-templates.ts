@@ -80,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run umactually PR review
-        uses: JosiahSiegel/umactually-action@043d6070a43a5f61aa6ede9efe60d0f47b76fc58  # v1
+        uses: JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9  # v1
         with:
           cli-version: __UMACTUALLY_VERSION__
           provider: openai-compatible
