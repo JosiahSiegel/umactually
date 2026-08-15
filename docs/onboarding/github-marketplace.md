@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9  # v1
         with:
-          cli-version: 0.9.3
+          cli-version: 0.10.1
           provider: openai-compatible
           api-url: ${{ secrets.UMACTUALLY_API_URL }}
           api-key: ${{ secrets.UMACTUALLY_API_KEY }}
