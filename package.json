@@ -1,6 +1,6 @@
 {
   "name": "umactually",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "Provider-agnostic PR review action with redaction and SonarQube import.",
   "private": false,
   "type": "module",

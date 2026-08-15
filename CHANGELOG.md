@@ -8,7 +8,7 @@ For maintainers: see [docs/release-process.md](docs/release-process.md) for the
 release workflow (how to bump the version, fill in a `[X.Y.Z]` section, and
 ship a tag).
 
-## [Unreleased]
+## [0.10.1] - 2026-08-15
 
 ### Fixed
 
