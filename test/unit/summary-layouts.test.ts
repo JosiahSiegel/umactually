@@ -469,6 +469,50 @@ describe("severity-table details", () => {
     expect(out).toContain("📍 `src/empty-body.ts`:42");
   });
 
+  it("escapes backticks in the summary line so inline code spans don't break the toggle layout", () => {
+    // PR #238 review feedback surfaced this on a finding whose body
+    // referenced `occurrences` in backticks. GitHub's markdown renderer
+    // treats <summary>`occurrences`…</summary> as containing an inline
+    // code span; the inline code span wraps visually and the truncated
+    // summary line splits awkwardly next to the disclosure triangle.
+    // The expanded body (blockquote `> `) is FINE because backticks
+    // there are intentional inline code rendering; only the summary
+    // line needs the escape.
+    const data: ReviewData = makeData({
+      postedComments: [
+        {
+          path: "src/test.ts",
+          line: 12,
+          body: "This assertion block (counting `occurrences`) is duplicated within the same test file.",
+          severity: "medium",
+          category: "duplication",
+        },
+      ],
+      validCommentCount: 1,
+      severityCounts: { critical: 0, high: 0, medium: 1, low: 0 },
+    });
+    const out = renderSummary(data);
+    const summaryLine = out.match(/<summary>[^<]*<\/summary>/u)?.[0] ?? "";
+    expect(summaryLine).not.toBe("");
+    // The <summary> tag must NOT contain a literal backtick — GitHub's
+    // renderer would open an inline code span inside the toggle header
+    // and the visual layout would split.
+    expect(summaryLine).not.toContain("`");
+    // Sanity: the snippet text itself is still present (we replaced the
+    // backticks, not the words around them). The words around `occurrences`
+    // are "counting " + escaped-backtick + "occurrences" + escaped-backtick +
+    // ")" in the HTML entity form; we check the visible text parts and
+    // confirm the expanded body STILL has inline code rendering (the
+    // blockquote body intentionally keeps raw backticks — see
+    // findingsDetailsRow docstring).
+    expect(summaryLine).toContain("counting");
+    expect(summaryLine).toContain("occurrences");
+    expect(summaryLine).toContain("duplicated");
+    // Expanded body preserves backticks for inline code rendering —
+    // this is intentional and not a regression.
+    expect(out).toContain("> This assertion block (counting `occurrences`) is duplicated within the same test file.");
+  });
+
   it("falls back to general when a runtime comment omits category", () => {
     const data: ReviewData = JSON.parse(JSON.stringify({
       review: {
