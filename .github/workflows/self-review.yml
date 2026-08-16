@@ -277,7 +277,10 @@ jobs:
             echo "Guide file not found at ${GUIDE_FILE}; skipping."
             exit 0
           fi
-          GUIDE_MARKER="<!-- umactually:resolution-guide-v2 -->"
+          # v3 is shared with the CLI's `RESOLUTION_GUIDE_MARKER` constant (src/util/marker.ts);
+          # bump both together. The grep-skip below is versionless so re-runs on old
+          # v2-marked reviews don't double-append.
+          GUIDE_MARKER="<!-- umactually:resolution-guide-v3 -->"
           QUERY_FILE="${{ github.workspace }}/.github/workflows/data/latest-bot-review.graphql"
           # Pull the latest non-PENDING github-actions review on the
           # current head. The query is parameterized; only the GraphQL
@@ -367,7 +370,7 @@ jobs:
             # check below prevents duplicate appends on reruns.
             echo "Review ${REVIEW_ID} has inlineCount=0 (per manifest); appending guide anyway — the resolution protocol is required for any review, not just finding-bearing ones."
           fi
-          if printf '%s' "${CURRENT}" | grep -qF "${GUIDE_MARKER}"; then
+          if printf '%s' "${CURRENT}" | grep -qE '<!-- umactually:resolution-guide-v[0-9]+ -->'; then
             echo "Review ${REVIEW_ID} already contains the guide; skipping."
             exit 0
           fi

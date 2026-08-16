@@ -214,7 +214,8 @@ describe("self-review workflow noise-skip rule", () => {
 
   it("the 0-finding branch falls through to the marker-based idempotency check (then the PUT)", () => {
     // The 0-finding branch must NOT terminate the step. After the
-    // branch ends, the marker-based skip (`grep -qF "${GUIDE_MARKER}"`)
+    // branch ends, the marker-based skip (versionless regex
+    // `grep -qE '<!-- umactually:resolution-guide-v[0-9]+ -->'`)
     // is the only early-exit gate, and it must sit BEFORE the PUT.
     const stepBlock = extractStepBlock(
       workflowText,
@@ -222,12 +223,46 @@ describe("self-review workflow noise-skip rule", () => {
     );
     const zeroBranchIdx = stepBlock.indexOf('if [ "${INLINE_COUNT}" = "0" ]');
     const zeroBranchEndIdx = stepBlock.indexOf("\n          fi", zeroBranchIdx);
-    const markerCheckIdx = stepBlock.indexOf('grep -qF "${GUIDE_MARKER}"');
+    const markerCheckIdx = stepBlock.indexOf(
+      "grep -qE '<!-- umactually:resolution-guide-v[0-9]+ -->'",
+    );
     const putIdx = stepBlock.indexOf("-X PUT");
     expect(zeroBranchIdx).toBeGreaterThanOrEqual(0);
     expect(zeroBranchEndIdx).toBeGreaterThan(zeroBranchIdx);
     expect(markerCheckIdx).toBeGreaterThan(zeroBranchEndIdx);
     expect(putIdx).toBeGreaterThan(markerCheckIdx);
+  });
+
+  it("the workflow GUIDE_MARKER literal equals the CLI's RESOLUTION_GUIDE_MARKER (drift guard)", () => {
+    // Drift discipline: the workflow's `GUIDE_MARKER="..."` literal and
+    // `src/util/marker.ts`'s `RESOLUTION_GUIDE_MARKER` constant MUST match.
+    // The CLI bakes the v3 marker into every posted body (Task 1); the
+    // self-review workflow PUTs the same marker on append (this file).
+    // A silent drift here means either (a) the CLI-baked body never
+    // matches the workflow's idempotency grep and we re-append the
+    // guide on every push, or (b) the workflow's PUT appends a marker
+    // the CLI never emits and the dedup greper misses it on the next
+    // run. Both are silent — this test fails the build instead.
+    const stepBlock = extractStepBlock(
+      workflowText,
+      "Append resolution-guide to latest review body",
+    );
+    const markerModulePath = resolve(
+      REPO_ROOT,
+      "src/util/marker.ts",
+    );
+    const markerModuleText = readFileSync(markerModulePath, "utf8");
+    const cliMarkerMatch = markerModuleText.match(
+      /RESOLUTION_GUIDE_MARKER\s*=\s*("([^"\\]|\\.)*")/u,
+    );
+    expect(cliMarkerMatch, "RESOLUTION_GUIDE_MARKER constant exists in src/util/marker.ts").not.toBeNull();
+    const cliMarker = cliMarkerMatch?.[1] ?? "";
+    // Strip surrounding double quotes for string equality.
+    const cliMarkerLiteral = cliMarker.slice(1, -1);
+    expect(stepBlock).toContain(`GUIDE_MARKER="${cliMarkerLiteral}"`);
+    expect(workflowText).toMatch(
+      /<!-- umactually:resolution-guide-v\[0-9\]\+ -->/u,
+    );
   });
 
   it("each platform guide warns that unresolved threads block merge when branch protection is on", () => {
