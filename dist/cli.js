@@ -17046,6 +17046,19 @@ function cell(value) {
     return value.replace(/\|/gu, "\\|").replace(/\r?\n/gu, " ").trim();
 }
 /**
+ * Neutralise backticks in a snippet so it can sit inside a `<summary>` tag
+ * without GitHub's markdown renderer interpreting them as inline code spans.
+ * Inline code spans inside `<summary>` break the toggle layout — the snippet
+ * gets split visually next to the disclosure triangle (PR #238 review
+ * feedback). Pipes and newlines are NOT escaped here; `cell()` handles those
+ * for table cells, and the summary line is not a table cell. The expanded
+ * body (blockquote `> ` line) intentionally keeps raw backticks because
+ * inline code rendering is the desired behavior there.
+ */
+function summarySnippet(value) {
+    return value.replace(/`/gu, "&#96;");
+}
+/**
  * Redact a comment body and collapse runs of whitespace to a single space.
  *
  * Most layouts want a one-line "snippet" — never the raw multi-paragraph
@@ -17121,7 +17134,7 @@ function findingsDetailsRow(index, c, secrets, summaryCap) {
     const snippet = truncateSnippet(snippetSource, summaryCap);
     const lines = [];
     lines.push("<details>");
-    lines.push(`<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`);
+    lines.push(`<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${summarySnippet(cell(snippet))}</summary>`);
     lines.push("");
     lines.push(`📍 \`${safePath}\`:${c.line}`);
     lines.push("");
