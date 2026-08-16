@@ -107,7 +107,12 @@ describe("severity-table layout — actionable-only parent card", () => {
     });
     expect(body).toContain("## ✅ 0 inline findings — ship it");
     expect(body).not.toContain("_No findings to address._");
-    expect(body).not.toContain("<details>");
+    // Clean review path: there is NO findings-table `<details>` block.
+    // The single `<details>` block in the body is the platform-aware
+    // resolution guide footer (baked in by the bake-resolution-guide
+    // plan between the footer and the manifest).
+    expect((body.match(/<details>/gu) ?? []).length).toBe(1);
+    expect(body).toContain("<!-- umactually:resolution-guide-v3 -->");
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/Filtered preview/u);
     expect(body).not.toMatch(/🔕/u);
@@ -195,7 +200,12 @@ describe("severity-table layout — actionable-only parent card", () => {
     expect(body).not.toMatch(/📋\s+Posted preview/u);
     expect(body).not.toMatch(/📍/u);
     expect(body).not.toMatch(/🔕/u);
-    expect(body).not.toContain("<details>");
+    // Clean review path: there is NO findings-table `<details>` block.
+    // The single `<details>` block in the body is the platform-aware
+    // resolution guide footer (baked in by the bake-resolution-guide
+    // plan between the footer and the manifest).
+    expect((body.match(/<details>/gu) ?? []).length).toBe(1);
+    expect(body).toContain("<!-- umactually:resolution-guide-v3 -->");
     expect(body).not.toMatch(/✅\s+SHIP/u);
     expect(body).not.toMatch(/No findings to address/u);
     expect(body).toContain("## ✅ 0 inline findings — ship it");

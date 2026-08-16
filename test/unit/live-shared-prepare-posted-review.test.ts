@@ -185,4 +185,87 @@ describe("preparePostedReview", () => {
     expect(prepared.body).toContain(REVIEW_MARKER);
     expect(prepared.body).toMatch(/<!--\s*umactually:manifest\s*\{[\s\S]*?\}\s*-->/u);
   });
+
+  it("explicit platform: 'azure' on auto-detected parsed.platform='auto' renders the Azure guide footer", () => {
+    // Given: an auto-detected Azure run shape — parsed.platform stays
+    // 'auto' because the orchestrator resolves detection for dispatch
+    // only (see src/cli/orchestrator.ts:179, :582) and never rewrites
+    // parsed.platform. The runner passes `platform: 'azure'` explicitly.
+    const review = makeReview({ comments: [makeComment({ line: 1 })] });
+    const parsed = parseCliArgs([]);
+    // Defensive: ensure we exercise the regression shape (auto in
+    // parsed.platform) — if someone changes parseCliArgs defaults this
+    // assertion catches it before the test silently no longer proves
+    // what it claims to prove.
+    expect(parsed.platform).toBe("auto");
+
+    // When: the shared recipe is called with explicit platform:'azure'.
+    const prepared = preparePostedReview({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      diffText: DIFF_TEXT,
+      parsed,
+      secrets: SECRETS,
+      platform: "azure",
+    });
+
+    // Then: the body contains the Azure `az repos pr thread update`
+    // command from the resolution guide footer — proving the explicit
+    // platform arg made it through buildReviewBody → renderSummary → the
+    // platform-aware guide. If anyone re-introduces the bug of deriving
+    // platform from parsed.platform, the GitHub guide would render
+    // here and this assertion would fail.
+    expect(prepared.body).toContain("az repos pr thread update");
+  });
+
+  it("explicit platform: 'github' on auto-detected parsed.platform='auto' renders the GitHub guide footer", () => {
+    // Given: same auto-detected regression shape, but the runner
+    // claims to be GitHub. In a real run this would be the GitHub
+    // runner (live-github.ts:106 passes 'github'); here we mirror that
+    // shape to assert symmetric behavior of the platform param.
+    const review = makeReview({ comments: [makeComment({ line: 1 })] });
+    const parsed = parseCliArgs([]);
+    expect(parsed.platform).toBe("auto");
+
+    // When: the shared recipe is called with explicit platform:'github'.
+    const prepared = preparePostedReview({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      diffText: DIFF_TEXT,
+      parsed,
+      secrets: SECRETS,
+      platform: "github",
+    });
+
+    // Then: the body contains the GitHub GraphQL `resolveReviewThread`
+    // mutation from the resolution guide footer.
+    expect(prepared.body).toContain("resolveReviewThread");
+  });
+
+  it("omitted platform on preparePostedReview defaults to the GitHub guide variant (legacy byte-identity)", () => {
+    // Given: a simulate/dry-run-style caller that omits the platform
+    // field entirely (matches legacy call sites in test/unit/live-shared-body.test.ts
+    // and the simulate-findings fixture).
+    const review = makeReview({ comments: [makeComment({ line: 1 })] });
+
+    // When: preparePostedReview is called WITHOUT the platform field.
+    const prepared = preparePostedReview({
+      review,
+      provider: "openai-compatible",
+      modelId: "auto",
+      diffText: DIFF_TEXT,
+      parsed: parseCliArgs([]),
+      secrets: SECRETS,
+    });
+
+    // Then: the body renders the GitHub variant — the byte-identical
+    // legacy default documented on the `platform?` field.
+    expect(prepared.body).toContain("resolveReviewThread");
+    // And NOT the Azure recipe (cross-token guard — see learnings.md
+    // "Cross-platform token partitioning" for why the inverse-token
+    // assertion matters).
+    expect(prepared.body).not.toContain("az repos pr thread update");
+  });
 });

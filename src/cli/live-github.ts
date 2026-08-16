@@ -110,6 +110,7 @@ export async function runGithubLive(input: {
     diffText,
     parsed,
     secrets: [context.token],
+    platform: "github",
   });
   const { postableComments: comments, body } = prepared;
   // SonarCloud finding count in the postable set — accurate after position

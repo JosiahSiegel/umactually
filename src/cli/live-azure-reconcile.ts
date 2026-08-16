@@ -1219,6 +1219,7 @@ export async function runAzureLiveWithReconcile(input: {
     diffText,
     parsed,
     secrets: [context.token],
+    platform: "azure",
   });
   const { postableComments: comments, body } = prepared;
 

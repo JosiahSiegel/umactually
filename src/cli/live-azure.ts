@@ -37,6 +37,7 @@ export async function runAzureLive(input: {
     diffText,
     parsed,
     secrets: [context.token],
+    platform: "azure",
   });
   const { postableComments: comments, body } = prepared;
   const existingThreads = await listAzureThreads(context, fetchImpl);

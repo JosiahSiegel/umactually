@@ -209,6 +209,29 @@ describe("buildReviewBody (shared GitHub + Azure review header)", () => {
     expect(body).not.toContain("sk-test-secret-do-not-leak");
     expect(body).toContain("[REDACTED_SECRET]");
   });
+
+  it("FEAT-PLATFORM-DEFAULT buildReviewBody called directly without platform defaults to the GitHub guide variant", () => {
+    // Given: a simulate/dry-run-style caller that omits the platform
+    // field entirely. This is the byte-identical legacy shape — unit
+    // tests, simulate-findings, and any caller that doesn't have a
+    // known platform in scope MUST keep rendering the GitHub variant.
+    const body = buildReviewBody({
+      review: SAMPLE_REVIEW,
+      provider: "openai-compatible",
+      modelId: "auto",
+      validCommentCount: 3,
+      suppressedCommentCount: 1,
+      offDiffFromComments: [],
+      severityCounts: { high: 1, medium: 1, low: 1 },
+      secrets: SECRETS,
+      // platform deliberately omitted
+    });
+
+    // Then: the resolution guide footer renders the GitHub variant.
+    expect(body).toContain("resolveReviewThread");
+    // And NOT the Azure recipe (cross-token guard).
+    expect(body).not.toContain("az repos pr thread update");
+  });
 });
 
 describe("buildInlineCommentBody (shared per-comment format for GitHub and Azure)", () => {
@@ -639,8 +662,14 @@ describe("buildReviewBody — concise empty-review body (ship-it branch)", () =>
       severityCounts: {},
       secrets: SECRETS,
     });
-    expect(body).not.toContain("<details>");
     expect(body).toContain("## ✅ 0 inline findings — ship it");
+    // Clean review path: there is NO provider-summary `<details>` (no
+    // summary to expand). The single `<details>` block in the body is
+    // the platform-aware resolution guide footer added by the
+    // bake-resolution-guide plan; pre-plan this assertion would have
+    // also asserted `not.toContain("<details>")`.
+    expect((body.match(/<details>/gu) ?? []).length).toBe(1);
+    expect(body).toContain("<!-- umactually:resolution-guide-v3 -->");
   });
 
   it("SHIP-CLEAN-006: still emits the umactually:manifest JSON blob", () => {

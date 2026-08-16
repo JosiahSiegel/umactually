@@ -407,8 +407,12 @@ export async function evaluateLeakGate(input: {
  *   - Verdict badge — second line, large H2
  *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
  *     of the POSTED set, hidden when all zeros
-  *   - Stable `<!-- umactually:manifest {…} -->` for AI agents
- *   - Same byte-for-byte output on GitHub and Azure (parity invariant)
+ *   - Stable `<!-- umactually:manifest {…} -->` for AI agents
+ *   - Same byte-for-byte output on GitHub and Azure (parity invariant) —
+ *     EXCEPT for the terminal resolution guide footer, which is
+ *     platform-aware (GitHub GraphQL `resolveReviewThread` recipes vs
+ *     Azure `az repos pr thread update` recipes). Identical inputs +
+ *     identical platform field remain byte-identical.
  *   - Secret redaction applied to every rendered string
  *
  * Changes vs the legacy builder:
@@ -497,6 +501,17 @@ export function buildReviewBody(input: {
    * — see `verdictEscalationBanner` in `src/render/summary-layouts.ts`.
    */
   readonly verdictEscalatedFrom?: string;
+  /**
+   * Optional platform tag — forwarded to the rendered layout so the
+   * platform-aware resolution guide footer renders the correct variant
+   * (GitHub GraphQL `resolveReviewThread` recipes vs Azure
+   * `az repos pr thread update` recipes). Omit for the byte-identical
+   * GitHub legacy default — used by unit tests, simulate-findings, and
+   * any caller that does not yet have a known platform in scope (see
+   * the parity-invariant note in the module docstring — omitting
+   * `platform` is the legacy byte-identity shape).
+   */
+  readonly platform?: "github" | "azure";
 }): string {
   // Delegate to the "severity-table" layout from
   // `src/render/summary-layouts.ts` — the single shipped layout.
@@ -521,6 +536,7 @@ export function buildReviewBody(input: {
     ...(input.verdictEscalatedFrom !== undefined
       ? { verdictEscalatedFrom: input.verdictEscalatedFrom }
       : {}),
+    ...(input.platform !== undefined ? { platform: input.platform } : {}),
   };
   return renderSummary(reviewData);
 }
@@ -927,6 +943,18 @@ export function preparePostedReview(input: {
    * `umactually.review.json` policy (`suggestionMode`).
    */
   readonly suggestionMode?: "off" | "validated";
+  /**
+   * Explicit platform tag. The orchestrator resolves auto-detection
+   * for dispatch only (see `detectLivePlatform` at
+   * src/cli/orchestrator.ts:179, :582) and never rewrites
+   * `parsed.platform`, so `runAzureLive` receives
+   * `parsed.platform === "auto"` on auto-detected Azure runs. The
+   * CLI runner that calls this function knows its identity — pass the
+   * platform explicitly. NEVER derive it from `input.parsed.platform`
+   * (that may still be `"auto"`). Omit for simulate/dry-run callers
+   * → GitHub variant default.
+   */
+  readonly platform?: "github" | "azure";
 }): PreparedPostedReview {
   const suggestionMode = input.suggestionMode ?? "off";
   // Parse the diff ONCE and pass the index to all three selectors.
@@ -995,6 +1023,14 @@ export function preparePostedReview(input: {
     // or more tiers. Older callers (unit tests, simulate-findings) can
     // omit it and get the byte-identical legacy tally.
     minimumSeverity: input.parsed.minimumSeverity,
+    // Platform tag — forwarded so the resolution guide footer renders
+    // the correct variant (GitHub GraphQL vs Azure az recipes). MUST be
+    // passed explicitly by each runner; auto-detected Azure runs
+    // arrive here with `parsed.platform === "auto"`, so deriving it
+    // from `input.parsed.platform` would render the GitHub guide on
+    // Azure. Older callers (unit tests, simulate-findings) can omit it
+    // → GitHub variant default.
+    ...(input.platform !== undefined ? { platform: input.platform } : {}),
     ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
   });
 
