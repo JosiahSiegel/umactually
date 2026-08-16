@@ -51,6 +51,7 @@ import { REVIEW_MARKER, MANIFEST_SCHEMA, MANIFEST_MARKER_PREFIX, MANIFEST_MARKER
 import type { LiveReview, LiveReviewComment } from "../cli/live-shared.js";
 import { SEVERITY_ORDER, severityRank } from "../util/severity.js";
 import { replaceSecretsLiterally } from "../util/redact.js";
+import { resolutionGuide } from "./resolution-guide.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -92,6 +93,13 @@ export type ReviewData = {
    * pipeline summary. Omit when the raw and effective verdicts agree.
    */
   readonly verdictEscalatedFrom?: string;
+  /**
+   * Optional platform tag — empty/`undefined`/`"auto"` defaults to the
+   * GitHub variant. The renderer uses this to choose the correct
+   * platform-aware resolution guide footer. Omit for simulate/dry-run
+   * callers that don't have a known platform.
+   */
+  readonly platform?: "github" | "azure";
 };
 
 // ---------------------------------------------------------------------------
@@ -477,6 +485,8 @@ export function renderCleanShip(data: ReviewData): string {
   parts.push("---");
   parts.push(footer(data, 0));
   parts.push("");
+  parts.push(resolutionGuide(data.platform ?? "github"));
+  parts.push("");
   parts.push(manifest(data));
   return parts.join("\n");
 }
@@ -582,6 +592,8 @@ export function layoutSeverityTable(data: ReviewData): string {
 
   parts.push("---");
   parts.push(footer(data));
+  parts.push("");
+  parts.push(resolutionGuide(data.platform ?? "github"));
   parts.push("");
   parts.push(manifest(data));
   return parts.join("\n");
