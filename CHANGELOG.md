@@ -10,9 +10,15 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-17
+
 ### Added
 
 - **Baked agent-resolution guide in every CLI-rendered review body** (the `bake-resolution-guide` plan): the collapsed `📖 How to read + resolve` guide is now part of the rendered review body on every distribution surface (published action / `npm i -g umactually` / Azure DevOps task / self-review workflow). The guide is platform-aware — GitHub-path bodies carry `resolveReviewThread` GraphQL recipes; Azure-path bodies carry `az repos pr thread update` recipes; auto-detected Azure runs (where `parsed.platform === "auto"`) still get the Azure guide because each runner passes its platform explicitly. Guide is < 2,500 chars per variant; worst-case body (parse-fail + raw provider output + guide) ≤ 65,536 chars (pinned by test). The resolution-guide marker is bumped `v2` → `v3` and a versionless skip grep prevents double-append on re-runs. The full long-form fallbacks remain in `.github/workflows/data/resolution-guide-*.md` for consumers on older CLIs. `[src/render/resolution-guide.ts, src/render/summary-layouts.ts, src/cli/live-shared.ts, src/util/marker.ts, .github/workflows/self-review.yml]`
+
+### Changed
+
+- **Relaxed the `INIT-DOC` invariant** (`test/unit/init-docs-freshness.test.ts`): the test now walks a rolling 3-entry CHANGELOG window for `umactually init` mentions instead of requiring every release entry to mention the wizard. Rationale: a release that does not touch the wizard (e.g. v0.11.0's resolution-guide bake) should not be forced to add an unrelated wizard reference. The rolling-3 window catches a regression where the wizard is removed for >2 releases in a row, without blocking non-wizard releases.
 
 ### Fixed
 
