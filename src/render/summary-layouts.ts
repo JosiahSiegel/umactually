@@ -51,6 +51,7 @@ import { REVIEW_MARKER, MANIFEST_SCHEMA, MANIFEST_MARKER_PREFIX, MANIFEST_MARKER
 import type { LiveReview, LiveReviewComment } from "../cli/live-shared.js";
 import { SEVERITY_ORDER, severityRank } from "../util/severity.js";
 import { replaceSecretsLiterally } from "../util/redact.js";
+import { resolutionGuide } from "./resolution-guide.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -92,6 +93,13 @@ export type ReviewData = {
    * pipeline summary. Omit when the raw and effective verdicts agree.
    */
   readonly verdictEscalatedFrom?: string;
+  /**
+   * Optional platform tag — empty/`undefined`/`"auto"` defaults to the
+   * GitHub variant. The renderer uses this to choose the correct
+   * platform-aware resolution guide footer. Omit for simulate/dry-run
+   * callers that don't have a known platform.
+   */
+  readonly platform?: "github" | "azure";
 };
 
 // ---------------------------------------------------------------------------
@@ -106,6 +114,20 @@ function redact(value: string, secrets: readonly string[]): string {
 /** Escape pipes in a value so it can sit inside a GFM table cell. */
 function cell(value: string): string {
   return value.replace(/\|/gu, "\\|").replace(/\r?\n/gu, " ").trim();
+}
+
+/**
+ * Neutralise backticks in a snippet so it can sit inside a `<summary>` tag
+ * without GitHub's markdown renderer interpreting them as inline code spans.
+ * Inline code spans inside `<summary>` break the toggle layout — the snippet
+ * gets split visually next to the disclosure triangle (PR #238 review
+ * feedback). Pipes and newlines are NOT escaped here; `cell()` handles those
+ * for table cells, and the summary line is not a table cell. The expanded
+ * body (blockquote `> ` line) intentionally keeps raw backticks because
+ * inline code rendering is the desired behavior there.
+ */
+function summarySnippet(value: string): string {
+  return value.replace(/`/gu, "&#96;");
 }
 
 /**
@@ -191,7 +213,7 @@ function findingsDetailsRow(
   const lines: string[] = [];
   lines.push("<details>");
   lines.push(
-    `<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`,
+    `<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${summarySnippet(cell(snippet))}</summary>`,
   );
   lines.push("");
   lines.push(`📍 \`${safePath}\`:${c.line}`);
@@ -477,6 +499,8 @@ export function renderCleanShip(data: ReviewData): string {
   parts.push("---");
   parts.push(footer(data, 0));
   parts.push("");
+  parts.push(resolutionGuide(data.platform ?? "github"));
+  parts.push("");
   parts.push(manifest(data));
   return parts.join("\n");
 }
@@ -582,6 +606,8 @@ export function layoutSeverityTable(data: ReviewData): string {
 
   parts.push("---");
   parts.push(footer(data));
+  parts.push("");
+  parts.push(resolutionGuide(data.platform ?? "github"));
   parts.push("");
   parts.push(manifest(data));
   return parts.join("\n");

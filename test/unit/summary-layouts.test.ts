@@ -13,7 +13,11 @@ import {
   renderSummary,
   type ReviewData,
 } from "../../src/render/summary-layouts.js";
-import { REVIEW_MARKER, MANIFEST_SCHEMA } from "../../src/util/marker.js";
+import {
+  REVIEW_MARKER,
+  MANIFEST_SCHEMA,
+  RESOLUTION_GUIDE_MARKER,
+} from "../../src/util/marker.js";
 
 function makeData(overrides: Partial<ReviewData> = {}): ReviewData {
   return {
@@ -161,6 +165,38 @@ function makeParseFailedData(): ReviewData {
     review: {
       summary:
         "Provider response did not contain a valid JSON review payload.\n\n<details>\n<summary>📨 Raw provider response (truncated)</summary>\n\n```text\n[truncated]\n```\n\n</details>",
+      verdict: "COMMENT",
+      comments: [],
+      suppressedComments: [],
+      parseFailed: true,
+    },
+  });
+}
+
+/**
+ * Worst-case parse-failed fixture: a ~16,000-char `summary` matches the
+ * `MALFORMED_PROVIDER_FALLBACK_RAW_MAX` constant in `src/cli/live-shared.ts`.
+ * The existing `makeParseFailedData` is a static ~200-char stub that passes
+ * the body-budget invariant trivially; this fixture actually exercises the
+ * parse-fail + resolution-guide combo to confirm the 65,536-char budget
+ * still holds after baking the guide (~2,100 chars) onto a near-max
+ * summary. See `test/unit/parse-fail-diagnostic.test.ts` for the matching
+ * CLARITY-12 budget pin.
+ */
+function makeWorstCaseParseFailedData(): ReviewData {
+  const head =
+    "event: response.created\n" +
+    'data: {"type":"response.created","response":{"id":"resp_1","output":[]}}\n\n' +
+    "event: response.in_progress\n" +
+    'data: {"type":"response.in_progress","response":{"id":"resp_1","output":[]}}\n\n';
+  const tail =
+    "event: response.completed\n" +
+    'data: {"type":"response.completed","response":{"id":"resp_1","status":"completed","output_text":"REVIEW_JSON_HERE"}}\n';
+  const padding = "x".repeat(16_000 - head.length - tail.length);
+  const longSummary = head + padding + tail;
+  return makeData({
+    review: {
+      summary: longSummary,
       verdict: "COMMENT",
       comments: [],
       suppressedComments: [],
@@ -431,6 +467,50 @@ describe("severity-table details", () => {
     // 📍 marker still uses the bare path:line shape (no "Finding at"
     // prefix) — unchanged by the fix.
     expect(out).toContain("📍 `src/empty-body.ts`:42");
+  });
+
+  it("escapes backticks in the summary line so inline code spans don't break the toggle layout", () => {
+    // PR #238 review feedback surfaced this on a finding whose body
+    // referenced `occurrences` in backticks. GitHub's markdown renderer
+    // treats <summary>`occurrences`…</summary> as containing an inline
+    // code span; the inline code span wraps visually and the truncated
+    // summary line splits awkwardly next to the disclosure triangle.
+    // The expanded body (blockquote `> `) is FINE because backticks
+    // there are intentional inline code rendering; only the summary
+    // line needs the escape.
+    const data: ReviewData = makeData({
+      postedComments: [
+        {
+          path: "src/test.ts",
+          line: 12,
+          body: "This assertion block (counting `occurrences`) is duplicated within the same test file.",
+          severity: "medium",
+          category: "duplication",
+        },
+      ],
+      validCommentCount: 1,
+      severityCounts: { critical: 0, high: 0, medium: 1, low: 0 },
+    });
+    const out = renderSummary(data);
+    const summaryLine = out.match(/<summary>[^<]*<\/summary>/u)?.[0] ?? "";
+    expect(summaryLine).not.toBe("");
+    // The <summary> tag must NOT contain a literal backtick — GitHub's
+    // renderer would open an inline code span inside the toggle header
+    // and the visual layout would split.
+    expect(summaryLine).not.toContain("`");
+    // Sanity: the snippet text itself is still present (we replaced the
+    // backticks, not the words around them). The words around `occurrences`
+    // are "counting " + escaped-backtick + "occurrences" + escaped-backtick +
+    // ")" in the HTML entity form; we check the visible text parts and
+    // confirm the expanded body STILL has inline code rendering (the
+    // blockquote body intentionally keeps raw backticks — see
+    // findingsDetailsRow docstring).
+    expect(summaryLine).toContain("counting");
+    expect(summaryLine).toContain("occurrences");
+    expect(summaryLine).toContain("duplicated");
+    // Expanded body preserves backticks for inline code rendering —
+    // this is intentional and not a regression.
+    expect(out).toContain("> This assertion block (counting `occurrences`) is duplicated within the same test file.");
   });
 
   it("falls back to general when a runtime comment omits category", () => {
@@ -1025,5 +1105,77 @@ describe("escalation banner — posted-count sourcing", () => {
       }),
     );
     expect(out).toMatch(/review contains 2 postable findings/u);
+  });
+});
+
+// -- Resolution guide baked into every shipped body ------------------------
+// Task 2 of the bake-resolution-guide plan: both layouts splice the
+// collapsed guide between footer and manifest. The marker is the LAST
+// non-empty line of the guide block (not the body — the manifest owns
+// that slot). The self-review workflow greps for the v3 marker in the
+// WHOLE body (see Task 1 learnings) to decide whether to re-bake.
+
+describe("resolution guide — both layouts splice it between footer and manifest", () => {
+  it("busy body contains the resolution-guide-v3 marker exactly once", () => {
+    const out = renderSummary(makeBusyData());
+    const matches = out.split(RESOLUTION_GUIDE_MARKER).length - 1;
+    expect(matches).toBe(1);
+    expect(out).toContain(RESOLUTION_GUIDE_MARKER);
+  });
+
+  it("busy body: marker is AFTER the 'Generated by' footer AND BEFORE the manifest", () => {
+    const out = renderSummary(makeBusyData());
+    const footerIdx = out.indexOf("Generated by");
+    const markerIdx = out.indexOf(RESOLUTION_GUIDE_MARKER);
+    const manifestIdx = out.indexOf("<!-- umactually:manifest ");
+    expect(footerIdx).toBeGreaterThanOrEqual(0);
+    expect(markerIdx).toBeGreaterThan(footerIdx);
+    expect(manifestIdx).toBeGreaterThan(markerIdx);
+  });
+
+  it("clean-ship body ALSO contains the guide marker (0-finding reviews still need the close protocol)", () => {
+    const out = renderSummary(makeCleanData());
+    const matches = out.split(RESOLUTION_GUIDE_MARKER).length - 1;
+    expect(matches).toBe(1);
+    expect(out).toContain(RESOLUTION_GUIDE_MARKER);
+  });
+
+  it("manifest line is still the LAST non-empty line of the body (busy + clean)", () => {
+    for (const fixture of [makeBusyData, makeCleanData]) {
+      const out = renderSummary(fixture());
+      const lines = out.split("\n");
+      const lastNonEmpty = lines.filter((line) => line.trim().length > 0).pop();
+      expect(lastNonEmpty).toMatch(/^<!--\s*umactually:manifest\s+.*-->/u);
+    }
+  });
+
+  it("worst-case parse-failed body (16,000-char rawText + guide) stays under the 65,536-char limit", () => {
+    const out = renderSummary(makeWorstCaseParseFailedData());
+    expect(out.length).toBeLessThanOrEqual(65_536);
+  });
+
+  it("worst-case parse-failed body still has the guide marker before the manifest", () => {
+    const out = renderSummary(makeWorstCaseParseFailedData());
+    const markerIdx = out.indexOf(RESOLUTION_GUIDE_MARKER);
+    const manifestIdx = out.indexOf("<!-- umactually:manifest ");
+    expect(markerIdx).toBeGreaterThanOrEqual(0);
+    expect(manifestIdx).toBeGreaterThan(markerIdx);
+  });
+
+  it("renderSummary dispatches to renderCleanShip for a 0-finding SHIP verdict (clean path is reachable)", () => {
+    // PR #238 review feedback: ensure the clean-ship branch in renderSummary
+    // is actually dispatchable, not dead code. Construct ReviewData with
+    // validCommentCount=0 and verdict=APPROVED; renderSummary must produce
+    // the ship-it body (no findings, no severity tally, no findings list).
+    const data = makeCleanData();
+    const out = renderSummary(data);
+    // Clean-ship body shape: REVIEW_MARKER first, then ship-it heading,
+    // NO findings section, NO severity tally line, footer suppressed, manifest.
+    expect(out).toContain(REVIEW_MARKER);
+    expect(out).toContain("## ✅ 0 inline findings — ship it");
+    expect(out).not.toContain("### 📋 Findings");
+    expect(out).not.toContain("🏷️"); // no severity tally in clean-ship body
+    // The resolution guide must still render (CHANGELOG.md:141 "a clean review IS a review").
+    expect(out).toContain(RESOLUTION_GUIDE_MARKER);
   });
 });

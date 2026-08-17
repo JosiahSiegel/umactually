@@ -17,6 +17,10 @@ UmActually is a Node.js 24 CLI. It reads review context, applies committed/local
 
 The architecture is intentionally CLI-first: configuration and review state live with the operator or repository. The project does not ship a hosted control plane.
 
+### Review body shape
+
+Every CLI-rendered review body ends with three trailing sections in a fixed order: a `---` rule + footer block, a collapsed `<details><summary>📖 How to read + resolve</summary>…</details>` resolution guide, and the manifest comment `<!-- umactually:manifest {…} -->`. The guide is platform-aware — GitHub-path bodies carry `resolveReviewThread` GraphQL recipes; Azure-path bodies carry `az repos pr thread update` recipes; the orchestrator passes its resolved platform explicitly so even auto-detected Azure runs receive the Azure variant. The resolution guide is bounded by the marker `<!-- umactually:resolution-guide-v3 -->` (the CLI baked the guide into the body, so the marker is now terminal-only — no workflow step re-appends). The guide is intentionally condensed (< 2,500 chars per variant); the full long-form walkthroughs remain in `.github/workflows/data/resolution-guide-*.md` for consumers on older CLIs that don't bake the guide.
+
 ## Context and policy provenance
 
 Context may come from GitHub, Azure DevOps, a supplied diff, or local files. Repository instruction files are untrusted input; PR-mode platform adapters obtain supported instruction context from the base revision. The audit artifact hashes sanitized policy/context metadata without persisting raw secrets. `--show-config` exposes resolved non-secret configuration, while committed `umactually.review.json` fields retain source/path/hash/schema provenance. See [`docs/configuration.md`](configuration.md) and [`docs/security.md`](security.md).

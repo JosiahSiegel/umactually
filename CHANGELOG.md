@@ -8,6 +8,16 @@ For maintainers: see [docs/release-process.md](docs/release-process.md) for the
 release workflow (how to bump the version, fill in a `[X.Y.Z]` section, and
 ship a tag).
 
+## [Unreleased]
+
+### Added
+
+- **Baked agent-resolution guide in every CLI-rendered review body** (the `bake-resolution-guide` plan): the collapsed `📖 How to read + resolve` guide is now part of the rendered review body on every distribution surface (published action / `npm i -g umactually` / Azure DevOps task / self-review workflow). The guide is platform-aware — GitHub-path bodies carry `resolveReviewThread` GraphQL recipes; Azure-path bodies carry `az repos pr thread update` recipes; auto-detected Azure runs (where `parsed.platform === "auto"`) still get the Azure guide because each runner passes its platform explicitly. Guide is < 2,500 chars per variant; worst-case body (parse-fail + raw provider output + guide) ≤ 65,536 chars (pinned by test). The resolution-guide marker is bumped `v2` → `v3` and a versionless skip grep prevents double-append on re-runs. The full long-form fallbacks remain in `.github/workflows/data/resolution-guide-*.md` for consumers on older CLIs. `[src/render/resolution-guide.ts, src/render/summary-layouts.ts, src/cli/live-shared.ts, src/util/marker.ts, .github/workflows/self-review.yml]`
+
+### Fixed
+
+- **Escaped backticks in finding summary lines** (PR #238 review feedback): GitHub's markdown renderer treats `<summary>`foo`…</summary>` as containing an inline code span, which visually splits the truncated summary line next to the disclosure triangle. The new `summarySnippet()` helper in `src/render/summary-layouts.ts` neutralises backticks in the summary line only (replaced with `&#96;` HTML entities); the expanded body (blockquote `>` line) and `📍` path:line line intentionally keep raw backticks because inline code rendering is the desired behavior there. `[src/render/summary-layouts.ts]`
+
 ## [0.10.1] - 2026-08-15
 
 ### Fixed

@@ -12449,6 +12449,13 @@ function renderDebugSummary(checks) {
  * parses the manifest. Every reference (dry-run artifact, live review,
  * fixture parser, raw-output type guard, GitHub agent) sees the same
  * values via this module.
+ *
+ * Drift discipline: every line emitted into a PR comment body that a
+ * downstream tool may need to grep for MUST live here — REVIEW_MARKER
+ * (the live review marker), MANIFEST_MARKER_PREFIX / MANIFEST_MARKER_SUFFIX
+ * (the hidden JSON manifest), MANIFEST_SCHEMA (its schema id), and
+ * RESOLUTION_GUIDE_MARKER (the v3 baked resolution-guide footer used by
+ * the self-review workflow's idempotency check).
  */
 
 /**
@@ -12477,6 +12484,31 @@ const MANIFEST_SCHEMA = "umactually/v1";
 const MANIFEST_MARKER_PREFIX = `<!-- ${brand/* BRAND */.qt}:manifest `;
 /** Closing HTML-comment suffix of the manifest hidden inside each UmActually review comment. */
 const MANIFEST_MARKER_SUFFIX = " -->";
+/**
+ * Stable HTML marker emitted as the final line of every CLI-baked
+ * resolution-guide body. The self-review workflow greps posted PR
+ * comments for this exact string to decide whether to re-bake the
+ * guide (idempotency check); a silent drift here would either
+ * over-bake (every sync re-posts the full guide) or under-bake
+ * (the guide never appears on synced PRs that previously used a
+ * different marker).
+ *
+ * Versioning:
+ *   - v1 / v2 were burned by the marker history under
+ *     `.github/workflows/data/resolution-guide-{github,azure}.md`
+ *     (see CHANGELOG.md:73 for the historical marker-rotation entry);
+ *     they MUST NOT be reintroduced because any consumer that
+ *     greps for the older string would mis-classify new bodies.
+ *   - v3 identifies the CLI-baked guide produced by
+ *     `src/render/resolution-guide.ts` (Task 1 of the
+ *     bake-resolution-guide plan). Bumping this string is a
+ *     consumer-visible change — coordinate with the self-review
+ *     workflow before bumping.
+ *
+ * Centralized so the dedup greper, the renderer, and any future
+ * fixture parser can all reference the same constant.
+ */
+const RESOLUTION_GUIDE_MARKER = "<!-- umactually:resolution-guide-v3 -->";
 /**
  * Returns true when `body` contains the UmActually review marker.
  * Centralized so future marker variants (e.g. parent-vs-inline) only need
@@ -16805,6 +16837,145 @@ function countBySeverity(comments) {
     return counts;
 }
 
+;// CONCATENATED MODULE: ./src/render/resolution-guide.ts
+/**
+ * Platform-aware resolution-guide renderer baked into the UmActually CLI
+ * review body.
+ *
+ * The "resolution guide" is the collapsed `<details>` block the self-review
+ * workflow posts (or re-posts on every `synchronize`) at the top of every
+ * umactually comment thread, explaining how to triage + dismiss + verify the
+ * inline findings. Baking the guide into the CLI (instead of reading a
+ * checked-in `.github/workflows/data/resolution-guide-*.md` file at runtime)
+ * means the guide ships with the npm tarball — no extra file lookup, no
+ * surprise drift between the CLI version and the data file checked into the
+ * consumer's repo, no `SELF-REVIEW-RESOLUTION-GUIDE.md` cross-reference
+ * (the long-form guide is intentionally NOT referenced here; see MUST NOT
+ * list in the bake-resolution-guide plan).
+ *
+ * Cross-platform rules (mirroring `src/render/summary-layouts.ts:42-43`):
+ *   - DO use GFM tables (pipe tables), headings, blockquote, lists, fenced
+ *     code, inline code, raw Unicode emoji.
+ *   - DO use `<details>` / `<summary>` — verified to render as a working
+ *     click-to-expand widget on BOTH GitHub PR reviews AND Azure DevOps
+ *     PR comments (see summary-layouts.ts:26-41 for the empirical evidence).
+ *   - DO NOT use raw `<table>` HTML (Azure ignores it).
+ *   - DO NOT use task lists `- [x]` / `- [ ]` (Azure ignores check state).
+ *   - Body must stay well below GitHub's 65,536-char limit; this module
+ *     enforces a tighter 2,500-char per-variant budget so the guide fits
+ *     inside any host review body without dominating the conversation.
+ *
+ * Both variants terminate with `RESOLUTION_GUIDE_MARKER` as the LAST
+ * non-empty line so the self-review workflow can grep for the exact
+ * string and decide whether to re-bake (idempotency). See
+ * `src/util/marker.ts` for the marker drift discipline.
+ */
+
+const GITHUB_GUIDE = `<details>
+<summary>📖 <b>How to read + resolve these umactually threads — click to expand</b></summary>
+
+Posted via GitHub's review API; resolve via the \`resolveReviewThread\` GraphQL mutation (UI "Resolve conversation" button does not work for review threads). Threads stay anchored to the bot's commit — after fixes, dismiss them with the steps below.
+
+### Step 1 — triage each thread
+
+| Disposition | Reply with |
+|---|---|
+| \`accepted defect\` | \`Fixed in <SHA>, <file>:<line> — <one-line summary>.\` |
+| \`false positive\` | \`False positive: <reason>.\` |
+| \`duplicate\` | \`Duplicate of <thread-link>.\` |
+| \`off-diff\` | \`Off-diff.\` |
+| \`stale (fixed later)\` | \`Fixed in <SHA>. Verified at <file>:<line>.\` |
+| \`style / rejected\` | \`Out of scope per audit bundle §<section>.\` |
+
+Never silently ignore a comment — fix it or reply with a disposition.
+
+### Step 2 — reply
+
+\`\`\`bash
+gh api graphql -F threadId="<THREAD>" -F body="<reply>" -f query='
+mutation($t: ID!, $b: String!) {
+  addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $t, body: $b}) { comment { id } }
+}'
+\`\`\`
+
+### Step 3 — resolve
+
+\`\`\`bash
+gh api graphql -F id="<THREAD>" -f query='
+mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }'
+\`\`\`
+
+### Step 4 — verify + verdict gate
+
+Resolving threads is necessary but not sufficient: \`mapVerdictToGithubEvent\` maps \`NEEDS_FIX\` → \`REQUEST_CHANGES\`, which blocks merge independently of thread state.
+
+\`\`\`bash
+gh pr view <N> --repo <owner>/<repo> --json reviewThreads,reviewDecision,mergeStateStatus,mergeable \\
+  --jq '{openThreads: [.reviewThreads.nodes[] | select(.isResolved == false)] | length, decision: .reviewDecision, state: .mergeStateStatus, mergeable}'
+# Expected: openThreads=0, decision=APPROVED|null, state=CLEAN, mergeable=MERGEABLE
+\`\`\`
+
+If \`decision == "CHANGES_REQUESTED"\`, re-push for a fresh review, or dismiss the stale one via \`dismissPullRequestReview\` with a justification.
+
+</details>
+${RESOLUTION_GUIDE_MARKER}`;
+const AZURE_GUIDE = `<details>
+<summary>📖 <b>How to read + resolve these umactually threads — click to expand</b></summary>
+
+Posted via Azure DevOps' PR thread API; close with \`az repos pr thread update --status closed\` (no GraphQL dismiss path on Azure). Threads stay anchored to the bot's commit — after fixes, close them with the steps below.
+
+### Step 1 — triage each thread
+
+| Disposition | Reply with |
+|---|---|
+| \`accepted defect\` | \`Fixed in <SHA>, <file>:<line> — <one-line summary>.\` |
+| \`false positive\` | \`False positive: <reason>.\` |
+| \`duplicate\` | \`Duplicate of <thread-link>.\` |
+| \`off-diff\` | \`Off-diff.\` |
+| \`stale (fixed later)\` | \`Fixed in <SHA>. Verified at <file>:<line>.\` |
+| \`style / rejected\` | \`Out of scope per audit bundle §<section>.\` |
+
+Never silently ignore a comment — fix it or reply with a disposition.
+
+### Step 2 — reply
+
+\`\`\`bash
+PR_ID="$(az repos pr show --id <PR> --organization <ORG> --project <PROJECT> --query id -o tsv)"
+az repos pr comment add --id "\${PR_ID}" --content "<reply>" \\
+  --thread-id "<THREAD>" --organization <ORG> --project <PROJECT>
+\`\`\`
+
+### Step 3 — close
+
+\`\`\`bash
+az repos pr thread update --id "<THREAD>" --status closed \\
+  --organization <ORG> --project <PROJECT>
+\`\`\`
+
+### Step 4 — verify + verdict gate
+
+Closing threads is necessary but not sufficient: Azure has no \`CHANGES_REQUESTED\` review; the equivalent block is the PR status check, exposed as the bot's \`postedStatusState\` (\`succeeded\` = no block; \`pending\`/\`failed\` = may block required status checks).
+
+\`\`\`bash
+az repos pr thread list --id "\${PR_ID}" --organization <ORG> --project <PROJECT> \\
+  --query "[?status=='active'] | length(@)" -o tsv
+cat artifacts/manual/s4-azure-mocked-run.json | jq '.postedStatusState'
+# Expected: 0 active threads; "succeeded" verdict
+\`\`\`
+
+If \`postedStatusState\` is \`pending\`/\`failed\`, address the underlying findings and re-push for a fresh review.
+
+</details>
+${RESOLUTION_GUIDE_MARKER}`;
+/**
+ * Render the platform-aware resolution guide as a single collapsed
+ * `<details>` block whose final non-empty line is `RESOLUTION_GUIDE_MARKER`.
+ * See the module docstring for the cross-platform rules enforced here.
+ */
+function resolutionGuide(platform) {
+    return platform === "azure" ? AZURE_GUIDE : GITHUB_GUIDE;
+}
+
 ;// CONCATENATED MODULE: ./src/render/summary-layouts.ts
 /**
  * Markdown rendering for the UmActually PR review summary.
@@ -16857,6 +17028,7 @@ function countBySeverity(comments) {
 
 
 
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -16872,6 +17044,19 @@ function redact(value, secrets) {
 /** Escape pipes in a value so it can sit inside a GFM table cell. */
 function cell(value) {
     return value.replace(/\|/gu, "\\|").replace(/\r?\n/gu, " ").trim();
+}
+/**
+ * Neutralise backticks in a snippet so it can sit inside a `<summary>` tag
+ * without GitHub's markdown renderer interpreting them as inline code spans.
+ * Inline code spans inside `<summary>` break the toggle layout — the snippet
+ * gets split visually next to the disclosure triangle (PR #238 review
+ * feedback). Pipes and newlines are NOT escaped here; `cell()` handles those
+ * for table cells, and the summary line is not a table cell. The expanded
+ * body (blockquote `> ` line) intentionally keeps raw backticks because
+ * inline code rendering is the desired behavior there.
+ */
+function summarySnippet(value) {
+    return value.replace(/`/gu, "&#96;");
 }
 /**
  * Redact a comment body and collapse runs of whitespace to a single space.
@@ -16949,7 +17134,7 @@ function findingsDetailsRow(index, c, secrets, summaryCap) {
     const snippet = truncateSnippet(snippetSource, summaryCap);
     const lines = [];
     lines.push("<details>");
-    lines.push(`<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${cell(snippet)}</summary>`);
+    lines.push(`<summary>${index} · ${severityEmoji(c.severity)} ${severityLabel(c.severity)} — ${summarySnippet(cell(snippet))}</summary>`);
     lines.push("");
     lines.push(`📍 \`${safePath}\`:${c.line}`);
     lines.push("");
@@ -17227,6 +17412,8 @@ function renderCleanShip(data) {
     parts.push("---");
     parts.push(footer(data, 0));
     parts.push("");
+    parts.push(resolutionGuide(data.platform ?? "github"));
+    parts.push("");
     parts.push(manifest(data));
     return parts.join("\n");
 }
@@ -17329,6 +17516,8 @@ function layoutSeverityTable(data) {
     }
     parts.push("---");
     parts.push(footer(data));
+    parts.push("");
+    parts.push(resolutionGuide(data.platform ?? "github"));
     parts.push("");
     parts.push(manifest(data));
     return parts.join("\n");
@@ -18818,8 +19007,12 @@ async function evaluateLeakGate(input) {
  *   - Verdict badge — second line, large H2
  *   - 🏷️ Severity tally — `critical → high → medium → low` distribution
  *     of the POSTED set, hidden when all zeros
-  *   - Stable `<!-- umactually:manifest {…} -->` for AI agents
- *   - Same byte-for-byte output on GitHub and Azure (parity invariant)
+ *   - Stable `<!-- umactually:manifest {…} -->` for AI agents
+ *   - Same byte-for-byte output on GitHub and Azure (parity invariant) —
+ *     EXCEPT for the terminal resolution guide footer, which is
+ *     platform-aware (GitHub GraphQL `resolveReviewThread` recipes vs
+ *     Azure `az repos pr thread update` recipes). Identical inputs +
+ *     identical platform field remain byte-identical.
  *   - Secret redaction applied to every rendered string
  *
  * Changes vs the legacy builder:
@@ -18875,6 +19068,7 @@ function buildReviewBody(input) {
         ...(input.verdictEscalatedFrom !== undefined
             ? { verdictEscalatedFrom: input.verdictEscalatedFrom }
             : {}),
+        ...(input.platform !== undefined ? { platform: input.platform } : {}),
     };
     return renderSummary(reviewData);
 }
@@ -19254,6 +19448,14 @@ function preparePostedReview(input) {
         // or more tiers. Older callers (unit tests, simulate-findings) can
         // omit it and get the byte-identical legacy tally.
         minimumSeverity: input.parsed.minimumSeverity,
+        // Platform tag — forwarded so the resolution guide footer renders
+        // the correct variant (GitHub GraphQL vs Azure az recipes). MUST be
+        // passed explicitly by each runner; auto-detected Azure runs
+        // arrive here with `parsed.platform === "auto"`, so deriving it
+        // from `input.parsed.platform` would render the GitHub guide on
+        // Azure. Older callers (unit tests, simulate-findings) can omit it
+        // → GitHub variant default.
+        ...(input.platform !== undefined ? { platform: input.platform } : {}),
         ...(verdictEscalatedFrom !== undefined ? { verdictEscalatedFrom } : {}),
     });
     return {
@@ -26353,6 +26555,7 @@ async function runAzureLive(input) {
         diffText,
         parsed,
         secrets: [context.token],
+        platform: "azure",
     });
     const { postableComments: comments, body } = prepared;
     const existingThreads = await listAzureThreads(context, fetchImpl);
@@ -27330,6 +27533,7 @@ async function runGithubLive(input) {
         diffText,
         parsed,
         secrets: [context.token],
+        platform: "github",
     });
     const { postableComments: comments, body } = prepared;
     // SonarCloud finding count in the postable set — accurate after position
