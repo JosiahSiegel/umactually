@@ -164,12 +164,11 @@ jobs:
         # 'Append resolution-guide' workflow step that re-appended
         # the guide from .github/workflows/data/resolution-guide-*.md
         # was removed as redundant. The env var UMACTUALLY_PLATFORM
-        # is echoed on this step's output (as `platform=...`) and
-        # consumed by the workflow-level env block's single-source-of-
-        # truth comment above. If --platform changes,
+        # is declared once at workflow-level env (single source of
+        # truth — see comment above 'jobs:') and passed via this
+        # step's env inheritance. If --platform changes,
         # UMACTUALLY_PLATFORM at the workflow-level env must change
-        # in lockstep — but the guide is now baked by the CLI, so the
-        # env var no longer affects which guide file is appended.
+        # in lockstep.
         id: review
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -210,7 +209,6 @@ jobs:
             --sonar-project-key JosiahSiegel_umactually
           REVIEW_EXIT=$?
           echo "review-exit=${REVIEW_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
-          echo "platform=${UMACTUALLY_PLATFORM}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           exit 0
 
       - name: Run check-review-artifact guard for suspicious signals
