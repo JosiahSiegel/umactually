@@ -106,7 +106,7 @@ Never silently ignore a comment — fix it or reply with a disposition.
 ### Step 2 — reply
 
 \`\`\`bash
-PR_ID="\$(az repos pr show --id <PR> --organization <ORG> --project <PROJECT> --query id -o tsv)"
+PR_ID="$(az repos pr show --id <PR> --organization <ORG> --project <PROJECT> --query id -o tsv)"
 az repos pr comment add --id "\${PR_ID}" --content "<reply>" \\
   --thread-id "<THREAD>" --organization <ORG> --project <PROJECT>
 \`\`\`
