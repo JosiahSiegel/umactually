@@ -1161,4 +1161,21 @@ describe("resolution guide — both layouts splice it between footer and manifes
     expect(markerIdx).toBeGreaterThanOrEqual(0);
     expect(manifestIdx).toBeGreaterThan(markerIdx);
   });
+
+  it("renderSummary dispatches to renderCleanShip for a 0-finding SHIP verdict (clean path is reachable)", () => {
+    // PR #238 review feedback: ensure the clean-ship branch in renderSummary
+    // is actually dispatchable, not dead code. Construct ReviewData with
+    // validCommentCount=0 and verdict=APPROVED; renderSummary must produce
+    // the ship-it body (no findings, no severity tally, no findings list).
+    const data = makeCleanData();
+    const out = renderSummary(data);
+    // Clean-ship body shape: REVIEW_MARKER first, then ship-it heading,
+    // NO findings section, NO severity tally line, footer suppressed, manifest.
+    expect(out).toContain(REVIEW_MARKER);
+    expect(out).toContain("## ✅ 0 inline findings — ship it");
+    expect(out).not.toContain("### 📋 Findings");
+    expect(out).not.toContain("🏷️"); // no severity tally in clean-ship body
+    // The resolution guide must still render (CHANGELOG.md:141 "a clean review IS a review").
+    expect(out).toContain(RESOLUTION_GUIDE_MARKER);
+  });
 });
