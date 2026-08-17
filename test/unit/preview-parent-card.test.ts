@@ -25,6 +25,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildReviewBody } from "../../src/cli/live-shared.js";
+import { RESOLUTION_GUIDE_MARKER } from "../../src/util/marker.js";
 
 describe("severity-table layout — actionable-only parent card", () => {
   it("renders <details> rows with every posted finding inline", () => {
@@ -112,7 +113,7 @@ describe("severity-table layout — actionable-only parent card", () => {
     // resolution guide footer (baked in by the bake-resolution-guide
     // plan between the footer and the manifest).
     expect((body.match(/<details>/gu) ?? []).length).toBe(1);
-    expect(body).toContain("<!-- umactually:resolution-guide-v3 -->");
+    expect(body).toContain(RESOLUTION_GUIDE_MARKER);
     expect(body).not.toMatch(/🧹/u);
     expect(body).not.toMatch(/Filtered preview/u);
     expect(body).not.toMatch(/🔕/u);
@@ -205,7 +206,7 @@ describe("severity-table layout — actionable-only parent card", () => {
     // resolution guide footer (baked in by the bake-resolution-guide
     // plan between the footer and the manifest).
     expect((body.match(/<details>/gu) ?? []).length).toBe(1);
-    expect(body).toContain("<!-- umactually:resolution-guide-v3 -->");
+    expect(body).toContain(RESOLUTION_GUIDE_MARKER);
     expect(body).not.toMatch(/✅\s+SHIP/u);
     expect(body).not.toMatch(/No findings to address/u);
     expect(body).toContain("## ✅ 0 inline findings — ship it");

@@ -9,7 +9,7 @@ import {
   type LiveReview,
 } from "../../src/cli/live-shared.js";
 import { countBySeverity } from "../../src/util/severity.js";
-import { REVIEW_MARKER } from "../../src/util/marker.js";
+import { REVIEW_MARKER, RESOLUTION_GUIDE_MARKER } from "../../src/util/marker.js";
 
 const SAMPLE_REVIEW: LiveReview = {
   summary: "Three issues need attention before merge.",
@@ -669,7 +669,7 @@ describe("buildReviewBody — concise empty-review body (ship-it branch)", () =>
     // bake-resolution-guide plan; pre-plan this assertion would have
     // also asserted `not.toContain("<details>")`.
     expect((body.match(/<details>/gu) ?? []).length).toBe(1);
-    expect(body).toContain("<!-- umactually:resolution-guide-v3 -->");
+    expect(body).toContain(RESOLUTION_GUIDE_MARKER);
   });
 
   it("SHIP-CLEAN-006: still emits the umactually:manifest JSON blob", () => {

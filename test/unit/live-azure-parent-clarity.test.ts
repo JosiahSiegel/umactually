@@ -38,7 +38,7 @@ import {
   type LiveReview,
   type LiveReviewComment,
 } from "../../src/cli/live-shared.js";
-import { REVIEW_MARKER } from "../../src/util/marker.js";
+import { REVIEW_MARKER, RESOLUTION_GUIDE_MARKER } from "../../src/util/marker.js";
 
 const SECRETS = ["sk-test-secret-do-not-leak"] as const;
 
@@ -474,7 +474,7 @@ describe("buildReviewBody — 5-second scannable clarity", () => {
     // resolution guide footer (baked in by the bake-resolution-guide
     // plan between the footer and the manifest).
     expect((body.match(/<details>/gu) ?? []).length).toBe(1);
-    expect(body).toContain("<!-- umactually:resolution-guide-v3 -->");
+    expect(body).toContain(RESOLUTION_GUIDE_MARKER);
     expect(body).not.toMatch(/📊\s+0\s+inline\s+findings/u);
     expect(body).not.toMatch(/not posted inline/u);
     expect(body).not.toMatch(/No findings to address/u);
