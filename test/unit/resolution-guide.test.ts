@@ -81,3 +81,27 @@ describe("S3 — platform-specific tokens are correctly partitioned", () => {
     expect(out).not.toContain("resolveReviewThread");
   });
 });
+
+describe("S4 — shell escaping is correct (PR #238 review feedback)", () => {
+  // Regression guard for the `\$` typo in the AZURE_GUIDE Step 2 reply
+  // block. Inside a JS template literal, `\$` is a no-op escape (no JS
+  // interpolation is happening for the `$(...)` command substitution),
+  // so `\$` would render as a literal backslash in the bash code fence
+  // — defeating the command substitution. The `\$` in `"\${PR_ID}"`
+  // on subsequent lines IS intentional: `${...}` would be interpolated
+  // by JS at template-literal parse time, so the escape is needed to
+  // render literal `${PR_ID}` for bash.
+  it("azure variant uses shell-correct $(...) command substitution (no leading backslash)", () => {
+    const out = resolutionGuide("azure");
+    // The Step 2 PR_ID assignment must NOT contain a leading backslash.
+    expect(out).not.toMatch(/PR_ID="\\\(/u);
+    // The Step 2 PR_ID assignment must use the shell-correct form.
+    expect(out).toContain('PR_ID="$(az repos pr show');
+    // Sanity: the PR_ID references on subsequent lines render as
+    // literal `${PR_ID}` (the shell expands them at runtime, but the
+    // JS template literal would interpolate `${PR_ID}` as undefined
+    // otherwise — so the source escapes them as `\${PR_ID}` and the
+    // rendered output uses the unescaped `${PR_ID}`).
+    expect(out).toContain('"${PR_ID}"');
+  });
+});
