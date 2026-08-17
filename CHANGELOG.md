@@ -18,6 +18,8 @@ ship a tag).
 
 ### Changed
 
+- **Relaxed the `INIT-DOC` invariant** (`test/unit/init-docs-freshness.test.ts`): the test now walks a rolling 3-entry CHANGELOG window for `umactually init` mentions instead of requiring every release entry to mention the wizard. Rationale: a release that does not touch the wizard (e.g. v0.11.0's resolution-guide bake) should not be forced to add an unrelated wizard reference. The rolling-3 window catches a regression where the wizard is removed for >2 releases in a row, without blocking non-wizard releases.
+
 ### Fixed
 
 - **Escaped backticks in finding summary lines** (PR #238 review feedback): GitHub's markdown renderer treats `<summary>`foo`…</summary>` as containing an inline code span, which visually splits the truncated summary line next to the disclosure triangle. The new `summarySnippet()` helper in `src/render/summary-layouts.ts` neutralises backticks in the summary line only (replaced with `&#96;` HTML entities); the expanded body (blockquote `>` line) and `📍` path:line line intentionally keep raw backticks because inline code rendering is the desired behavior there. `[src/render/summary-layouts.ts]`
