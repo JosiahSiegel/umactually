@@ -31,10 +31,13 @@ permissions:
   pull-requests: write
 
 # Workflow-level env: single source of truth for the platform so the
-# upstream 'Run UmActually self review' step and the downstream
-# 'Append resolution-guide' step always agree. flip here once to
-# repoint both steps; do NOT inline the value into individual step env
-# blocks (drift risk — see PR #139 round 8 finding 'configuration-drift').
+# upstream 'Run UmActually self review' step always agrees with the
+# workflow's CI environment. Flip here once to repoint the step; do NOT
+# inline the value into individual step env blocks (drift risk — see
+# PR #139 round 8 finding 'configuration-drift'). The previous
+# 'Append resolution-guide' step was removed (the CLI now bakes the
+# guide into every review body — bake-resolution-guide plan), so this
+# env var is consumed only by the upstream review step.
 env:
   UMACTUALLY_PLATFORM: github
 
@@ -154,14 +157,19 @@ jobs:
         # from the binary) will also fail in the same way. The two
         # must be updated together.
         #
-        # The --platform flag below is the source of truth for which
-        # platform's resolution guide the post-step appends. The
-        # corresponding env var UMACTUALLY_PLATFORM is read by the
-        # 'Append resolution-guide' step further down to pick the
-        # matching guide file. If --platform changes, that env var
-        # must change in lockstep — otherwise the appended guide
-        # references commands (\$GH api graphql vs az repos pr thread
-        # update) that don't apply to the actual review platform.
+        # The --platform flag below is the source of truth for the
+        # review's platform. The CLI now bakes the platform-specific
+        # resolution guide into every review body (the
+        # bake-resolution-guide plan); the previous
+        # 'Append resolution-guide' workflow step that re-appended
+        # the guide from .github/workflows/data/resolution-guide-*.md
+        # was removed as redundant. The env var UMACTUALLY_PLATFORM
+        # is echoed on this step's output (as `platform=...`) and
+        # consumed by the workflow-level env block's single-source-of-
+        # truth comment above. If --platform changes,
+        # UMACTUALLY_PLATFORM at the workflow-level env must change
+        # in lockstep — but the guide is now baked by the CLI, so the
+        # env var no longer affects which guide file is appended.
         id: review
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -204,202 +212,6 @@ jobs:
           echo "review-exit=${REVIEW_EXIT}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           echo "platform=${UMACTUALLY_PLATFORM}" >> "${GITHUB_OUTPUT:-/dev/null}" || true
           exit 0
-
-      - name: Append resolution-guide to latest review body
-        if: github.event_name == 'pull_request'
-        env:
-          # `gh` reads GITHUB_TOKEN (not GH_TOKEN) as the primary auth
-          # env var; GH_TOKEN is a fallback. Match the upstream
-          # 'Run UmActually self review' step's auth posture so a
-          # pull_request from a fork doesn't fall back to ambient auth.
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          # Honor the upstream step's --platform flag (echoed via step
-          # output). workflow_dispatch runs without the upstream step
-          # fall back to github (this workflow only runs on
-          # github.com-hosted runners).
-          UMACTUALLY_PLATFORM: ${{ steps.review.outputs.platform || env.UMACTUALLY_PLATFORM }}
-        run: |
-          # Append the platform-specific resolution guide to the umactually
-          # self-review on the CURRENT head commit. The guide is the
-          # agent-facing handbook for reading AND resolving umactually
-          # reviews (GraphQL close protocol, disposition taxonomy,
-          # verdict interpretation) — it applies to EVERY review, not
-          # only finding-bearing ones. An agent reading a clean
-          # 0-finding review still needs the protocol to formally close
-          # the review (Step 1 disposition "ship it" / "no findings").
-          # Idempotency: the marker-based skip below prevents duplicate
-          # appends on reruns; the inlineCount=0 skip was removed because
-          # a clean review IS a review.
-          # All API calls go through GraphQL rather than the REST `/reviews`
-          # endpoint to side-step three classes of fragility:
-          #   1. REST `/reviews?per_page=30` is unbounded for very long PRs;
-          #      GraphQL `reviews(last: N)` is a clean cap on a single round
-          #      trip (we use last:1 to fetch only the newest review).
-          #   2. REST PUT to `/reviews/{id}` only works for PENDING reviews
-          #      (server-side validated by GitHub); once the bot submits its
-          #      review (with any of the events `COMMENT`, `APPROVE`,
-          #      `REQUEST_CHANGES`), state moves out of PENDING to one of
-          #      `COMMENTED` / `APPROVED` / `CHANGES_REQUESTED`. The PUT
-          #      body update is allowed for any non-PENDING state, so we
-          #      filter `state != PENDING` here rather than pinning to one
-          #      specific state. The skip-log message echoes the actual
-          #      state so a future schema drift is visible in the run log.
-          #   3. The "newest bot review" selection by database-id is fragile
-          #      if other bot actors (Dependabot, step-summary bots) post
-          #      comments; filtering by `commit.oid == HEAD_SHA` plus
-          #      `author.login == github-actions` is unambiguous.
-          # The platform env var above auto-detects the target platform; the
-          # upstream CLI step may use --platform auto or --platform github
-          # directly, but the env var tracks the actual CI environment, so
-          # an Azure DevOps run gets the Azure guide and a GitHub PR gets
-          # the GitHub guide without the two values drifting apart.
-          # Scope `set +e` to the read-only GraphQL fetch only. The
-          # upstream 'Run UmActually self review' step ran with
-          # `set +e` to mask transient API failures (it is advisory and
-          # never blocks the CI job). This step inherits that mask, so
-          # we scope our own +e to the fetch and restore `-e` before
-          # any destructive write so a partial PUT failure does not
-          # silently leave the body in an unknown state.
-          set +e
-          # UMACTUALLY_PLATFORM is sourced from the upstream step's
-          # --platform flag (echoed as a step-output) and passed in via
-          # this step's env block. Validate the value before using it
-          # to construct a file path; any unexpected value is a config
-          # error and we exit 0 (advisory step, never blocks CI).
-          if [ "${UMACTUALLY_PLATFORM}" != "github" ] && [ "${UMACTUALLY_PLATFORM}" != "azure" ]; then
-            echo "Unsupported UMACTUALLY_PLATFORM='${UMACTUALLY_PLATFORM}'; expected github or azure. Skipping."
-            exit 0
-          fi
-          GUIDE_FILE="${{ github.workspace }}/.github/workflows/data/resolution-guide-${UMACTUALLY_PLATFORM}.md"
-          if [ ! -f "${GUIDE_FILE}" ]; then
-            echo "Guide file not found at ${GUIDE_FILE}; skipping."
-            exit 0
-          fi
-          # v3 is shared with the CLI's `RESOLUTION_GUIDE_MARKER` constant (src/util/marker.ts);
-          # bump both together. The grep-skip below is versionless so re-runs on old
-          # v2-marked reviews don't double-append.
-          GUIDE_MARKER="<!-- umactually:resolution-guide-v3 -->"
-          QUERY_FILE="${{ github.workspace }}/.github/workflows/data/latest-bot-review.graphql"
-          # Pull the latest non-PENDING github-actions review on the
-          # current head. The query is parameterized; only the GraphQL
-          # variables carry possibly-untrusted values.
-          REVIEW_JSON=$(gh api graphql \
-            -F owner="${GITHUB_REPOSITORY%/*}" \
-            -F name="${GITHUB_REPOSITORY#*/}" \
-            -F pr="${PR_NUMBER}" \
-            -F query="$(cat "${QUERY_FILE}")")
-          # Validate the GraphQL response shape. A `.errors` array
-          # (rate-limit, auth failure, schema drift) leaves `.data`
-          # null; without this check the next `jq` calls would emit
-          # null/empty and the step would skip with a misleading
-          # "No github-actions review" message.
-          if ! printf '%s' "${REVIEW_JSON}" | jq -e '.data.repository.pullRequest.reviews.nodes' >/dev/null 2>&1; then
-            echo "GraphQL response missing .data.repository.pullRequest.reviews.nodes; treating as transient and skipping."
-            printf '%s' "${REVIEW_JSON}" | jq -r '.errors // "no errors field"' 2>/dev/null | head -5
-            exit 0
-          fi
-          # Restore -e now that the read-only fetch is done.
-          set -e
-          REVIEW_ROW=$(printf '%s' "${REVIEW_JSON}" | jq -r --arg sha "${HEAD_SHA}" \
-            '[(.data.repository.pullRequest.reviews.nodes // [])[] | select(.author.login == "github-actions" and .commit.oid == $sha)] | sort_by(.databaseId) | reverse | .[0] // empty')
-          if [ -z "${REVIEW_ROW}" ] || [ "${REVIEW_ROW}" = "null" ]; then
-            echo "No github-actions[bot] review on PR ${PR_NUMBER} at HEAD ${HEAD_SHA}; skipping."
-            exit 0
-          fi
-          # Pull fields out of the picked row.
-          REVIEW_ID=$(printf '%s' "${REVIEW_ROW}" | jq -r '.databaseId')
-          REVIEW_STATE=$(printf '%s' "${REVIEW_ROW}" | jq -r '.state')
-          if [ "${REVIEW_STATE}" = "PENDING" ]; then
-            echo "Latest bot review ${REVIEW_ID} is still PENDING (unsubmitted); PUT-to-body would 422. Skipping."
-            exit 0
-          fi
-          CURRENT=$(printf '%s' "${REVIEW_ROW}" | jq -r '.body // ""')
-          # Extract inlineCount from the umactually manifest JSON blob. The
-          # bot terminates its review body with a single-line comment of the
-          # form <!-- umactually:manifest {"schema":"umactually/v1",...,
-          # "inlineCount":N, ...} -->. Pluck the field directly from the
-          # structured marker; never parse free-form summary text.
-          HAS_MARKER=$(printf '%s' "${CURRENT}" | grep -c '<!-- umactually:manifest ')
-          if [ "${HAS_MARKER}" -eq 0 ]; then
-            echo "Review ${REVIEW_ID} (state=${REVIEW_STATE}) has no umactually:manifest marker; manifest schema drift suspected. Skipping guide append (safer than guessing inlineCount=0)."
-            exit 0
-          fi
-          # Extract inlineCount from the umactually:manifest JSON blob. The
-          # bot terminates its review body with a single-line comment
-          # of the form <!-- umactually:manifest {"schema":"umactually/v1",...,
-          # "inlineCount":N, ...} -->. Pipe through `tac` first so the
-          # LAST occurrence (the real manifest) is processed before any
-          # earlier occurrence (which can appear inside the review
-          # summary text if the bot happens to quote the marker shape).
-          # `tac` reverses line order; awk picks the first match it sees
-          # in the reversed stream, which is the LAST occurrence of the
-          # marker in the original.
-          MANIFEST_JSON=$(printf '%s' "${CURRENT}" | tac | awk '
-            /<!-- umactually:manifest / {
-              sub(/^.*<!-- umactually:manifest /, "")
-              print
-              exit
-            }
-          ' | sed 's/[[:space:]]*-->$//')
-          if [ -z "${MANIFEST_JSON}" ]; then
-            INLINE_COUNT=0
-          else
-            INLINE_COUNT=$(printf '%s' "${MANIFEST_JSON}" | jq -r '.inlineCount // 0' 2>/dev/null) || INLINE_COUNT=0
-            # Guard against jq emitting a non-numeric token (e.g. 'null'
-            # from a missing field that didn't match the `// 0` fallback,
-            # or 'true'/'false' if a future schema change lands). Without
-            # this, INLINE_COUNT='null' would skip the zero-branch below
-            # and the guide would append to an empty review.
-            case "${INLINE_COUNT}" in
-              ''|*[!0-9]*) INLINE_COUNT=0 ;;
-            esac
-          fi
-          if [ "${INLINE_COUNT}" = "0" ]; then
-            # The guide is the agent-facing handbook for reading AND
-            # resolving umactually reviews, NOT a triage cheatsheet. It
-            # documents the GraphQL close protocol, the disposition
-            # taxonomy, and how to interpret every verdict including
-            # ✅ SHIP / 💬 DISCUSS. An agent reading a clean 0-finding
-            # review still needs that protocol to formally close the
-            # review (Step 1 disposition "ship it" / "no findings").
-            # The previous skip was wrong: a clean review IS a review,
-            # and an agent following the protocol must still see the
-            # protocol. Append unconditionally; the marker-based idempotency
-            # check below prevents duplicate appends on reruns.
-            echo "Review ${REVIEW_ID} has inlineCount=0 (per manifest); appending guide anyway — the resolution protocol is required for any review, not just finding-bearing ones."
-          fi
-          if printf '%s' "${CURRENT}" | grep -qE '<!-- umactually:resolution-guide-v[0-9]+ -->'; then
-            echo "Review ${REVIEW_ID} already contains the guide; skipping."
-            exit 0
-          fi
-          # Build new body: original + guide + trailing marker. Use jq for
-          # the join so embedded backslashes, quotes, backticks, and dollar
-          # signs survive.
-          GUIDE_CONTENT="$(cat "${GUIDE_FILE}")"
-          NEW_BODY=$(jq -nr --arg a "${CURRENT}" --arg b "${GUIDE_CONTENT}" --arg m "${GUIDE_MARKER}" \
-            '$a + "\n---\n\n" + $b + "\n" + $m + "\n"')
-          # Update the review body via REST PUT. Pass the body via an
-          # intermediate file to avoid shell-quoting headaches (the body
-          # contains backslashes, quotes, backticks, dollar signs).
-          TMPF=$(mktemp)
-          trap 'rm -f "${TMPF}"' EXIT
-          jq -n --arg body "${NEW_BODY}" '{body: $body}' > "${TMPF}"
-          gh api \
-            -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: application/json" \
-            --input "${TMPF}" \
-            "/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/reviews/${REVIEW_ID}" \
-            | jq '{id, body_len: (.body | length)}'
-          PUT_EXIT=$?
-          set -e
-          if [ "${PUT_EXIT}" -ne 0 ]; then
-            echo "PUT-to-review failed (exit=${PUT_EXIT}); self-review is advisory so the workflow exits 0. The next push will re-attempt."
-            exit 0
-          fi
-
 
       - name: Run check-review-artifact guard for suspicious signals
         # Hardening for the rubber-stamp concern surfaced after PR #141-
