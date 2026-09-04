@@ -35,6 +35,9 @@ const EXPECTED_ENV_KEYS = {
   INPUT_THREADS: "INPUT_THREADS",
   INPUT_OUTPUT_ARTIFACT: "INPUT_OUTPUT_ARTIFACT",
   INPUT_PLATFORM: "INPUT_PLATFORM",
+  UMACTUALLY_COMMAND_PATH: "UMACTUALLY_COMMAND_PATH",
+  UMACTUALLY_COMMAND_ARGS: "UMACTUALLY_COMMAND_ARGS",
+  UMACTUALLY_COMMAND_TIMEOUT_MS: "UMACTUALLY_COMMAND_TIMEOUT_MS",
 } as const satisfies typeof ENV_KEYS;
 
 const TARGET_FILES = [
@@ -50,6 +53,9 @@ const TARGET_FILES = [
 const PUBLIC_ENV_NAMES = [
   "UMACTUALLY_API_KEY",
   "UMACTUALLY_API_URL",
+  "UMACTUALLY_COMMAND_ARGS",
+  "UMACTUALLY_COMMAND_PATH",
+  "UMACTUALLY_COMMAND_TIMEOUT_MS",
   "UMACTUALLY_GITHUB_API_BASE",
   "UMACTUALLY_INSTRUCTION_FILES",
   "UMACTUALLY_MODEL",
@@ -63,6 +69,9 @@ const FIELD_ENV_REGISTRY_BINDINGS = [
   { field: "provider", keys: ["UMACTUALLY_PROVIDER"] },
   { field: "githubApiBase", keys: ["UMACTUALLY_GITHUB_API_BASE"] },
   { field: "instructionFiles", keys: ["UMACTUALLY_INSTRUCTION_FILES"] },
+  { field: "commandPath", keys: ["UMACTUALLY_COMMAND_PATH"] },
+  { field: "commandArgs", keys: ["UMACTUALLY_COMMAND_ARGS"] },
+  { field: "commandTimeoutMs", keys: ["UMACTUALLY_COMMAND_TIMEOUT_MS"] },
   { field: "githubToken", keys: ["GITHUB_TOKEN", "GH_TOKEN"] },
 ] as const satisfies ReadonlyArray<{
   readonly field: keyof typeof FIELDS;

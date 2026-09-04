@@ -1,5 +1,10 @@
 import { runCopilotRequest } from "../provider/copilot.js";
 import {
+  runCommandProviderWithRetry,
+  resolveCommandProviderConfig,
+  COMMAND_PROVIDER_NAME,
+} from "../provider/command.js";
+import {
   runProviderRequest,
   type ProviderCallResult,
   type ProviderReviewPayload,
@@ -26,7 +31,7 @@ import {
   DEFAULT_GITHUB_API_BASE,
 } from "../util/provider-defaults.js";
 import { requireLiveConfig } from "../util/required-config.js";
-import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
+import { looksLikeAnthropicEndpoint, redactUrlForLog, createRequestId } from "../util/url.js";
 import {
   buildMalformedProviderFallback,
   enrichWithDurableIdentity,
@@ -353,6 +358,45 @@ export async function requestLiveReview(input: {
       return dispatchProviderResult(
         result,
         providerNameForEndpoint(result.ok ? result.endpoint : result.error.endpoint),
+        input.parsed.maxOutputTokens,
+        { handleSuccess, handleParse },
+      );
+    }
+
+    if (input.parsed.provider === "command") {
+      // Subprocess-backed LLM provider. No HTTP, no auth header — the
+      // configured executable is spawned once per review with the
+      // chat-completions request body on stdin and is expected to
+      // return a chat-completions response on stdout. See
+      // `docs/providers.md` and `src/provider/command.ts` for the
+      // full wire contract.
+      //
+      // Resolution order: --command-path flag → env
+      // UMACTUALLY_COMMAND_PATH. The dispatcher errors out with a
+      // typed ProviderError if neither is set, mirroring how
+      // `requireLiveConfig` fails the HTTP providers when their
+      // required URL/key is missing.
+      const commandConfig = resolveCommandProviderConfig({
+        ...input.env,
+        ...(input.parsed.commandPath !== null ? { [ENV_KEYS.UMACTUALLY_COMMAND_PATH]: input.parsed.commandPath } : {}),
+        ...(input.parsed.commandArgs !== null ? { [ENV_KEYS.UMACTUALLY_COMMAND_ARGS]: input.parsed.commandArgs } : {}),
+        ...(input.parsed.commandTimeoutMs !== null ? { [ENV_KEYS.UMACTUALLY_COMMAND_TIMEOUT_MS]: String(input.parsed.commandTimeoutMs) } : {}),
+      });
+      const requestId = createRequestId();
+      const result = await runCommandProviderWithRetry(
+        {
+          model: modelId,
+          system: prompts.system,
+          user: prompts.user,
+          requestTimeoutMs: readRequestTimeoutMs(input.parsed),
+          command: commandConfig,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        },
+        requestId,
+      );
+      return dispatchProviderResult(
+        result,
+        COMMAND_PROVIDER_NAME,
         input.parsed.maxOutputTokens,
         { handleSuccess, handleParse },
       );

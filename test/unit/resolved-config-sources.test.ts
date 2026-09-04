@@ -78,6 +78,9 @@ describe("resolvedConfig source provenance", { timeout: 30_000 }, () => {
   it("reports only current public environment names in provenance", async () => {
     process.env["UMACTUALLY_API_KEY"] = "current-key";
     process.env["UMACTUALLY_API_URL"] = "https://canonical.example/v1";
+    process.env["UMACTUALLY_COMMAND_PATH"] = "/usr/local/bin/llm";
+    process.env["UMACTUALLY_COMMAND_ARGS"] = "--mode=strict";
+    process.env["UMACTUALLY_COMMAND_TIMEOUT_MS"] = "60000";
     process.env["UMACTUALLY_GITHUB_API_BASE"] = "https://github.example/api/v3";
     process.env["UMACTUALLY_MODEL"] = "current-model";
     process.env["UMACTUALLY_PROVIDER"] = "anthropic";
@@ -105,8 +108,12 @@ describe("resolvedConfig source provenance", { timeout: 30_000 }, () => {
       .sort();
 
     expect(envNames).toEqual([
+      "GITHUB_TOKEN",
       "UMACTUALLY_API_KEY",
       "UMACTUALLY_API_URL",
+      "UMACTUALLY_COMMAND_ARGS",
+      "UMACTUALLY_COMMAND_PATH",
+      "UMACTUALLY_COMMAND_TIMEOUT_MS",
       "UMACTUALLY_GITHUB_API_BASE",
       "UMACTUALLY_MODEL",
       "UMACTUALLY_PROVIDER",

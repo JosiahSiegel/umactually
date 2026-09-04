@@ -2,23 +2,11 @@
 
 A Node.js 24 CLI for auditable, policy-aware pull-request review. It posts validated inline findings to GitHub (including documented GHES support) and Azure DevOps through an operator-selected OpenAI-compatible, Anthropic, or Copilot provider.
 
-[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.11.0)
-[![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
+[![GitHub release](https://img.shields.io/github/v/release/JosiahSiegel/umactually)](https://github.com/JosiahSiegel/umactually/releases/tag/v0.11.0) [![npm](https://img.shields.io/npm/v/umactually)](https://www.npmjs.com/package/umactually) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 Latest release: **[v0.11.0](https://github.com/JosiahSiegel/umactually/releases/tag/v0.11.0)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
 ## Prerequisites
 
-`umactually` requires **Node.js 24 or later** (or **Bun 1.2+**). The CLI exits immediately on older runtimes with a typed message and no install side-effects, so check `node --version` before the install block below.
-
-The fastest way to get a supported runtime on a fresh box:
-
-- **macOS / Linux (single line):** `curl -fsSL https://nodejs.org/dist/v24.5.0/node-v24.5.0-linux-x64.tar.xz | tar -xJ -C ~/.local && export PATH="$HOME/.local/node-v24.5.0-linux-x64/bin:$PATH"` (use the darwin-x64 / arm64 tarball name on macOS — see [nodejs.org/dist](https://nodejs.org/dist/)).
-- **macOS with Homebrew:** `brew install node@24 && brew link --overwrite node@24`
-- **Version managers:** `nvm install 24 && nvm use 24`, `fnm install 24`, `volta install node@24`, or `asdf install nodejs latest:24` — all work; pick the one your team already uses.
-- **Windows:** download the `.msi` installer from [nodejs.org](https://nodejs.org/) or `winget install OpenJS.NodeJS.LTS`.
-
-If you only run `umactually` inside GitHub Actions, you do not need to install Node 24 locally — the composite action provisions it for you on the runner.
+`umactually` requires **Node.js 24+** (or **Bun 1.2+**). On older runtimes the CLI exits immediately with a typed message — no half-install. Get Node 24 from [nodejs.org/dist](https://nodejs.org/dist/) (curl + tar one-liner included), `brew install node@24`, your version manager (`nvm install 24`, `fnm install 24`, `volta install node@24`, `asdf install nodejs latest:24`), or `winget install OpenJS.NodeJS.LTS` on Windows. If you only run `umactually` inside GitHub Actions, the composite action provisions Node 24 on the runner — no local install needed.
 
 ## Quickstart
 
@@ -88,7 +76,6 @@ Read-only; never opens a network connection; prints the resolved `provider`, `ap
 | `openai-compatible` | `api-url` (default `https://api.openai.com/v1`), `api-key` (NEVER persisted), `model` (optional) |
 | `anthropic` | `api-key` (NEVER persisted), `model` (optional) |
 | `copilot` | `github-api-base` (default `https://api.github.com`), `model` (optional); no `api-key` — wizard points at `GITHUB_TOKEN` |
-
 Full per-family wire shape and the cross-protocol dispatcher at [`docs/providers.md`](docs/providers.md#setup-wizard).
 
 ## CI
