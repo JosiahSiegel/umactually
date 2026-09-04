@@ -221,3 +221,107 @@ If only (1) holds but the rest are negative, route through the existing OpenAI c
 ## See also
 
 The README's [Provider](README.md#provider) section surfaces the three families as a scannable table and links here for the per-family wire shape. The README's [Quickstart](README.md#quickstart) walks an operator through picking a family interactively; this doc is the canonical reference for the wire contract and dispatcher. Cross-reference the [Common operations](README.md#common-operations) section for the day-to-day command surface.
+
+## Command provider (subprocess-backed LLM)
+
+The `command` family wires any local executable as the review LLM. There is no HTTP, no auth header, and no port — the configured executable is spawned once per review, the OpenAI chat-completions request body is written to its **stdin**, and the response is read from its **stdout** as an OpenAI chat-completions response.
+
+### When to use it
+
+- Local LLM runners that don't expose HTTP (a custom Python wrapper around a model, a `llama.cpp` script, a research codebase that needs to stay in-process).
+- Agent-based providers (Claude Code sessions, MaxClaw agents, anything that can act on stdin/stdout JSON) — useful for offline review of a project's own code.
+- CI test fixtures: a deterministic mock LLM as a tiny shell script, exercised by the same end-to-end pipeline.
+- Any operator who already has the model in a subprocess for other reasons and doesn't want to re-host it behind an HTTP shim.
+
+### Configuration
+
+| Flag | Env | Default | Purpose |
+| --- | --- | --- | --- |
+| `--command-path <path>` | `UMACTUALLY_COMMAND_PATH` | _(required)_ | Absolute path to the executable to spawn. Resolved with `path.resolve` at call time. |
+| `--command-args <csv>` | `UMACTUALLY_COMMAND_ARGS` | `""` | Comma-separated args appended after the executable. Each comma is a single argument boundary; values are passed verbatim (no shell expansion). |
+| `--command-timeout-ms <ms>` | `UMACTUALLY_COMMAND_TIMEOUT_MS` | `60000` | Wall-clock budget for the subprocess. On expiry the process is `SIGTERM`'d and the call surfaces a typed `timeout` error. |
+
+The provider short-circuits at startup with a typed `network` error if `UMACTUALLY_COMMAND_PATH` is unset, mirroring how the HTTP providers fail on a missing `UMACTUALLY_API_URL`.
+
+### Wire contract
+
+**stdin** — single JSON object, OpenAI chat-completions request shape, built by the same `buildChatBody` the HTTP providers use:
+
+```json
+{
+  "model": "your-model-id",
+  "messages": [
+    { "role": "system", "content": "<the umactually review system prompt>" },
+    { "role": "user",   "content": "<the umactually review user prompt (diff + context)>" }
+  ],
+  "response_format": { "type": "json_object" },
+  "max_tokens": 4096
+}
+```
+
+**stdout** — single JSON object, OpenAI chat-completions response shape:
+
+```json
+{
+  "id": "any-string",
+  "object": "chat.completion",
+  "model": "your-model-id",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"summary\":\"...\",\"verdict\":\"success\",\"comments\":[...]}"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": { "prompt_tokens": 123, "completion_tokens": 45, "total_tokens": 168 }
+}
+```
+
+The `content` field MUST be a strict-JSON review payload (`summary`, `verdict`, `comments[]`, `suppressed_comments[]`) — the same shape any OpenAI-compatible HTTP provider is expected to produce. The CLI reuses `parseReviewPayload` and `parseTextPayload` from `src/provider/provider-parse.ts` to extract it, so retry, parse-fail self-healing, severity filter, and fact verification all work the same way as the HTTP families.
+
+**stderr** — free-form. Each line is surfaced as a `::notice::command-provider: <line>` GitHub Actions annotation so operators can see model progress, debug logs, and rate-limit messages in the run log.
+
+**exit code** — `0` is success. Non-zero is a typed `network` error; the exit code, signal, and the last 5 stderr lines are included in the error message for triage.
+
+### Limitations (v1)
+
+- **Non-streaming only.** The command family does not implement `stream: true`; the CLI does not request it for this provider. SSE-over-stdio is awkward and the user-visible win was small, so the first cut returns a single response object. If you need streaming, run a tiny HTTP shim in front of your subprocess and use `--provider openai-compatible`.
+- **Per-request spawn.** A fresh subprocess is created for every review. The OS process-start cost is sub-50ms on Linux; for batched evaluations of many diffs you can build a long-lived daemon and a thin spawner that talks to it over its own socket. A first-class `command-daemon` family is a natural follow-up.
+- **No inline credential injection.** The subprocess inherits `process.env` plus any extra `env` set on the spawn. Secrets the subprocess needs should be in the parent process's environment (e.g. a CI secret) — they are NOT automatically stripped or redacted by the CLI.
+
+### Example: a one-line Python wrapper
+
+```bash
+export UMACTUALLY_COMMAND_PATH=/usr/bin/python3
+export UMACTUALLY_COMMAND_ARGS=/opt/llm/wrapper.py,--model=llama-3.1
+umactually review --provider command --files ./src/index.ts
+```
+
+`/opt/llm/wrapper.py`:
+
+```python
+import json, sys, subprocess
+
+body = json.load(sys.stdin)
+# ... call your local model, build a chat-completions response ...
+sys.stdout.write(json.dumps({
+  "id": "local-1",
+  "object": "chat.completion",
+  "model": body.get("model", "local"),
+  "choices": [{
+    "index": 0,
+    "message": {"role": "assistant", "content": json.dumps(review_payload)},
+    "finish_reason": "stop",
+  }],
+  "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+}))
+```
+
+### See also
+
+- Source: `src/provider/command.ts` (the `runCommandProviderRequest` function, plus the `extractChatCompletionsUsage` helper for the non-SSE usage block).
+- Dispatcher hook: `src/cli/live-provider.ts` (the `if (input.parsed.provider === "command")` branch — same shape as the `anthropic` and `copilot` branches).
+- Tests: `test/unit/command-provider.test.ts` (9 cases: happy path, stderr capture, non-zero exit, timeout, empty stdout, malformed JSON, stdin shape, env-var resolution, missing-path error).

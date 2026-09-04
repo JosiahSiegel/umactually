@@ -1,7 +1,7 @@
 import { isAbortError } from "../provider/provider-error.js";
 import { redactUrlForLog } from "../util/url.js";
 
-export type ModelProvider = "openai-compatible" | "anthropic" | "copilot";
+export type ModelProvider = "openai-compatible" | "anthropic" | "copilot" | "command";
 
 export type ModelDiscoveryError =
   | { readonly kind: "empty" }
@@ -68,6 +68,7 @@ function discoverySignal(dependencies: ModelDiscoveryDependencies): AbortSignal 
 
 export async function discoverAutoModel(input: ModelDiscoveryInput): Promise<ModelDiscoveryResult> {
   if (input.provider === "copilot") return { ok: true, modelId: "auto" };
+  if (input.provider === "command") return { ok: true, modelId: "command-default" };
   if (input.apiUrl === null || input.apiUrl.trim().length === 0 || input.apiKey === null || input.apiKey.length === 0) {
     return { ok: false, error: { kind: "unsupported", provider: input.provider } };
   }

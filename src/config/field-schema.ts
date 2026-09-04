@@ -331,7 +331,40 @@ export const FIELDS = {
     // Anthropic-native wire protocol (top-level `system` field, user
     // messages only, `x-api-key`/`anthropic-version` headers) and posts
     // to `/v1/messages`.
-    enumValues: ["openai-compatible", "copilot", "anthropic"],
+    //
+    // The `command` family was added to wire any local executable as the
+    // LLM over stdin/stdout JSON (OpenAI chat-completions wire shape on
+    // both ends). No HTTP, no auth header — the subprocess is invoked
+    // once per review with the request body on stdin and is expected to
+    // return a chat-completions response on stdout. See
+    // `docs/providers.md` and `src/provider/command.ts` for the full
+    // contract. Operators pick `command` and pass `--command-path`
+    // (or `UMACTUALLY_COMMAND_PATH`).
+    enumValues: ["openai-compatible", "copilot", "anthropic", "command"],
+  },
+  commandPath: {
+    field: "commandPath",
+    flag: "--command-path",
+    input: "command-path",
+    env: ["UMACTUALLY_COMMAND_PATH"],
+    type: "string",
+    defaultValue: "",
+  },
+  commandArgs: {
+    field: "commandArgs",
+    flag: "--command-args",
+    input: "command-args",
+    env: ["UMACTUALLY_COMMAND_ARGS"],
+    type: "string",
+    defaultValue: "",
+  },
+  commandTimeoutMs: {
+    field: "commandTimeoutMs",
+    flag: "--command-timeout-ms",
+    input: "command-timeout-ms",
+    env: ["UMACTUALLY_COMMAND_TIMEOUT_MS"],
+    type: "integer",
+    defaultValue: 60_000,
   },
   githubApiBase: {
     field: "githubApiBase",

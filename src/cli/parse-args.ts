@@ -6,7 +6,7 @@ import { parseSeverityFromUnknown } from "../config/parsers.js";
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
 export type CliEffort = "low" | "medium" | "high";
-export type CliProvider = "openai-compatible" | "copilot" | "anthropic";
+export type CliProvider = "openai-compatible" | "copilot" | "anthropic" | "command";
 
 const explicitFieldsByParse = new WeakMap<ParsedCliArgs, ReadonlySet<string>>();
 
@@ -44,6 +44,12 @@ export type ParsedCliArgs = {
   readonly effort: CliEffort | null;
   readonly provider: CliProvider | null;
   readonly githubApiBase: string | null;
+  /** Command provider: absolute path to the executable to spawn. */
+  readonly commandPath: string | null;
+  /** Command provider: comma-separated args appended after the executable. */
+  readonly commandArgs: string | null;
+  /** Command provider: timeout in ms before the subprocess is SIGTERM'd. */
+  readonly commandTimeoutMs: number | null;
   /**
    * GitHub API token. Parsed from `--github-token <value>` (or
    * `--github-token=<value>`) and threaded through to the resolver
@@ -162,6 +168,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
   let repo: string | null = null;
   let apiUrl: string | null = null;
   let apiKey: string | null = null;
+  let commandPath: string | null = null;
+  let commandArgs: string | null = null;
+  let commandTimeoutMs: number | null = null;
   let model: string | null = null;
   let promptFile: string | null = null;
   let promptFiles: string | null = null;
@@ -289,6 +298,18 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
         break;
       case "--api-key":
         apiKey = readValue(args, index, "api-key");
+        index += 1;
+        break;
+      case "--command-path":
+        commandPath = readValue(args, index, "command-path");
+        index += 1;
+        break;
+      case "--command-args":
+        commandArgs = readValue(args, index, "command-args");
+        index += 1;
+        break;
+      case "--command-timeout-ms":
+        commandTimeoutMs = readIntValue(args, index, "command-timeout-ms");
         index += 1;
         break;
       case "--model":
@@ -467,6 +488,9 @@ export function parseCliArgs(args: readonly string[]): ParsedCliArgs {
     effort,
     provider,
     githubApiBase,
+    commandPath,
+    commandArgs,
+    commandTimeoutMs,
     includeSonarqube,
     includePrSonarFindings,
     sonarHostUrl,
