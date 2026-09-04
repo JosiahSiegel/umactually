@@ -93,10 +93,17 @@ export async function requestLiveReview(input: {
     diffText: input.diffText,
     expectedArtifact: "artifacts/manual/s5-redaction-report.json",
   });
-  const providerApiKey = requireLiveConfig(
-    resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
-    ENV_KEYS.UMACTUALLY_API_KEY,
-  );
+  // The command provider does not authenticate — the subprocess inherits
+  // the parent process's environment, and there is no HTTP Authorization
+  // header in the wire contract. Skip the API-key requirement for it; the
+  // HTTP providers still enforce it through `requireLiveConfig`.
+  const provider = input.parsed.provider ?? "openai-compatible";
+  const providerApiKey = provider === "command"
+    ? ""
+    : requireLiveConfig(
+        resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
+        ENV_KEYS.UMACTUALLY_API_KEY,
+      );
   const providerUrl = resolveProviderUrl(input.parsed, input.env);
   const modelId = await resolveRequestModel({
     configuredModel: input.parsed.model,
