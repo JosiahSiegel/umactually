@@ -7,6 +7,19 @@ A Node.js 24 CLI for auditable, policy-aware pull-request review. It posts valid
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Node.js >=24](https://img.shields.io/badge/node-%3E%3D24-339933.svg)](https://nodejs.org/)
 Latest release: **[v0.11.0](https://github.com/JosiahSiegel/umactually/releases/tag/v0.11.0)** — see [all releases](https://github.com/JosiahSiegel/umactually/releases).
+## Prerequisites
+
+`umactually` requires **Node.js 24 or later** (or **Bun 1.2+**). The CLI exits immediately on older runtimes with a typed message and no install side-effects, so check `node --version` before the install block below.
+
+The fastest way to get a supported runtime on a fresh box:
+
+- **macOS / Linux (single line):** `curl -fsSL https://nodejs.org/dist/v24.5.0/node-v24.5.0-linux-x64.tar.xz | tar -xJ -C ~/.local && export PATH="$HOME/.local/node-v24.5.0-linux-x64/bin:$PATH"` (use the darwin-x64 / arm64 tarball name on macOS — see [nodejs.org/dist](https://nodejs.org/dist/)).
+- **macOS with Homebrew:** `brew install node@24 && brew link --overwrite node@24`
+- **Version managers:** `nvm install 24 && nvm use 24`, `fnm install 24`, `volta install node@24`, or `asdf install nodejs latest:24` — all work; pick the one your team already uses.
+- **Windows:** download the `.msi` installer from [nodejs.org](https://nodejs.org/) or `winget install OpenJS.NodeJS.LTS`.
+
+If you only run `umactually` inside GitHub Actions, you do not need to install Node 24 locally — the composite action provisions it for you on the runner.
+
 ## Quickstart
 
 Add `umactually-action` to a pull-request workflow, configure two repo secrets, ship. The action owns Node.js 24 setup, `npm install -g umactually`, the first-run secret bootstrap, the live review, and the verdict output for branch protection. Full reference: [`docs/install-action.md`](docs/install-action.md).
