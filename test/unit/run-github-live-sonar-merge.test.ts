@@ -1,11 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { runGithubLive } from "../../src/cli/live-github.js";
 import { parseCliArgs } from "../../src/cli/parse-args.js";
 import type { GithubContext } from "../../src/platform/github/context.js";
 import type { FetchImpl } from "../../src/cli/live-shared.js";
-import type { LiveProviderOutcome } from "../../src/cli/live-shared.js";
+import type { LiveProviderOutcome, LiveReviewComment } from "../../src/cli/live-shared.js";
 import type { ParsedCliArgs } from "../../src/cli/parse-args.js";
+import { REVIEW_MARKER } from "../../src/util/marker.js";
 
 function makeJsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -43,7 +44,7 @@ function makeDiffText(): string {
   ].join("\n");
 }
 
-function makeProviderOutcome(): LiveProviderOutcome {
+function makeProviderOutcome(comments: readonly LiveReviewComment[] = []): LiveProviderOutcome {
   return {
     endpoint: "https://provider.example/v1/responses",
     provider: "openai-compatible",
@@ -51,7 +52,7 @@ function makeProviderOutcome(): LiveProviderOutcome {
     review: {
       summary: "Looks good, ship it.",
       verdict: "SHIP",
-      comments: [],
+      comments,
       suppressedComments: [],
     },
     severityWarnings: [],
@@ -290,5 +291,153 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
     // suppressedCount — machine-parseable, not prose.
     expect(postedReview?.event).toBe("COMMENT");
     expect(postedReview?.body).toContain("\"suppressedCount\":1");
+  });
+
+  it("retries the review POST body-only once when GitHub rejects the comments-bearing POST with 422", async () => {
+    // Defense in depth behind the uniform position gate: if ANY inline
+    // anchor is still rejected (diff drift between fetch and POST,
+    // GitHub-side hunk edge cases), a single bad anchor must not nuke
+    // the whole review — retry once with `comments: []` so the body
+    // (with the manifest + findings summary) still lands.
+    const inDiffComment: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      line: 1296,
+      body: "Model finding anchored inside the diff hunk.",
+      severity: "high",
+      category: "bug",
+    };
+    const capturedPosts: Array<{ comments: Array<{ path: string; line: number }>; event: string }> = [];
+    let postAttempts = 0;
+    const fetchImpl: FetchImpl = (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const urlString = typeof url === "string" ? url : url.toString();
+      if (method === "GET" && urlString.endsWith("/pulls/42/reviews")) {
+        return Promise.resolve(makeJsonResponse([]));
+      }
+      if (method === "POST" && urlString.endsWith("/pulls/42/reviews")) {
+        postAttempts += 1;
+        const rawBody = typeof init?.body === "string" ? init.body : "";
+        const body = rawBody === "" ? {} : JSON.parse(rawBody);
+        capturedPosts.push(body as { comments: Array<{ path: string; line: number }>; event: string });
+        if (postAttempts === 1) {
+          return Promise.resolve(
+            new Response("Validation Failed", { status: 422, headers: { "content-type": "text/plain" } }),
+          );
+        }
+        return Promise.resolve(makeJsonResponse({ id: 8888 }));
+      }
+      throw new Error(`unexpected ${method} ${urlString}`);
+    };
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const result = await runGithubLive({
+        context: makeContext(),
+        diffText: makeDiffText(),
+        provider: makeProviderOutcome([inDiffComment]),
+        parsed: baseParsedArgs(),
+        fetchImpl,
+      });
+
+      expect(result.posted).toBe(true);
+      expect(result.reviewId).toBe(8888);
+      expect(postAttempts).toBe(2);
+      expect(capturedPosts[0]?.comments).toHaveLength(1);
+      expect(capturedPosts[1]?.comments).toHaveLength(0);
+      // Same body+event on the retry — only the comments array is dropped.
+      expect(capturedPosts[1]?.event).toBe(capturedPosts[0]?.event);
+      const warnings = stderrSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((chunk) => chunk.startsWith("::warning::"));
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("1");
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("still fails with GITHUB_CREATE_REVIEW_FAILED when the body-only retry also returns 422", async () => {
+    // The 422 fallback is bounded: one retry, then the original typed
+    // failure propagates so the operator sees the typed exit code.
+    const inDiffComment: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      line: 1296,
+      body: "Model finding anchored inside the diff hunk.",
+      severity: "high",
+      category: "bug",
+    };
+    let postAttempts = 0;
+    const fetchImpl: FetchImpl = (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const urlString = typeof url === "string" ? url : url.toString();
+      if (method === "GET" && urlString.endsWith("/pulls/42/reviews")) {
+        return Promise.resolve(makeJsonResponse([]));
+      }
+      if (method === "POST" && urlString.endsWith("/pulls/42/reviews")) {
+        postAttempts += 1;
+        return Promise.resolve(
+          new Response("Validation Failed", { status: 422, headers: { "content-type": "text/plain" } }),
+        );
+      }
+      throw new Error(`unexpected ${method} ${urlString}`);
+    };
+
+    await expect(
+      runGithubLive({
+        context: makeContext(),
+        diffText: makeDiffText(),
+        provider: makeProviderOutcome([inDiffComment]),
+        parsed: baseParsedArgs(),
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ code: "GITHUB_CREATE_REVIEW_FAILED" });
+    expect(postAttempts).toBe(2);
+  });
+
+  it("warns and still posts the new review when deleting a submitted marker review fails with 422", async () => {
+    // Lock for the PR #246 stale-review scenario: GitHub only allows
+    // deleting PENDING reviews, so DELETE on a submitted (CHANGES_REQUESTED)
+    // marker review returns 422. The runner warns and continues — the new
+    // review on the final head must still be posted.
+    const markerReview = { id: 5178288306, body: `${REVIEW_MARKER}\n\nold body`, state: "CHANGES_REQUESTED" };
+    let postAttempts = 0;
+    const fetchImpl: FetchImpl = (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const urlString = typeof url === "string" ? url : url.toString();
+      if (method === "GET" && urlString.endsWith("/pulls/42/reviews")) {
+        return Promise.resolve(makeJsonResponse([markerReview]));
+      }
+      if (method === "DELETE" && urlString.endsWith("/pulls/42/reviews/5178288306")) {
+        return Promise.resolve(
+          new Response("Validation Failed", { status: 422, headers: { "content-type": "text/plain" } }),
+        );
+      }
+      if (method === "POST" && urlString.endsWith("/pulls/42/reviews")) {
+        postAttempts += 1;
+        return Promise.resolve(makeJsonResponse({ id: 9999 }));
+      }
+      throw new Error(`unexpected ${method} ${urlString}`);
+    };
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      const result = await runGithubLive({
+        context: makeContext(),
+        diffText: makeDiffText(),
+        provider: makeProviderOutcome(),
+        parsed: baseParsedArgs(),
+        fetchImpl,
+      });
+
+      expect(result.posted).toBe(true);
+      expect(result.reviewId).toBe(9999);
+      expect(postAttempts).toBe(1);
+      const warnings = stderrSpy.mock.calls
+        .map((call) => String(call[0]))
+        .filter((chunk) => chunk.startsWith("::warning::"));
+      expect(warnings).toHaveLength(1);
+    } finally {
+      stderrSpy.mockRestore();
+    }
   });
 });

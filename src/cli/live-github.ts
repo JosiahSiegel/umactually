@@ -304,17 +304,41 @@ async function createGithubReview(input: {
   readonly event: "COMMENT" | "REQUEST_CHANGES";
   readonly comments: readonly GithubReviewCommentRequest[];
 }): Promise<number | undefined> {
-  const request: CreateGithubReviewRequest = {
-    commit_id: input.context.headSha,
-    body: input.body,
-    event: input.event,
-    comments: input.comments,
+  const postReview = (comments: readonly GithubReviewCommentRequest[]): Promise<Response> => {
+    const request: CreateGithubReviewRequest = {
+      commit_id: input.context.headSha,
+      body: input.body,
+      event: input.event,
+      comments,
+    };
+    return input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
+      method: "POST",
+      headers: githubHeaders(input.context.token),
+      body: JSON.stringify(request),
+    });
   };
-  const response = await input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
-    method: "POST",
-    headers: githubHeaders(input.context.token),
-    body: JSON.stringify(request),
-  });
+  const response = await postReview(input.comments);
+  // Defense in depth behind the uniform position gate in
+  // `selectPostableComments`: if GitHub still rejects a comments-bearing
+  // POST with 422 (a single anchor outside the diff hunk fails the WHOLE
+  // review atomically — e.g. diff drift between the fetch and the POST),
+  // retry ONCE with an empty comments array so the review body (manifest,
+  // findings summary, verdict) still lands. The dropped inline findings
+  // remain auditable via the body's manifest suppressed count.
+  if (response.status === 422 && input.comments.length > 0) {
+    writeBrandedAnnotation(
+      "warning",
+      `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.`,
+    );
+    const retryResponse = await postReview([]);
+    ensureHttpOk(
+      retryResponse,
+      "GITHUB_CREATE_REVIEW_FAILED",
+      "GitHub create review",
+      "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event.",
+    );
+    return readResponseId(await readJsonResponse(retryResponse));
+  }
   ensureHttpOk(
     response,
     "GITHUB_CREATE_REVIEW_FAILED",
