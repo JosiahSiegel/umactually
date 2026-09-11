@@ -10,6 +10,22 @@ ship a tag).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-11
+
+### Added
+
+- **Optional native reasoning effort across the CLI and every provider** (#246): a new `--effort` flag and `UMACTUALLY_EFFORT` env var accept the seven-level vocabulary `none | minimal | low | medium | high | xhigh | max`, resolved with precedence `--effort` > `UMACTUALLY_EFFORT` > saved `effort` in `~/.umactually/config.json` > provider/model default. Effort is optional and is never coerced to an implicit `medium`; when unset the request omits the effort field entirely so the provider chooses its own default. The `umactually init` wizard and TUI can select and persist effort, and `umactually --show-config` reports the effective value plus the source it resolved from. Requests carry each wire shape's native field — `reasoning.effort` (OpenAI Responses), `reasoning_effort` (OpenAI Chat Completions and the Copilot Chat transport), and `output_config.effort` (Anthropic). Anthropic's five-level vocabulary is enforced before the request is sent (`none` and `minimal` are rejected), and a provider rejection surfaces a typed `effort-rejection` error without silently downgrading to a different level. `[src/config/effort.ts, src/provider/provider-effort-error.ts, src/provider/openai-compatible.ts, src/provider/anthropic-messages.ts, src/provider/copilot.ts, src/cli/init.ts, src/cli/parse-args.ts, src/cli/tui/flows/config.ts]`
+
+### Changed
+
+- **`umactually-action` gained an `effort` input**: the companion action now forwards the input to the CLI as `--effort` only when non-empty; an empty value defers to a caller-provided `UMACTUALLY_EFFORT`, then the saved config, then the provider/model default. The input requires a `cli-version` that recognizes `--effort` (0.12.0+).
+
+### Fixed
+
+- **Off-diff SonarCloud anchors no longer fail the entire GitHub review with HTTP 422.** GitHub's create-review REST endpoint requires every inline comment `path`+`line` to sit inside a diff hunk of the given commit, so a single off-hunk anchor failed the whole POST atomically. The category-based position-validation bypass is removed and the `positions.hasPosition` gate now applies uniformly; off-diff findings are routed into the review body's suppressed-count manifest instead of being silently lost. Defense in depth: if a comments-bearing POST still returns 422 (e.g. diff drift between fetch and POST), the review retries once with `comments: []` and warns with the dropped count, so one bad anchor can never nuke the review. `[src/cli/live-shared.ts, src/cli/live-github.ts]`
+- **Effort-rejection detection is scoped to the wire parameter keys.** The detector previously matched a bare `\beffort\b`, so any 4xx whose prose merely mentioned "effort" was misclassified as an effort rejection. It now matches only `reasoning.effort`, `reasoning_effort`, and `output_config.effort`. An unreadable body on a non-OK response is re-thrown rather than being classified as "no rejection", so a real effort-shaped rejection is never masked. `[src/provider/provider-effort-error.ts]`
+- **Prompt overrides are no longer redacted as secrets.** The `openai-compatible` effort-rejection redaction list included the user-authored `promptOverride` and `additionalPromptOverride` strings, scrubbing the operator's own prompt out of the diagnostic. Only the API key is redacted now, matching the Anthropic and Copilot callsites. `[src/provider/openai-compatible.ts]`
+
 ## [0.11.0] - 2026-08-17
 
 ### Added
