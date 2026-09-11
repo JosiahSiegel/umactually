@@ -331,9 +331,13 @@ async function createGithubReview(input: {
       `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.`,
     );
     const retryResponse = await postReview([]);
+    // Review 5180365033 finding B: the retry-also-422 escalation uses a
+    // distinct typed code (GITHUB_CREATE_REVIEW_ANCHOR_REJECTED) so
+    // downstream observers can attribute the failure to the anchor
+    // rejection path rather than a generic create-review error.
     ensureHttpOk(
       retryResponse,
-      "GITHUB_CREATE_REVIEW_FAILED",
+      "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED",
       "GitHub create review",
       "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event.",
     );

@@ -359,6 +359,10 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
   it("still fails with GITHUB_CREATE_REVIEW_FAILED when the body-only retry also returns 422", async () => {
     // The 422 fallback is bounded: one retry, then the original typed
     // failure propagates so the operator sees the typed exit code.
+    // Review 5180365033 finding B: the retry-also-422 path uses a distinct
+    // typed code (GITHUB_CREATE_REVIEW_ANCHOR_REJECTED) so downstream
+    // observers can distinguish anchor-rejection retry-exhaustion from a
+    // generic create-review failure.
     const inDiffComment: LiveReviewComment = {
       path: "src/cli/init.ts",
       line: 1296,
@@ -390,8 +394,46 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
         parsed: baseParsedArgs(),
         fetchImpl,
       }),
-    ).rejects.toMatchObject({ code: "GITHUB_CREATE_REVIEW_FAILED" });
+    ).rejects.toMatchObject({ code: "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED" });
     expect(postAttempts).toBe(2);
+  });
+
+  it("uses GITHUB_CREATE_REVIEW_FAILED on the non-retry permanent failure path (no 422-then-422 escalation)", async () => {
+    // Locks the negative space of finding B: the typed code on the
+    // GITHUB_CREATE_REVIEW_FAILED path stays on permanent failures (no
+    // comments array to drop, plain 4xx/5xx). The distinct
+    // GITHUB_CREATE_REVIEW_ANCHOR_REJECTED code is reserved for the
+    // retry-also-422 escalation so observability can attribute it.
+    const inDiffComment: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      line: 1296,
+      body: "Model finding anchored inside the diff hunk.",
+      severity: "high",
+      category: "bug",
+    };
+    const fetchImpl: FetchImpl = (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const urlString = typeof url === "string" ? url : url.toString();
+      if (method === "GET" && urlString.endsWith("/pulls/42/reviews")) {
+        return Promise.resolve(makeJsonResponse([]));
+      }
+      if (method === "POST" && urlString.endsWith("/pulls/42/reviews")) {
+        return Promise.resolve(
+          new Response("Internal Server Error", { status: 500, headers: { "content-type": "text/plain" } }),
+        );
+      }
+      throw new Error(`unexpected ${method} ${urlString}`);
+    };
+
+    await expect(
+      runGithubLive({
+        context: makeContext(),
+        diffText: makeDiffText(),
+        provider: makeProviderOutcome([inDiffComment]),
+        parsed: baseParsedArgs(),
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ code: "GITHUB_CREATE_REVIEW_FAILED" });
   });
 
   it("warns and still posts the new review when deleting a submitted marker review fails with 422", async () => {
