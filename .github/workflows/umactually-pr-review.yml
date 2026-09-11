@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     if: false  # Disabled — self-review.yml is the canonical review surface.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
