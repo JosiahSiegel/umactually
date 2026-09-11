@@ -13212,7 +13212,12 @@ async function checkEffortRejection(response, context) {
     if (response.ok && envelope === undefined)
         return;
     const detail = effortRejectionDetail(envelope, raw);
-    if (!/\beffort\b|reasoning_effort/iu.test(raw))
+    // Match only the wire parameter names that carry an effort value:
+    // OpenAI Responses uses `reasoning.effort`, Chat uses `reasoning_effort`,
+    // Anthropic uses `output_config.effort`. A bare `\beffort\b` also matched
+    // unrelated 4xx prose (e.g. "the effort you requested"), misclassifying
+    // non-effort failures as effort rejections.
+    if (!/reasoning\.effort|reasoning_effort|output_config\.effort/iu.test(raw))
         return;
     const safe = replaceSecretsLiterally(detail, context.secrets)
         .replace(/\b(?:sk-[\w-]+|gh[pousr]_\w+)\b/gu, "[REDACTED]")
@@ -16003,7 +16008,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
     });
     await checkEffortRejection(response, { ...config, endpoint, requestId,
-        secrets: [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""] });
+        secrets: [config.apiKey] });
     if (!response.ok) {
         throw new ProviderError(endpoint === ENDPOINT_RESPONSES ? "responses_4xx" : "chat_4xx", endpoint, response.status, requestId, sanitizeHttpStatus(endpoint, response.status));
     }
@@ -16167,7 +16172,7 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
             buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
         });
         await checkEffortRejection(retryResponse, { ...config, endpoint, requestId,
-            secrets: [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""] });
+            secrets: [config.apiKey] });
         retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
             const retryRawText = await readResponseText(retryResponse, endpoint, requestId);
@@ -24771,7 +24776,8 @@ function formatFieldProvenance(provenance) {
  */
 function renderEffectiveField(lines, label, value, provenance, emptyLabel) {
     const rendered = value === undefined || value === null || value === "" ? emptyLabel : String(value);
-    lines.push(`  ${`${label}:`.padEnd(9)} ${rendered} (${formatFieldProvenance(provenance)})`);
+    const paddedLabel = `${label}:`.padEnd(9);
+    lines.push(`  ${paddedLabel} ${rendered} (${formatFieldProvenance(provenance)})`);
 }
 /**
  * The effective view of the resolved config: same user-facing fields the
@@ -28052,6 +28058,16 @@ async function deleteExistingReview(input) {
     }
     writeBrandedAnnotation("warning", `failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.`);
 }
+const CREATE_REVIEW_FAILED_HINT = "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.";
+async function readRedactedBodySnippet(response, secrets) {
+    try {
+        const text = await response.clone().text();
+        return text.length === 0 ? "" : truncateBodyForLog(sanitizeForPost(text, secrets), 500);
+    }
+    catch {
+        return "";
+    }
+}
 async function createGithubReview(input) {
     const postReview = (comments) => {
         const request = {
@@ -28075,16 +28091,22 @@ async function createGithubReview(input) {
     // findings summary, verdict) still lands. The dropped inline findings
     // remain auditable via the body's manifest suppressed count.
     if (response.status === 422 && input.comments.length > 0) {
-        writeBrandedAnnotation("warning", `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.`);
+        const rejectedBody = await readRedactedBodySnippet(response, [input.context.token]);
+        const bodySuffix = rejectedBody.length > 0 ? ` Rejected body: ${rejectedBody}` : "";
+        writeBrandedAnnotation("warning", `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.${bodySuffix}`);
         const retryResponse = await postReview([]);
-        // Review 5180365033 finding B: the retry-also-422 escalation uses a
-        // distinct typed code (GITHUB_CREATE_REVIEW_ANCHOR_REJECTED) so
-        // downstream observers can attribute the failure to the anchor
-        // rejection path rather than a generic create-review error.
-        ensureHttpOk(retryResponse, "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED", "GitHub create review", "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event.");
+        // Only a retry that is ITSELF 422 points at the inline-comment anchor
+        // path (GITHUB_CREATE_REVIEW_ANCHOR_REJECTED). Any other retry status
+        // (401, 5xx, ...) is a generic create-review failure — mislabelling it
+        // as an anchor rejection would misdirect the operator. Review
+        // 5181102069 finding F2(a).
+        const retryRejected = retryResponse.status === 422;
+        ensureHttpOk(retryResponse, retryRejected ? "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED" : "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", retryRejected
+            ? "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event."
+            : CREATE_REVIEW_FAILED_HINT);
         return readResponseId(await readJsonResponse(retryResponse));
     }
-    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.");
+    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", CREATE_REVIEW_FAILED_HINT);
     return readResponseId(await readJsonResponse(response));
 }
 function parseExistingReview(value) {
