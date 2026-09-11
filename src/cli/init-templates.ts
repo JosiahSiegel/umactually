@@ -143,6 +143,8 @@ jobs:
           GITHUB_TOKEN: \${{ github.token }}
           UMACTUALLY_API_URL: \${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: \${{ secrets.UMACTUALLY_API_KEY }}
+          # Optional: uncomment to select an effort level; omit for provider/model default.
+          # UMACTUALLY_EFFORT: low
         run: umactually review --platform github
 `;
 
@@ -214,6 +216,8 @@ steps:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+      # Optional: uncomment to select an effort level; omit for provider/model default.
+      # UMACTUALLY_EFFORT: low
 `;
 
 /**

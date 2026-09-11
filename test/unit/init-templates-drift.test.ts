@@ -108,6 +108,8 @@ describe("init CI templates drift contract", () => {
     expect(body).toMatch(/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/u);
     expect(body).toMatch(/UMACTUALLY_API_URL:\s*\$\{\{\s*secrets\.UMACTUALLY_API_URL\s*\}\}/u);
     expect(body).toMatch(/UMACTUALLY_API_KEY:\s*\$\{\{\s*secrets\.UMACTUALLY_API_KEY\s*\}\}/u);
+    expect(body).toMatch(/# UMACTUALLY_EFFORT:\s*low/u);
+    expect(body).not.toMatch(/^\s+UMACTUALLY_EFFORT:/mu);
     expect(body).toMatch(/umactually review --platform github/u);
   });
 
@@ -123,6 +125,8 @@ describe("init CI templates drift contract", () => {
     expect(body).toMatch(/SYSTEM_ACCESSTOKEN:\s*\$\(System\.AccessToken\)/u);
     expect(body).toMatch(/UMACTUALLY_API_URL:\s*\$\(UMACTUALLY_API_URL\)/u);
     expect(body).toMatch(/UMACTUALLY_API_KEY:\s*\$\(UMACTUALLY_API_KEY\)/u);
+    expect(body).toMatch(/# UMACTUALLY_EFFORT:\s*low/u);
+    expect(body).not.toMatch(/^\s+UMACTUALLY_EFFORT:/mu);
     expect(body).toMatch(/umactually review --platform azure/u);
   });
 
