@@ -12,6 +12,7 @@ import {
 
 import { tryReadSavedConfig } from "../../load-saved-config.js";
 import type { SavedConfig } from "../../../config/saved-config.js";
+import { parseEffort, type Effort } from "../../../config/effort.js";
 import { runStandalone, type StandaloneRunResult } from "../../standalone-run.js";
 import { selectPostableComments, type LiveReview } from "../../live-shared.js";
 import { parseCliArgs, type ParsedCliArgs } from "../../parse-args.js";
@@ -128,7 +129,9 @@ type WizardPrompt =
       provider: ParsedCliArgs["provider"];
       apiUrl: string | null;
       model: ParsedCliArgs["model"];
+      effort: Effort | null;
       apiKeyLocal: string | null;
+      githubTokenLocal: string | null;
       source: "diff" | "files";
       diffPath: string | null;
       diffText: string;
@@ -171,9 +174,22 @@ async function runWizardPrompts(
     initialValue: savedConfig?.model ?? "",
   });
   if (isCancel(modelAnswer)) return { cancel: true };
-  const model = modelAnswer;
+  const model = modelAnswer.length > 0 ? modelAnswer : (savedConfig?.model ?? null);
+  const rawEffort = process.env["UMACTUALLY_EFFORT"];
+  if (typeof rawEffort === "string" && rawEffort.trim().length > 0 && parseEffort(rawEffort) === undefined) {
+    throw new Error("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
+  }
+  const effort = parseEffort(rawEffort) ?? savedConfig?.effort ?? null;
   let apiKeyLocal: string | null = null;
-  if (process.env["UMACTUALLY_API_KEY"] === undefined) {
+  let githubTokenLocal: string | null = null;
+  if (provider === "copilot") {
+    const token = process.env["GITHUB_TOKEN"] ?? process.env["GH_TOKEN"];
+    if (token === undefined) {
+      const answer = await password({ message: "GitHub token", mask: "*" });
+      if (isCancel(answer)) return { cancel: true };
+      githubTokenLocal = answer;
+    }
+  } else if (process.env["UMACTUALLY_API_KEY"] === undefined) {
     const answer = await password({ message: "API key", mask: "*" });
     if (isCancel(answer)) return { cancel: true };
     apiKeyLocal = answer;
@@ -192,8 +208,11 @@ async function runWizardPrompts(
     provider: provider as ParsedCliArgs["provider"],
     apiUrl,
     model: model as ParsedCliArgs["model"],
+    effort: effort ?? null,
     apiKeyLocal,
+    githubTokenLocal,
     source: diffSource,
+
     diffPath,
     diffText,
   };
@@ -219,12 +238,14 @@ async function runAndHandle(
   parsed: ParsedCliArgs,
   diffText: string,
   apiKeyLocal: string | null,
+  githubTokenLocal: string | null,
 ): Promise<RunOutcome> {
   // Build the env so the freshly captured key reaches the provider
   // even when the operator typed it into the wizard.
   const env = {
     ...process.env,
     ...(apiKeyLocal !== null && { UMACTUALLY_API_KEY: apiKeyLocal }),
+    ...(githubTokenLocal !== null && { GITHUB_TOKEN: githubTokenLocal }),
   };
   const result = await runStandalone({ parsed, cwd: process.cwd(), env });
   if (result.kind === "ok" || result.kind === "ok-no-diff") {
@@ -275,11 +296,14 @@ async function runWizardLoopIteration(): Promise<RunOutcome> {
       provider: prompt.provider,
       apiUrl: prompt.apiUrl,
       model: prompt.model,
+      effort: prompt.effort,
       apiKey: apiKeyLocal,
+      ...(prompt.githubTokenLocal !== null ? { githubToken: prompt.githubTokenLocal } : {}),
       diffPath: prompt.diffPath,
       files: prompt.source === "files" ? "." : null,
     };
-    const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
+    const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal, prompt.githubTokenLocal);
+
     if (outcome.exit) return { exit: true };
     return { exit: false, retry: outcome.retry };
   } catch (err) {
