@@ -82,7 +82,7 @@ jobs:
       artifact_digest: ${{ steps.candidate-upload.outputs.artifact-digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
         uses: actions/setup-node@v7
@@ -260,7 +260,7 @@ jobs:
       artifact_digest: ${{ steps.windows-upload.outputs.artifact-digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
         # v0.6.4: pinned to 25.6.0 (not 25.7.0) because Node 25.7.0's
@@ -445,7 +445,7 @@ jobs:
       artifact_digest: ${{ steps.candidate-upload.outputs.artifact-digest }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Download non-Windows candidate bundle
         uses: actions/download-artifact@v8
@@ -525,7 +525,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout installer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
@@ -587,7 +587,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout installer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
@@ -649,7 +649,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout installer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
@@ -711,7 +711,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout installer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download exact candidate artifact
         shell: bash
         env:
@@ -800,7 +800,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout installers
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download exact candidate artifact
         shell: bash
         env:
@@ -867,7 +867,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout installer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download exact candidate artifact
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
@@ -1102,7 +1102,7 @@ jobs:
           fi
           echo "release tag validated: $TAG"
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download tested candidate bundle by id
         env:
           ARTIFACT_ID: ${{ needs.build-package.outputs.artifact_id }}
@@ -1332,7 +1332,7 @@ jobs:
       actions: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Query release by exact tag and assert seven assets
         env:
@@ -1504,10 +1504,10 @@ jobs:
           echo "release tag validated for npm publish: $TAG"
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Checkout companion action repo (for action-input-schema test)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: JosiahSiegel/umactually-action
           ref: v1
