@@ -19909,19 +19909,22 @@ function selectPostableCommentsWithPositions(input) {
         if (comments.length >= maxComments) {
             break;
         }
-        // Position validation is bypassed for `category: "sonar"`
-        // findings. SonarCloud's reported line numbers are authoritative
-        // for the source FILE (not the diff context), so a finding on a
-        // line that the diff doesn't touch is still a valid inline-comment
-        // anchor — GitHub's API accepts any positive line number within
-        // the file. Without the bypass, `positions.hasPosition` would
-        // drop every SonarCloud finding whose flagged line is outside the
-        // changed region, leaving the bot's review body saying
-        // "0 inline findings — ship it" while SonarCloud MAJOR/CRITICAL
-        // findings sit ignored in the same PR. See the merge block in
-        // live-github.ts for the inline-finding pipeline.
-        const isSonarFinding = comment.category === "sonar";
-        if (!isSonarFinding && !input.positions.hasPosition(comment)) {
+        // Position validation applies to EVERY comment, including
+        // `category: "sonar"` findings. GitHub's create-review REST
+        // endpoint requires each inline comment's path+line to sit inside
+        // a diff hunk of the given commit — an off-hunk anchor makes the
+        // whole POST fail atomically with 422 (PR #246: SonarCloud S3776
+        // findings anchored function-declaration lines outside the hunks
+        // and nuked the review). SonarCloud's line numbers are authoritative
+        // for the source FILE, not the diff, so they are NOT valid inline
+        // anchors by themselves. Off-diff SonarCloud findings are not lost:
+        // `selectOffDiffCommentsWithPositions` routes them into the
+        // suppressed count surfaced in the review body's manifest, and
+        // runGithubLive annotates the dropped count. A former bypass that
+        // let sonar findings skip this gate was removed — its premise
+        // ("GitHub accepts any positive line number within the file") is
+        // false for the reviews endpoint.
+        if (!input.positions.hasPosition(comment)) {
             continue;
         }
         if (!passesSeverityPolicy(comment, input.parsed)) {
@@ -27980,17 +27983,33 @@ async function deleteExistingReview(input) {
     writeBrandedAnnotation("warning", `failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.`);
 }
 async function createGithubReview(input) {
-    const request = {
-        commit_id: input.context.headSha,
-        body: input.body,
-        event: input.event,
-        comments: input.comments,
+    const postReview = (comments) => {
+        const request = {
+            commit_id: input.context.headSha,
+            body: input.body,
+            event: input.event,
+            comments,
+        };
+        return input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
+            method: "POST",
+            headers: githubHeaders(input.context.token),
+            body: JSON.stringify(request),
+        });
     };
-    const response = await input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
-        method: "POST",
-        headers: githubHeaders(input.context.token),
-        body: JSON.stringify(request),
-    });
+    const response = await postReview(input.comments);
+    // Defense in depth behind the uniform position gate in
+    // `selectPostableComments`: if GitHub still rejects a comments-bearing
+    // POST with 422 (a single anchor outside the diff hunk fails the WHOLE
+    // review atomically — e.g. diff drift between the fetch and the POST),
+    // retry ONCE with an empty comments array so the review body (manifest,
+    // findings summary, verdict) still lands. The dropped inline findings
+    // remain auditable via the body's manifest suppressed count.
+    if (response.status === 422 && input.comments.length > 0) {
+        writeBrandedAnnotation("warning", `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.`);
+        const retryResponse = await postReview([]);
+        ensureHttpOk(retryResponse, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event.");
+        return readResponseId(await readJsonResponse(retryResponse));
+    }
     ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.");
     return readResponseId(await readJsonResponse(response));
 }
