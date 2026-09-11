@@ -43,7 +43,12 @@ export async function checkEffortRejection(response: Response, context: {
   const envelope = isRecord(parsed) ? parsed["error"] : undefined;
   if (response.ok && envelope === undefined) return;
   const detail = effortRejectionDetail(envelope, raw);
-  if (!/\beffort\b|reasoning_effort/iu.test(raw)) return;
+  // Match only the wire parameter names that carry an effort value:
+  // OpenAI Responses uses `reasoning.effort`, Chat uses `reasoning_effort`,
+  // Anthropic uses `output_config.effort`. A bare `\beffort\b` also matched
+  // unrelated 4xx prose (e.g. "the effort you requested"), misclassifying
+  // non-effort failures as effort rejections.
+  if (!/reasoning\.effort|reasoning_effort|output_config\.effort/iu.test(raw)) return;
   const safe = replaceSecretsLiterally(detail, context.secrets)
     .replace(/\b(?:sk-[\w-]+|gh[pousr]_\w+)\b/gu, "[REDACTED]")
     .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
