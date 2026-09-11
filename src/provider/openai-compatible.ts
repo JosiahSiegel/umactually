@@ -266,7 +266,7 @@ async function callEndpoint(
   });
 
   await checkEffortRejection(response, { ...config, endpoint, requestId,
-    secrets: [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""] });
+    secrets: [config.apiKey] });
   if (!response.ok) {
     throw new ProviderError(
       endpoint === ENDPOINT_RESPONSES ? "responses_4xx" : "chat_4xx",
@@ -455,7 +455,7 @@ async function callEndpoint(
       buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
     });
     await checkEffortRejection(retryResponse, { ...config, endpoint, requestId,
-      secrets: [config.apiKey, config.promptOverride ?? "", config.additionalPromptOverride ?? ""] });
+      secrets: [config.apiKey] });
     retryResponseStatus = retryResponse.status;
     if (retryResponse.ok) {
       const retryRawText = await readResponseText(retryResponse, endpoint, requestId);

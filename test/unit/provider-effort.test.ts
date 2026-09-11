@@ -162,3 +162,25 @@ for (const recovery of [false, true]) {
     expect(stub.bodies).toHaveLength(recovery ? 3 : 2);
   });
 }
+
+for (const recovery of [false, true]) {
+  it(`does not redact prompt overrides from an effort rejection (recovery=${recovery})`, async () => {
+    // promptOverride / additionalPromptOverride are user-authored prompt
+    // text, not credentials. Treating them as secrets would scrub the
+    // operator's own prompt out of the diagnostic; only apiKey is a
+    // credential. Exercises both the first attempt (recovery=false) and
+    // the parse-fail retry (recovery=true).
+    const promptOverride = "PROMPT-OVERRIDE-SENTINEL";
+    const additionalPromptOverride = "ADDITIONAL-PROMPT-SENTINEL";
+    const rejection = { status: 400, body: JSON.stringify({ error: { message: `Unsupported effort max; prompt ${promptOverride} + ${additionalPromptOverride}; key ${base.apiKey}`, param: "reasoning_effort" } }) };
+    const stub = wire(recovery ? [{ status: 200, body: "not JSON" }, rejection] : [rejection]);
+    // When
+    const result = await runProviderRequest({ ...base, ...stub, reasoningEffort: "max", promptOverride, additionalPromptOverride });
+    // Then
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected rejection");
+    expect(result.error.message).toContain(promptOverride);
+    expect(result.error.message).toContain(additionalPromptOverride);
+    expect(result.error.message).not.toContain(base.apiKey);
+  });
+}
