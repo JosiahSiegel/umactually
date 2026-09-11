@@ -5,6 +5,12 @@ import { ProviderError, type ProviderEndpoint } from "./provider-error.js";
 
 const GUIDANCE = "Choose a supported effort for this provider/model or omit --effort to use the provider default.";
 
+function effortRejectionDetail(envelope: unknown, raw: string): string {
+  if (isRecord(envelope)) return readStringField(envelope, "message") ?? raw;
+  if (typeof envelope === "string") return envelope;
+  return raw;
+}
+
 export function assertAnthropicEffort(effort: Effort | undefined): void {
   if (effort === "none" || effort === "minimal") {
     throw new ProviderError("provider_error", "anthropic", null, "", `Anthropic does not accept effort '${effort}'. ${GUIDANCE}`,
@@ -29,7 +35,7 @@ export async function checkEffortRejection(response: Response, context: {
   const parsed = tryParseJson(raw);
   const envelope = isRecord(parsed) ? parsed["error"] : undefined;
   if (response.ok && envelope === undefined) return;
-  const detail = isRecord(envelope) ? readStringField(envelope, "message") ?? raw : typeof envelope === "string" ? envelope : raw;
+  const detail = effortRejectionDetail(envelope, raw);
   if (!/\beffort\b|reasoning_effort/iu.test(raw)) return;
   const safe = replaceSecretsLiterally(detail, context.secrets)
     .replace(/\b(?:sk-[\w-]+|gh[pousr]_[\w]+)\b/gu, "[REDACTED]")
