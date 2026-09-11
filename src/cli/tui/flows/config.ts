@@ -94,6 +94,16 @@ export async function runConfigFlow(): Promise<{ exitCode: 0 }> {
     );
   }
 
+  note(
+    [
+      "Run Review does not prompt for effort.",
+      "UMACTUALLY_EFFORT overrides saved effort.",
+      "If neither is set, the provider/model default is used.",
+      "Invalid nonblank UMACTUALLY_EFFORT values are rejected.",
+    ].join("\n"),
+    "Review effort",
+  );
+
   // Step 3: env-presence table (read process.env only — no mutation).
   note(renderEnvPresence(process.env), "Environment");
 
