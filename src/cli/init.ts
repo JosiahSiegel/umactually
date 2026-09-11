@@ -39,6 +39,7 @@ import {
 } from "./init-templates.js";
 import { BRAND_PREFIX, REDACTED_SECRET_TOKEN } from "../util/brand.js";
 import { normalizeEnumInput } from "../util/normalize.js";
+import { EFFORT_LEVELS, parseEffort, type Effort } from "../config/effort.js";
 import { lstatSync, realpathSync } from "node:fs";
 import { renderPolicyTemplate, REVIEW_POLICY_PATH } from "../config/review-policy.js";
 
@@ -85,9 +86,11 @@ export type InitCheck = {
     | "config-atomic-write"
     | "ci-generation"
     | "secret-redaction"
-    | "scope-choice"
-    | "provider-choice"
-    | "non-interactive-validation"
+     | "scope-choice"
+     | "provider-choice"
+     | "effort-choice"
+     | "non-interactive-validation"
+
     | "policy-template-write";
   readonly status: "ok" | "warn" | "fail" | "skip";
   readonly message: string;
@@ -132,6 +135,7 @@ const PROMPT_SEQUENCES = {
   ],
   "openai-compatible": [
     "Provider family",
+    "Reasoning effort",
     "Model provider base URL",
     "Model provider API key",
     "Model name",
@@ -139,12 +143,14 @@ const PROMPT_SEQUENCES = {
   ],
   anthropic: [
     "Provider family",
+    "Reasoning effort",
     "Model provider API key",
     "Model name",
     "CI workflow target",
   ],
   copilot: [
     "Provider family",
+    "Reasoning effort",
     "GitHub API base URL",
     "Model name",
   ],
@@ -172,6 +178,7 @@ export type ParsedInitArgs = {
   readonly apiKey: string | undefined;
   readonly githubApiBase: string | undefined;
   readonly model: string | undefined;
+  readonly effort: Effort | undefined;
   readonly dryRun: boolean;
   readonly show: boolean;
   readonly nonInteractive: boolean;
@@ -217,6 +224,7 @@ const FLAG_HANDLERS: Readonly<Record<string, FlagHandler>> = {
   "--api-key": { consume: true, validate: parseApiKey, apply: (state, value) => { state.apiKey = value; } },
   "--github-api-base": { consume: true, validate: parseGithubApiBase, apply: (state, value) => { state.githubApiBase = value; } },
   "--model": { consume: true, validate: parseModel, apply: (state, value) => { state.model = value; } },
+  "--effort": { consume: true, validate: parseEffortFlag, apply: (state, value) => { state.effort = parseEffort(value); } },
 };
 
 function parseFlagToken(
@@ -256,7 +264,7 @@ export function parseInitArgs(
     if (parseFlagToken(token, argv[i + 1], state, errors)) i += 1;
   }
 
-  applyEnvDefaults(state, env);
+  applyEnvDefaults(state, env, errors);
   const mode = resolveInitMode(state);
   return { mode, errors, ...state };
 }
@@ -286,6 +294,7 @@ type ParsedInitState = {
   apiKey: string | undefined;
   githubApiBase: string | undefined;
   model: string | undefined;
+  effort: Effort | undefined;
   dryRun: boolean;
   show: boolean;
   nonInteractive: boolean;
@@ -307,6 +316,7 @@ function createParsedInitState(): ParsedInitState {
     apiKey: undefined,
     githubApiBase: undefined,
     model: undefined,
+    effort: undefined,
     dryRun: false,
     show: false,
     nonInteractive: false,
@@ -393,6 +403,16 @@ function parseModel(next: string | undefined): FlagStep {
   return flagValue();
 }
 
+function parseEffortFlag(next: string | undefined): FlagStep {
+  if (next === undefined) {
+    return flagError(`--effort requires a value (${EFFORT_LEVELS.join("|")})`);
+  }
+  if (parseEffort(next) === undefined) {
+    return flagError(`--effort must be one of ${EFFORT_LEVELS.join("|")} (got '${next}')`);
+  }
+  return flagValue();
+}
+
 /**
  * Env defaults (UMACTUALLY_API_URL, UMACTUALLY_API_KEY, etc.) — only
  * used to backfill if no flag was given. The wizard never persists
@@ -401,6 +421,7 @@ function parseModel(next: string | undefined): FlagStep {
 function applyEnvDefaults(
   state: ParsedInitState,
   env: Readonly<Record<string, string | undefined>>,
+  errors: string[],
 ): void {
   if (state.apiUrl === undefined && typeof env["UMACTUALLY_API_URL"] === "string") {
     state.apiUrl = env["UMACTUALLY_API_URL"];
@@ -421,6 +442,25 @@ function applyEnvDefaults(
     ) {
       state.provider = envProvider;
     }
+  }
+  applyEffortEnvDefault(state, env, errors);
+}
+
+/**
+ * UMACTUALLY_EFFORT backfill — nonblank invalid values are rejected
+ * without echoing the raw value; blank values are treated as absent.
+ */
+function applyEffortEnvDefault(
+  state: ParsedInitState,
+  env: Readonly<Record<string, string | undefined>>,
+  errors: string[],
+): void {
+  if (state.effort !== undefined || typeof env["UMACTUALLY_EFFORT"] !== "string") return;
+  const rawEffort = env["UMACTUALLY_EFFORT"];
+  if (rawEffort.trim().length > 0 && parseEffort(rawEffort) === undefined) {
+    errors.push("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
+  } else {
+    state.effort = parseEffort(rawEffort);
   }
 }
 
@@ -458,6 +498,7 @@ export const INIT_HELP_TEXT = [
   "  --api-key <key>            Provider API key (env: UMACTUALLY_API_KEY; NEVER persisted)",
   "  --github-api-base <url>    Copilot API base (env: UMACTUALLY_GITHUB_API_BASE)",
   "  --model <id>               Provider model id (optional; resolved at review time)",
+  "  --effort <level>            Reasoning effort (none|minimal|low|medium|high|xhigh|max)",
   "  --scope <global|repo>      Where to persist the saved config",
   "  --ci <auto|github|azure|none>",
   "                             Generate a CI workflow file (auto-detects)",
@@ -472,7 +513,7 @@ export const INIT_HELP_TEXT = [
   "",
   "Security:",
   "  API keys and tokens are NEVER written to disk. The saved config stores",
-  "  mode 0o600 and contains only provider, optional apiUrl, optional model.",
+  "  mode 0o600 and contains only provider, optional apiUrl, model, and effort.",
   "  Set UMACTUALLY_API_KEY in your shell init / CI secret store.",
   "",
   "Interactive notes:",
@@ -736,6 +777,7 @@ async function runShowInit({ deps }: { deps: InitDeps }): Promise<InitResult> {
       provider: { source: "savedConfig" },
       ...(result.config.apiUrl !== undefined ? { apiUrl: { source: "savedConfig" } } : {}),
       ...(result.config.model !== undefined ? { model: { source: "savedConfig" } } : {}),
+      ...(result.config.effort !== undefined ? { effort: { source: "savedConfig" } } : {}),
     },
   };
 }
@@ -862,8 +904,9 @@ async function runDryRunInit({
   const provider: InitProvider = args.provider ?? "openai-compatible";
   const apiUrl = args.apiUrl ?? DEFAULT_OPENAI_URL;
   const model = args.model;
+  const effort = args.effort;
 
-  const config: SavedConfig = buildConfig(provider, apiUrl, model);
+  const config: SavedConfig = buildConfig(provider, apiUrl, model, effort);
 
   const ciGenerated: CiTarget[] = [];
   if (args.ci === "github" || args.ci === "azure") {
@@ -910,6 +953,8 @@ async function runDryRunInit({
       provider: { source: args.provider !== undefined ? "flag" : "default" },
       apiUrl: { source: args.apiUrl !== undefined ? "flag" : "default" },
       model: { source: args.model !== undefined ? "flag" : "default" },
+      ...(args.effort !== undefined ? { effort: { source: "flag" as const } } : {}),
+
     },
   };
 }
@@ -937,7 +982,7 @@ async function runNonInteractiveInit({
   // validated only as "present" (consumed for the live HEAD probe).
   const perProvider = perProviderValidation(args, provider);
   if ("outcome" in perProvider) return perProvider;
-  const { apiUrl, model } = perProvider;
+  const { apiUrl, model, effort } = perProvider;
 
   // Path safety: cwd must not be unsafe (no .., not absolute).
   if (containsUnsafePathSegment(deps.cwd)) {
@@ -949,6 +994,7 @@ async function runNonInteractiveInit({
     provider,
     apiUrl ?? DEFAULT_OPENAI_URL,
     model,
+    effort,
   );
 
   // apiKey and githubApiBase were validated for presence only and
@@ -988,6 +1034,7 @@ async function runNonInteractiveInit({
       provider: { source: "flag" },
       ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" as const } } : {}),
       ...(config.model !== undefined ? { model: { source: "flag" as const } } : {}),
+      ...(config.effort !== undefined ? { effort: { source: "flag" as const } } : {}),
     },
   };
 }
@@ -1016,7 +1063,7 @@ function missingProviderResult(): InitResult {
 }
 
 type PerProviderOutcome =
-  | { readonly apiUrl: string | undefined; readonly model: string | undefined }
+  | { readonly apiUrl: string | undefined; readonly model: string | undefined; readonly effort: Effort | undefined }
   | InitResult;
 
 /**
@@ -1065,7 +1112,7 @@ function perProviderValidation(args: ParsedInitArgs, provider: InitProvider): Pe
       sources: {},
     };
   }
-  return { apiUrl, model };
+  return { apiUrl, model, effort: args.effort };
 }
 
 /**
@@ -1200,7 +1247,19 @@ async function runInteractiveInit({
     return unknownProviderResult(providerAnswer, args.mode);
   }
 
-  // Q3 — per-branch sub-prompts
+  const effortAnswer = await safePrompt(
+    reader,
+    isTTY,
+    `? Reasoning effort (${EFFORT_LEVELS.join(" | ")}) [default: provider default]: `,
+    "",
+  );
+  if (effortAnswer === null) return abortedResult(args.mode);
+  const effort = effortAnswer.length === 0 ? args.effort : parseEffort(effortAnswer);
+  if (effortAnswer.length > 0 && effort === undefined) {
+    return invalidEffortResult(effortAnswer, args.mode);
+  }
+
+  // Q4 — per-branch sub-prompts
   const branch = await promptBranch({ provider, env: deps.env });
   if (branch.outcome === "aborted") return abortedResult(args.mode);
   if (branch.outcome === "error") return branch.result;
@@ -1224,7 +1283,7 @@ async function runInteractiveInit({
 
   // Persist. The apiKey from branch.apiKey is consumed for the live
   // HEAD probe ONLY; never passed to writeSavedConfig.
-  const config = buildConfig(provider, branch.apiUrl ?? DEFAULT_OPENAI_URL, branch.model);
+  const config = buildConfig(provider, branch.apiUrl ?? DEFAULT_OPENAI_URL, branch.model, effort);
   const writeResult = await writeSavedConfig(config, {
     homeDir: deps.homeDir,
     cwd: deps.cwd,
@@ -1251,6 +1310,8 @@ async function runInteractiveInit({
       provider: { source: "default" },
       ...(config.apiUrl !== undefined ? { apiUrl: { source: "default" as const } } : {}),
       ...(config.model !== undefined ? { model: { source: "default" as const } } : {}),
+      ...(config.effort !== undefined ? { effort: { source: "default" as const } } : {}),
+
     },
   };
 }
@@ -1283,6 +1344,24 @@ function nottyResult(): InitResult {
  * Build the "unknown provider family" envelope for
  * `runInteractiveInit` (Q2 parse failure).
  */
+function invalidEffortResult(effortAnswer: string, mode: InitMode): InitResult {
+  return {
+    mode,
+    outcome: "error",
+    exitCode: 2,
+    savedConfigPath: null,
+    savedConfigBytes: null,
+    ciGenerated: [],
+    checks: [{
+      id: "effort-choice",
+      status: "fail",
+      message: `invalid effort: ${redactSecretsInString(effortAnswer)}`,
+    }],
+    hints: [`expected one of: ${EFFORT_LEVELS.join(", ")}`],
+    sources: {},
+  };
+}
+
 function unknownProviderResult(providerAnswer: string, mode: InitMode): InitResult {
   return {
     mode,
@@ -1704,6 +1783,7 @@ function buildConfig(
   provider: InitProvider,
   apiUrl: string,
   model: string | undefined,
+  effort: Effort | undefined,
 ): SavedConfig {
   const defaultForProvider =
     provider === "anthropic" ? DEFAULT_ANTHROPIC_URL : DEFAULT_OPENAI_URL;
@@ -1713,16 +1793,13 @@ function buildConfig(
   };
   const includeApiUrl = apiUrl !== defaultForProvider;
   const includeModel = typeof model === "string" && model.length > 0;
-  if (includeApiUrl && includeModel) {
-    return { ...base, apiUrl, model };
-  }
-  if (includeApiUrl) {
-    return { ...base, apiUrl };
-  }
-  if (includeModel) {
-    return { ...base, model };
-  }
-  return base;
+  const includeEffort = effort !== undefined;
+  return {
+    ...base,
+    ...(includeApiUrl ? { apiUrl } : {}),
+    ...(includeModel ? { model } : {}),
+    ...(includeEffort ? { effort } : {}),
+  };
 }
 
 /**

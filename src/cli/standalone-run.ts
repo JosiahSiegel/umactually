@@ -97,7 +97,8 @@ export async function runStandalone(input: {
     input.overrideArtifactPath ?? "./umactually-review.json",
   );
   const diffText = await readFile(input.parsed.diffPath, "utf8");
-  const providerApiKey = input.parsed.apiKey ?? "";
+  const providerSecrets = [input.parsed.apiKey, input.env["UMACTUALLY_API_KEY"], input.parsed.githubToken, input.env["GITHUB_TOKEN"], input.env["GH_TOKEN"]]
+    .filter((value): value is string => typeof value === "string" && value.length > 0);
 
   if (diffText.length === 0) {
     const note = "No diff content was found; provider review was skipped.";
@@ -157,7 +158,7 @@ export async function runStandalone(input: {
       kind: "provider-error",
       exitCode: 1,
       message,
-      sanitizedForLog: sanitizeForPost(message, [providerApiKey]),
+      sanitizedForLog: sanitizeForPost(message, providerSecrets),
       ...(hint !== undefined ? { hint } : {}),
     };
   }

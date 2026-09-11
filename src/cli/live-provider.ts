@@ -26,6 +26,7 @@ import {
   DEFAULT_GITHUB_API_BASE,
 } from "../util/provider-defaults.js";
 import { requireLiveConfig } from "../util/required-config.js";
+import { resolveProviderCredential } from "./validate.js";
 import { looksLikeAnthropicEndpoint, redactUrlForLog } from "../util/url.js";
 import {
   buildMalformedProviderFallback,
@@ -88,10 +89,7 @@ export async function requestLiveReview(input: {
     diffText: input.diffText,
     expectedArtifact: "artifacts/manual/s5-redaction-report.json",
   });
-  const providerApiKey = requireLiveConfig(
-    resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
-    ENV_KEYS.UMACTUALLY_API_KEY,
-  );
+  const providerApiKey = resolveProviderCredential(input.parsed, input.env);
   const providerUrl = resolveProviderUrl(input.parsed, input.env);
   const modelId = await resolveRequestModel({
     configuredModel: input.parsed.model,

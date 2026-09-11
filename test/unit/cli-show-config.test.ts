@@ -55,6 +55,10 @@ function captureStdoutStderr(): StdoutStderrCapture {
 }
 
 const ENV_KEYS_TO_CLEAR = [
+  "UMACTUALLY_EFFORT",
+  "UMACTUALLY_PROVIDER",
+  "UMACTUALLY_MODEL",
+  "UMACTUALLY_API_URL",
   "HOME",
   "USERPROFILE",
   "GITHUB_ACTIONS",
@@ -103,6 +107,32 @@ describe("CLI --show-config (v0.6.26)", () => {
     }
   });
 
+  it.each([
+    { saved: "low", env: undefined, flags: [], value: "low", provenance: "source: savedConfig" },
+    {
+      saved: "low",
+      env: "high",
+      flags: [],
+      value: "high",
+      provenance: "source: env (UMACTUALLY_EFFORT)",
+    },
+    { saved: "low", env: "high", flags: ["--effort", "max"], value: "max", provenance: "source: flag" },
+    { saved: undefined, env: undefined, flags: [], value: "unset", provenance: "source: default" },
+  ])("shows effective effort $value from $provenance", async ({ saved, env, flags, value, provenance }) => {
+    // Given
+    if (tempHome === null) throw new Error("missing fixture");
+    mkdirSync(join(tempHome, ".umactually"), { recursive: true });
+    writeFileSync(join(tempHome, ".umactually", "config.json"), JSON.stringify({ schemaVersion: 1, provider: "copilot", effort: saved }));
+    if (env !== undefined) process.env["UMACTUALLY_EFFORT"] = env;
+    const { dispatch } = await import(dispatchModule);
+    const capture = captureStdoutStderr();
+    // When
+    try { await dispatch(["--show-config", ...flags]); } finally { capture.restore(); }
+    // Then — the effective view names the precedence layer AND, for env,
+    // the exact env var that supplied the value.
+    expect(capture.stdout.text).toContain(`effort:   ${value} (${provenance})`);
+  });
+
   it("CLI-SHOW-1: with valid config — renders field-by-field + exits 0", async () => {
     mkdirSync(join(tempHome!, ".umactually"), { recursive: true });
     writeFileSync(
@@ -132,6 +162,12 @@ describe("CLI --show-config (v0.6.26)", () => {
     expect(capture.stdout.text).toMatch(/provider:\s+openai-compatible/);
     expect(capture.stdout.text).toMatch(/apiUrl:\s+https:\/\/api\.example\.com\/v1/);
     expect(capture.stdout.text).toMatch(/model:\s+gpt-5-mini/);
+    // Effective view is derived from `resolved`, so each field carries its
+    // precedence layer. With no flag/env, the saved file supplies all three.
+    expect(capture.stdout.text).toContain("effective config");
+    expect(capture.stdout.text).toContain("provider: openai-compatible (source: savedConfig)");
+    expect(capture.stdout.text).toContain("apiUrl:   https://api.example.com/v1 (source: savedConfig)");
+    expect(capture.stdout.text).toContain("model:    gpt-5-mini (source: savedConfig)");
     // No warnings on stderr.
     expect(capture.stderr.text).toBe("");
   });
@@ -203,5 +239,83 @@ describe("CLI --show-config (v0.6.26)", () => {
     // Loud banner suppressed (this is the show-config-specific behavior,
     // NOT the loud banner's validation feedback).
     expect(capture.stderr.text).not.toContain("cli: --api-url is required");
+  });
+
+  it("CLI-SHOW-5: env overrides saved for provider/model — the two sections stay coherent", async () => {
+    // The on-disk `saved config:` section must keep showing the raw file
+    // contents (so the operator can audit what init wrote), while the
+    // `effective config:` section must show the precedence-resolved values
+    // with env provenance — including the env var name.
+    mkdirSync(join(tempHome!, ".umactually"), { recursive: true });
+    const configPath = join(tempHome!, ".umactually", "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        provider: "copilot",
+        apiUrl: "https://saved.example.com/v1",
+        model: "saved-model",
+      }),
+    );
+    process.env["UMACTUALLY_PROVIDER"] = "anthropic";
+    process.env["UMACTUALLY_MODEL"] = "env-model";
+
+    const { dispatch } = await import(dispatchModule);
+    const capture = captureStdoutStderr();
+    let result: Awaited<ReturnType<typeof dispatch>>;
+    try {
+      result = await dispatch(["--show-config"]);
+    } finally {
+      capture.restore();
+    }
+
+    expect(result.exitCode).toBe(0);
+    const text = capture.stdout.text;
+    // On-disk section: raw saved values, anchored to the file path.
+    expect(text).toContain(`saved config: ${configPath}`);
+    expect(text).toMatch(/saved config:[\s\S]*?provider:\s+copilot/);
+    expect(text).toMatch(/saved config:[\s\S]*?model:\s+saved-model/);
+    // Effective section: env wins for provider + model; apiUrl falls back
+    // to the saved file. Each line names the exact provenance layer.
+    expect(text).toContain("effective config");
+    expect(text).toContain("provider: anthropic (source: env (UMACTUALLY_PROVIDER))");
+    expect(text).toContain("model:    env-model (source: env (UMACTUALLY_MODEL))");
+    expect(text).toContain("apiUrl:   https://saved.example.com/v1 (source: savedConfig)");
+    // Neither section contradicts the other: saved=copilot/saved-model,
+    // effective=anthropic/env-model.
+    expect(text).toContain("provider: copilot");
+    expect(text).toContain("provider: anthropic");
+  });
+
+  it("CLI-SHOW-6: effective field lines keep the 9-char padded label gutter (byte-exact)", async () => {
+    // Pins the rendered bytes of `renderEffectiveField` so the S4624
+    // refactor (compute the padded label in a separate statement instead
+    // of a nested template literal) cannot drift the column alignment.
+    mkdirSync(join(tempHome!, ".umactually"), { recursive: true });
+    writeFileSync(
+      join(tempHome!, ".umactually", "config.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        provider: "copilot",
+        apiUrl: "https://saved.example.com/v1",
+        model: "saved-model",
+      }),
+    );
+
+    const { dispatch } = await import(dispatchModule);
+    const capture = captureStdoutStderr();
+    let result: Awaited<ReturnType<typeof dispatch>>;
+    try {
+      result = await dispatch(["--show-config", "--effort", "xhigh"]);
+    } finally {
+      capture.restore();
+    }
+
+    expect(result.exitCode).toBe(0);
+    const text = capture.stdout.text;
+    expect(text).toContain("  provider: copilot (source: savedConfig)");
+    expect(text).toContain("  apiUrl:   https://saved.example.com/v1 (source: savedConfig)");
+    expect(text).toContain("  model:    saved-model (source: savedConfig)");
+    expect(text).toContain("  effort:   xhigh (source: flag)");
   });
 });

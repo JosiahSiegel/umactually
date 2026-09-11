@@ -12,6 +12,8 @@
  * Fields NOT exposed via CLI flag still appear here for the loader + env
  * layers (azureOrg, githubToken, etc.) — only `flag` is optional.
  */
+import { EFFORT_LEVELS } from "./effort.js";
+
 export type FieldType = "string" | "integer" | "boolean" | "enum";
 
 export type FieldDef<
@@ -312,10 +314,10 @@ export const FIELDS = {
     field: "effort",
     flag: "--effort",
     input: "effort",
-    env: [],
+    env: ["UMACTUALLY_EFFORT"],
     type: "enum",
-    defaultValue: "medium",
-    enumValues: ["low", "medium", "high"],
+    defaultValue: null,
+    enumValues: EFFORT_LEVELS,
   },
   provider: {
     field: "provider",

@@ -1,6 +1,6 @@
 import { type GithubContext } from "../platform/github/context.js";
 import { commentBodyHasMarker } from "../util/marker.js";
-import { githubHeaders } from "../util/http.js";
+import { githubHeaders, truncateBodyForLog } from "../util/http.js";
 import { isRecord, isSafeInteger } from "../util/json-guards.js";
 import { writeBrandedAnnotation } from "../util/log.js";
 import {
@@ -19,6 +19,7 @@ import {
   preparePostedReview,
   readJsonResponse,
   readResponseId,
+  sanitizeForPost,
   type FetchImpl,
   type LiveProviderOutcome,
   type LiveReviewComment,
@@ -297,6 +298,18 @@ async function deleteExistingReview(input: {
   );
 }
 
+const CREATE_REVIEW_FAILED_HINT =
+  "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.";
+
+async function readRedactedBodySnippet(response: Response, secrets: readonly string[]): Promise<string> {
+  try {
+    const text = await response.clone().text();
+    return text.length === 0 ? "" : truncateBodyForLog(sanitizeForPost(text, secrets), 500);
+  } catch {
+    return "";
+  }
+}
+
 async function createGithubReview(input: {
   readonly context: GithubContext;
   readonly fetchImpl: FetchImpl;
@@ -304,22 +317,56 @@ async function createGithubReview(input: {
   readonly event: "COMMENT" | "REQUEST_CHANGES";
   readonly comments: readonly GithubReviewCommentRequest[];
 }): Promise<number | undefined> {
-  const request: CreateGithubReviewRequest = {
-    commit_id: input.context.headSha,
-    body: input.body,
-    event: input.event,
-    comments: input.comments,
+  const postReview = (comments: readonly GithubReviewCommentRequest[]): Promise<Response> => {
+    const request: CreateGithubReviewRequest = {
+      commit_id: input.context.headSha,
+      body: input.body,
+      event: input.event,
+      comments,
+    };
+    return input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
+      method: "POST",
+      headers: githubHeaders(input.context.token),
+      body: JSON.stringify(request),
+    });
   };
-  const response = await input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
-    method: "POST",
-    headers: githubHeaders(input.context.token),
-    body: JSON.stringify(request),
-  });
+  const response = await postReview(input.comments);
+  // Defense in depth behind the uniform position gate in
+  // `selectPostableComments`: if GitHub still rejects a comments-bearing
+  // POST with 422 (a single anchor outside the diff hunk fails the WHOLE
+  // review atomically — e.g. diff drift between the fetch and the POST),
+  // retry ONCE with an empty comments array so the review body (manifest,
+  // findings summary, verdict) still lands. The dropped inline findings
+  // remain auditable via the body's manifest suppressed count.
+  if (response.status === 422 && input.comments.length > 0) {
+    const rejectedBody = await readRedactedBodySnippet(response, [input.context.token]);
+    const bodySuffix = rejectedBody.length > 0 ? ` Rejected body: ${rejectedBody}` : "";
+    writeBrandedAnnotation(
+      "warning",
+      `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.${bodySuffix}`,
+    );
+    const retryResponse = await postReview([]);
+    // Only a retry that is ITSELF 422 points at the inline-comment anchor
+    // path (GITHUB_CREATE_REVIEW_ANCHOR_REJECTED). Any other retry status
+    // (401, 5xx, ...) is a generic create-review failure — mislabelling it
+    // as an anchor rejection would misdirect the operator. Review
+    // 5181102069 finding F2(a).
+    const retryRejected = retryResponse.status === 422;
+    ensureHttpOk(
+      retryResponse,
+      retryRejected ? "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED" : "GITHUB_CREATE_REVIEW_FAILED",
+      "GitHub create review",
+      retryRejected
+        ? "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event."
+        : CREATE_REVIEW_FAILED_HINT,
+    );
+    return readResponseId(await readJsonResponse(retryResponse));
+  }
   ensureHttpOk(
     response,
     "GITHUB_CREATE_REVIEW_FAILED",
     "GitHub create review",
-    "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.",
+    CREATE_REVIEW_FAILED_HINT,
   );
   return readResponseId(await readJsonResponse(response));
 }

@@ -1055,6 +1055,28 @@ function renderContextBlock(result, opts = {}) {
 
 /***/ }),
 
+/***/ 914:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   k: () => (/* binding */ parseEffort),
+/* harmony export */   v: () => (/* binding */ EFFORT_LEVELS)
+/* harmony export */ });
+/* harmony import */ var _util_normalize_js__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(871);
+
+/** Recognized configuration vocabulary; providers decide which levels they support. */
+const EFFORT_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+/** Return a normalized recognized level, or undefined for invalid/absent input. */
+function parseEffort(value) {
+    if (typeof value !== "string")
+        return undefined;
+    const normalized = (0,_util_normalize_js__WEBPACK_IMPORTED_MODULE_0__/* .normalizeEnumInput */ .D)(value);
+    return EFFORT_LEVELS.find((level) => level === normalized);
+}
+
+
+/***/ }),
+
 /***/ 711:
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
@@ -1077,6 +1099,8 @@ __nccwpck_require__.d(__webpack_exports__, {
 
 // EXTERNAL MODULE: external "node:path"
 var external_node_path_ = __nccwpck_require__(760);
+// EXTERNAL MODULE: ./src/config/effort.ts
+var config_effort = __nccwpck_require__(914);
 // EXTERNAL MODULE: external "node:fs"
 var external_node_fs_ = __nccwpck_require__(24);
 // EXTERNAL MODULE: ./src/util/fs-atomic.ts
@@ -1145,6 +1169,7 @@ function tryFlockNonBlocking(lockPath) {
 // Layer 3 is paranoia: layers 1+2 already prevent the leak. The scan exists so
 // a future change that adds a new string field cannot silently regress the
 // no-secrets-at-rest guarantee.
+
 
 
 
@@ -1311,6 +1336,11 @@ function validateSavedConfig(parsed, candidate) {
             message: `invalid provider in ${candidate}: ${JSON.stringify(obj["provider"])} (expected one of ${[...VALID_PROVIDERS].join(", ")})`,
         };
     }
+    const effortRaw = obj["effort"];
+    const effort = (0,config_effort/* parseEffort */.k)(effortRaw);
+    if (effortRaw !== undefined && effort === undefined) {
+        return { ok: false, path: candidate, exitCode: 2, message: `invalid effort in ${candidate}: expected a recognized effort level` };
+    }
     const apiUrlRaw = obj["apiUrl"];
     const modelRaw = obj["model"];
     // Type guard: optional fields must be a string when present. Anything
@@ -1343,6 +1373,7 @@ function validateSavedConfig(parsed, candidate) {
         provider: obj["provider"],
         ...(apiUrl !== undefined ? { apiUrl } : {}),
         ...(model !== undefined ? { model } : {}),
+        ...(effort !== undefined ? { effort } : {}),
     };
     return { ok: true, config };
 }
@@ -1714,6 +1745,8 @@ function serializeSavedConfig(config) {
         ordered["apiUrl"] = config.apiUrl;
     if (config.model !== undefined)
         ordered["model"] = config.model;
+    if (config.effort !== undefined)
+        ordered["effort"] = config.effort;
     return JSON.stringify(ordered, null, 2) + "\n";
 }
 // ---------------------------------------------------------------------------
@@ -1922,10 +1955,27 @@ const defaultFsAdapter = {
 
 /***/ }),
 
+/***/ 871:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   D: () => (/* binding */ normalizeEnumInput)
+/* harmony export */ });
+/**
+ * Normalize raw user input for case-insensitive enum lookups.
+ * Leaf module — zero imports.
+ */
+function normalizeEnumInput(raw) {
+    return raw.trim().toLowerCase();
+}
+
+
+/***/ }),
+
 /***/ 28:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
-module.exports = __nccwpck_require__.p + "b23252427c484ce0121d.ts";
+module.exports = __nccwpck_require__.p + "e24e861631836c0ed339.ts";
 
 /***/ }),
 
@@ -2137,7 +2187,24 @@ var external_node_fs_ = __nccwpck_require__(24);
 var promises_ = __nccwpck_require__(455);
 // EXTERNAL MODULE: external "node:path"
 var external_node_path_ = __nccwpck_require__(760);
+// EXTERNAL MODULE: ./src/config/effort.ts
+var config_effort = __nccwpck_require__(914);
 ;// CONCATENATED MODULE: ./src/config/field-schema.ts
+/**
+ * Single source of truth for every config field the runtime reads.
+ *
+ * Replaces parallel lists that were previously hand-synced between
+ * `src/config/env-sources.ts` and `src/cli/parse-args.ts`.
+ *
+ * Each `FIELD` entry binds one runtime config value to its environment and
+ * CLI surfaces plus its type and default. The loader reads `env[]`; the CLI
+ * parser reads `flag`. The `input` name remains metadata for compatibility
+ * tooling that translates existing configuration.
+ *
+ * Fields NOT exposed via CLI flag still appear here for the loader + env
+ * layers (azureOrg, githubToken, etc.) — only `flag` is optional.
+ */
+
 const FIELDS = {
     apiUrl: {
         field: "apiUrl",
@@ -2416,10 +2483,10 @@ const FIELDS = {
         field: "effort",
         flag: "--effort",
         input: "effort",
-        env: [],
+        env: ["UMACTUALLY_EFFORT"],
         type: "enum",
-        defaultValue: "medium",
-        enumValues: ["low", "medium", "high"],
+        defaultValue: null,
+        enumValues: config_effort/* EFFORT_LEVELS */.v,
     },
     provider: {
         field: "provider",
@@ -2771,15 +2838,8 @@ class PromptFileError extends Error {
  */
 
 
-;// CONCATENATED MODULE: ./src/util/normalize.ts
-/**
- * Normalize raw user input for case-insensitive enum lookups.
- * Leaf module — zero imports.
- */
-function normalizeEnumInput(raw) {
-    return raw.trim().toLowerCase();
-}
-
+// EXTERNAL MODULE: ./src/util/normalize.ts
+var normalize = __nccwpck_require__(871);
 ;// CONCATENATED MODULE: ./src/config/parsers.ts
 
 
@@ -2806,7 +2866,7 @@ function parseBooleanFromUnknown(value, field) {
         throw new errors_InvalidConfigError(field, `expected boolean, received number ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
     }
     if (typeof value === "string") {
-        const normalized = normalizeEnumInput(value);
+        const normalized = (0,normalize/* normalizeEnumInput */.D)(value);
         if (TRUTHY_STRINGS.has(normalized))
             return true;
         if (FALSY_STRINGS.has(normalized))
@@ -2878,7 +2938,7 @@ function parseSeverityFromUnknown(value, field) {
     if (typeof value !== "string") {
         throw new errors_InvalidConfigError(field, `expected severity string, received ${typeof value}`);
     }
-    const normalized = normalizeEnumInput(value);
+    const normalized = (0,normalize/* normalizeEnumInput */.D)(value);
     const alias = SEVERITY_ALIASES[normalized];
     if (alias !== undefined)
         return alias;
@@ -2895,7 +2955,7 @@ function parsePlatformFromUnknown(value, field) {
     if (typeof value !== "string") {
         throw new errors_InvalidConfigError(field, `expected platform string, received ${typeof value}`);
     }
-    const normalized = normalizeEnumInput(value);
+    const normalized = (0,normalize/* normalizeEnumInput */.D)(value);
     if (!VALID_PLATFORMS.has(normalized)) {
         throw new errors_InvalidConfigError(field, `unknown platform ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
     }
@@ -2953,6 +3013,7 @@ function appendV1(path) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/parse-args.ts
+
 
 
 
@@ -3364,7 +3425,11 @@ function readPlatform(value) {
 }
 function readEffort(args, index) {
     const raw = readValue(args, index, "effort");
-    return readEnum("--effort", raw, FIELDS.effort.enumValues, CliUsageError);
+    const effort = (0,config_effort/* parseEffort */.k)(raw);
+    if (effort === undefined) {
+        throw new CliUsageError("invalid --effort value", `Accepted values: ${config_effort/* EFFORT_LEVELS */.v.join(", ")}`);
+    }
+    return effort;
 }
 function readProvider(value) {
     return readEnum("--provider", value, FIELDS.provider.enumValues, CliUsageError);
@@ -4895,32 +4960,11 @@ class ProviderError extends Error {
         this.providerErrorDetails = options?.providerErrorDetails;
     }
 }
-/**
- * Routing-level failure predicates intentionally diverge by boundary:
- *
- * - URL-candidate fallback stays inside one OpenAI-compatible provider
- *   client. HTTP 404 and 400 can both mean the operator's base URL shape
- *   missed the provider's route, so the client may advance to the next
- *   resolved candidate without changing wire protocol.
- * - Cross-protocol fallback crosses from one provider protocol family to
- *   another. It fires on 404 only because the wire shape genuinely does
- *   not have a route for this URL at this provider. We intentionally
- *   exclude HTTP 400 even though URL-candidate fallback accepts it.
- *
- * 400 typically signals a payload-level error (malformed body, missing
- * required field, unsupported `max_tokens` value, content-policy
- * rejection). Firing cross-protocol fallback on a payload-400 would silently mask wire-shape bugs:
- * an Anthropic call that 400s on an
- * unsupported parameter would retry against OpenAI's wire shape (different
- * body layout) and possibly succeed, with the operator seeing a successful
- * review attributed to the OTHER protocol without ever knowing their
- * original call was malformed.
- */
 function isRoutableFailureForUrlCandidate(error) {
-    return error.status === 404 || error.status === 400;
+    return error.providerErrorDetails?.kind !== "effort-rejection" && (error.status === 404 || error.status === 400);
 }
 function isRoutableFailureForCrossProtocol(error) {
-    return error.status === 404;
+    return error.providerErrorDetails?.kind !== "effort-rejection" && error.status === 404;
 }
 function sanitizeHttpStatus(endpoint, status) {
     return `Provider ${endpoint} responded with HTTP ${status}.`;
@@ -5722,6 +5766,7 @@ const ENV_KEYS = {
     UMACTUALLY_API_URL: "UMACTUALLY_API_URL",
     UMACTUALLY_API_KEY: "UMACTUALLY_API_KEY",
     UMACTUALLY_MODEL: "UMACTUALLY_MODEL",
+    UMACTUALLY_EFFORT: "UMACTUALLY_EFFORT",
     UMACTUALLY_PROVIDER: "UMACTUALLY_PROVIDER",
     UMACTUALLY_GITHUB_API_BASE: "UMACTUALLY_GITHUB_API_BASE",
     UMACTUALLY_INSTRUCTION_FILES: "UMACTUALLY_INSTRUCTION_FILES",
@@ -6060,8 +6105,9 @@ function checkCredentials(env) {
             remediation: "Export UMACTUALLY_API_KEY in the shell (or set the secret in the CI secret store); never pass the secret on the command line or commit it to disk.",
         });
     }
-    if (!requiresApiKey && !apiKeyPresent) {
-        return makeResult("credentials", "ok", `provider "${provider}" does not require UMACTUALLY_API_KEY; GITHUB_TOKEN is the credential`);
+    if (!requiresApiKey) {
+        const tokenPresent = [env["GITHUB_TOKEN"], env["GH_TOKEN"]].some((token) => token !== undefined && token.trim().length > 0);
+        return makeResult("credentials", tokenPresent ? "ok" : "fail", tokenPresent ? "GitHub token present (value redacted)" : "Copilot requires GITHUB_TOKEN or GH_TOKEN", tokenPresent ? {} : { remediation: "Export GITHUB_TOKEN or GH_TOKEN with Copilot access; --github-token is also accepted by review." });
     }
     // apiKey present — disclose presence only.
     return makeResult("credentials", "ok", `UMACTUALLY_API_KEY present (${brand/* REDACTED_SECRET_TOKEN */.uq}, value redacted)`);
@@ -7180,7 +7226,7 @@ const REVIEW_FLAGS = [
     { flag: "--additional-prompt <text>", appliesTo: ["review"] },
     { flag: "--additional-prompt-file <path>", appliesTo: ["review"] },
     { flag: "--additional-prompt-files <paths>", description: "Comma/newline-separated additional prompt files (overrides defaults)", appliesTo: ["review"] },
-    { flag: "--effort <low|medium|high>", description: "Reasoning effort hint (default: medium)", appliesTo: ["review"] },
+    { flag: "--effort <none|minimal|low|medium|high|xhigh|max>", description: "Optional reasoning hint; no budget; omit for provider/model default", appliesTo: ["review"] },
     { flag: "--provider <openai-compatible|copilot|anthropic>", description: "Provider family (anthropic uses native /v1/messages)", appliesTo: ["review"] },
     { flag: "--github-api-base <url>", description: `GitHub API base URL (Copilot token exchange; default: ${DEFAULT_GITHUB_API_BASE})`, appliesTo: ["review"] },
     { flag: "--include-sonarqube", appliesTo: ["review"] },
@@ -7299,10 +7345,15 @@ const TOP_LEVEL_HELP_TEXT = [
     "",
     CLI_MODES_TEXT,
     "Configuration sources (highest priority first): --flags > UMACTUALLY_*/REVIEW_*",
-    "env vars > saved config (~/.umactually/config.json) > defaults. --api-key is",
-    "NEVER persisted; pass it via --api-key each invocation or export",
-    "UMACTUALLY_API_KEY=<key>. Run `umactually init` to populate the saved",
-    "config (provider/api-url/model); `umactually --show-config` to inspect it.",
+    "env vars > saved config (~/.umactually/config.json) > defaults (provider/model",
+    "default for effort; built-in defaults for other fields).",
+    "Effort is optional and distinct from thinking or token budgets: --effort >",
+    "UMACTUALLY_EFFORT > saved effort > provider/model default; no auto budget.",
+    "The generic levels are none, minimal, low, medium, high, xhigh, max;",
+    "support is provider/model/gateway-specific. --api-key is NEVER persisted;",
+    "pass it via --api-key each invocation or export UMACTUALLY_API_KEY=<key>.",
+    "Run `umactually init` to populate the saved config (provider/api-url/model",
+    "and optional effort); `umactually --show-config` to inspect it.",
     "",
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
@@ -7319,10 +7370,15 @@ const REVIEW_HELP_TEXT = [
     "",
     CLI_MODES_TEXT,
     "Configuration sources (highest priority first): --flags > UMACTUALLY_*/REVIEW_*",
-    "env vars > saved config (~/.umactually/config.json) > defaults. --api-key is",
-    "NEVER persisted; pass it via --api-key each invocation or export",
-    "UMACTUALLY_API_KEY=<key>. Run `umactually init` to populate the saved",
-    "config (provider/api-url/model); `umactually --show-config` to inspect it.",
+    "env vars > saved config (~/.umactually/config.json) > defaults (provider/model",
+    "default for effort; built-in defaults for other fields).",
+    "Effort is optional and distinct from thinking or token budgets: --effort >",
+    "UMACTUALLY_EFFORT > saved effort > provider/model default; no auto budget.",
+    "The generic levels are none, minimal, low, medium, high, xhigh, max;",
+    "support is provider/model/gateway-specific. --api-key is NEVER persisted;",
+    "pass it via --api-key each invocation or export UMACTUALLY_API_KEY=<key>.",
+    "Run `umactually init` to populate the saved config (provider/api-url/model",
+    "and optional effort); `umactually --show-config` to inspect it.",
     "",
     "See exit codes: docs/exit-codes.md",
 ].join("\n");
@@ -7341,7 +7397,9 @@ const INIT_HELP_TEXT = [
     "",
     "Security: API keys are NEVER persisted to disk. Use your platform",
     "secret store (GitHub Actions secrets, Azure Pipelines variables) or",
-    "the UMACTUALLY_API_KEY env var. See docs/security.md \"Trust model: init\".",
+    "the UMACTUALLY_API_KEY env var. Effort is optional; saved effort is",
+    "non-secret and remains below CLI/env overrides. See docs/security.md",
+    "\"Trust model: init\".",
     "",
     "Exit codes:",
     "  0  Success / clean abort (Ctrl-C, Ctrl-D, 'n' to overwrite)",
@@ -7464,6 +7522,240 @@ const INIT_HELP = (/* unused pure expression or super */ null && (INIT_HELP_TEXT
 const DOCTOR_HELP = (/* unused pure expression or super */ null && (DOCTOR_HELP_TEXT));
 const UNINSTALL_HELP = (/* unused pure expression or super */ null && (UNINSTALL_HELP_TEXT));
 const CHECK_REVIEW_ARTIFACT_HELP = (/* unused pure expression or super */ null && (CHECK_REVIEW_ARTIFACT_HELP_TEXT));
+
+;// CONCATENATED MODULE: ./src/config/field-resolution.ts
+
+
+
+
+
+/**
+ * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
+ *
+ * Returns the first value in the chain that is non-null, non-undefined, AND (when a
+ * string) non-empty. This matches the behavior the live path hand-rolls inline at
+ * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
+ *
+ * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
+ * helpers used only inside loadConfigFromSources. The live path cannot call those
+ * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
+ * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
+ * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
+ * could "fix" by adding a default to one site but not the others.
+ *
+ * Treats the empty string as "missing" for string-typed fields. This matches the
+ * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
+ * shell typically passes empty strings for unset flags).
+ *
+ * @param parsedValue  CLI/inputs value (already parsed).
+ * @param envValue     Env-var value (read via ENV_KEYS.X).
+ * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
+ * @returns            The first non-null/non-empty value, or `fallback`.
+ */
+function resolveField(parsedValue, envValue, fallback) {
+    if (parsedValue !== undefined && parsedValue !== null) {
+        if (typeof parsedValue === "string" && parsedValue.length === 0) {
+            // Empty string is treated as missing for string fields.
+        }
+        else {
+            return parsedValue;
+        }
+    }
+    if (envValue !== undefined && envValue !== null) {
+        if (typeof envValue === "string" && envValue.length === 0) {
+            // Empty string from env is treated as missing.
+        }
+        else {
+            return envValue;
+        }
+    }
+    return fallback;
+}
+function resolveFromSchema(parsed, env) {
+    const resolved = { ...parsed };
+    const fieldProvenance = {};
+    for (const field of Object.values(FIELDS)) {
+        const parsedValue = parsedValueForField(parsed, field);
+        const envValue = firstNonBlankEnv(field.env, env);
+        const raw = parsedValue ?? envValue?.value ?? field.defaultValue;
+        resolved[field.field] = coerceField(field, raw);
+        fieldProvenance[field.field] = parsedValue !== undefined
+            ? { source: "flag" }
+            : envValue !== undefined
+                ? { source: "env", envName: envValue.envName }
+                : { source: "default" };
+    }
+    resolved["minimumSeverityInternal"] = parseSeverityFromUnknown(resolved["minimumSeverity"], FIELDS.minimumSeverity.field);
+    return Object.assign({}, parsed, resolved, { fieldProvenance });
+}
+function parsedValueForField(parsed, field) {
+    if (!(field.field in parsed)) {
+        return undefined;
+    }
+    if (field.flag !== null && !wasCliFieldExplicitlySet(parsed, field.field)) {
+        return undefined;
+    }
+    const value = Reflect.get(parsed, field.field);
+    return value === null ? undefined : value;
+}
+function firstNonBlankEnv(aliases, env) {
+    for (const alias of aliases) {
+        const value = env[alias];
+        if (typeof value === "string" && value.trim().length > 0) {
+            return { envName: alias, value };
+        }
+    }
+    return undefined;
+}
+function coerceField(field, raw) {
+    if (raw === null && field.defaultValue === null)
+        return null;
+    switch (field.type) {
+        case "string":
+            if (typeof raw !== "string") {
+                throw new errors_InvalidConfigError(field.field, `expected string, received ${typeof raw}`);
+            }
+            return raw;
+        case "boolean":
+            return parseBooleanFromUnknown(raw, field.field);
+        case "integer":
+            return parseIntegerFromUnknown(raw, field.field);
+        case "enum":
+            return parseEnumField(field, raw);
+        default:
+            return assertNever(field.type);
+    }
+}
+function parseEnumField(field, raw) {
+    if (field.field === "platform") {
+        return parsePlatformFromUnknown(raw, field.field);
+    }
+    if (field.field === "minimumSeverity") {
+        parseSeverityFromUnknown(raw, field.field);
+    }
+    if (typeof raw !== "string") {
+        throw new errors_InvalidConfigError(field.field, `expected enum string, received ${typeof raw}`);
+    }
+    const normalized = (0,normalize/* normalizeEnumInput */.D)(raw);
+    if (!(field.enumValues ?? []).includes(normalized)) {
+        throw new errors_InvalidConfigError(field.field, `unknown enum value ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
+    }
+    return normalized;
+}
+function assertNever(value) {
+    throw new errors_InvalidConfigError("field.type", `unknown field type ${String(value)}`);
+}
+
+;// CONCATENATED MODULE: ./src/cli/apply-saved-config.ts
+// SPDX-License-Identifier: MIT
+// Apply saved-config values to fields that fell through to their schema
+// default after flag + env resolution. Single source of truth for the
+// "saved config supplies defaults" behavior shared by `umactually review`
+// and `umactually --files`.
+//
+// Resolution order (final, after this function runs):
+//   - explicit CLI flag    → source = "flag"
+//   - environment variable  → source = "env"
+//   - saved config (~/.umactually/config.json) → source = "savedConfig"
+//   - schema default        → source = "default"
+//
+// `apiKey` deliberately does NOT participate: the S6 contract (v0.6.23)
+// bans persisting credentials to disk. The `SavedConfig` type excludes
+// `apiKey`, so there is no value to read even if a caller passes one.
+// `apiKey` resolves via flag > `UMACTUALLY_API_KEY` env > error.
+const SAVED_CONFIG_FIELDS = (/* unused pure expression or super */ null && (["provider", "apiUrl", "model", "effort"]));
+/**
+ * Pure resolver. Returns a NEW `SchemaResolvedCliArgs` with `provider` /
+ * `apiUrl` / `model` overridden from `saved` when the current
+ * `fieldProvenance[field].source === "default"`. Fields whose values
+ * were already supplied by `--flag` or env var are left alone — flag
+ * and env ALWAYS win over saved config (matches the contract for every
+ * other well-behaved tool: flag > env > persisted > default).
+ *
+ * `saved === null` (no config file present, or read failed) is a
+ * no-op; the resolver returns `resolved` unchanged with an empty
+ * `applied` list.
+ *
+ * `path` is required when `saved !== null` (it tells the operator
+ * which file supplied the value). The empty-string placeholder is
+ * reserved for the `saved === null` fast path.
+ */
+function applySavedConfig(resolved, saved, path) {
+    if (saved === null) {
+        return { resolved, applied: [] };
+    }
+    let current = resolved;
+    const applied = [];
+    if (saved.provider !== undefined) {
+        const next = maybeOverride(current, "provider", saved.provider, path);
+        if (next !== null) {
+            current = next;
+            applied.push("provider");
+        }
+    }
+    // `apiUrl` and `model` are optional on SavedConfig. Skip when absent
+    // — no override, no provenance flip.
+    if (saved.apiUrl !== undefined) {
+        const next = maybeOverride(current, "apiUrl", saved.apiUrl, path);
+        if (next !== null) {
+            current = next;
+            applied.push("apiUrl");
+        }
+    }
+    if (saved.model !== undefined) {
+        const next = maybeOverride(current, "model", saved.model, path);
+        if (next !== null) {
+            current = next;
+            applied.push("model");
+        }
+    }
+    if (saved.effort !== undefined && current.fieldProvenance["effort"]?.source === "default") {
+        current = {
+            ...current,
+            effort: saved.effort,
+            fieldProvenance: { ...current.fieldProvenance, effort: { source: "savedConfig" } },
+        };
+        applied.push("effort");
+    }
+    return { resolved: current, applied };
+}
+/**
+ * Override a single field IFF its current provenance is "default".
+ * Returns the new `SchemaResolvedCliArgs` on success, `null` when the
+ * field should be left alone (already supplied by flag or env).
+ *
+ * Pure function over `current.fieldProvenance[field]` and the field's
+ * current value. Does NOT mutate — returns a new object. The nested
+ * `fieldProvenance` map is also shallow-cloned so subsequent
+ * overrides to a different field don't accidentally leak the
+ * earlier provenance update.
+ */
+function maybeOverride(current, field, value, path) {
+    const provenance = current.fieldProvenance[field];
+    if (provenance === undefined) {
+        // Field wasn't resolved by `resolveFromSchema`. This shouldn't
+        // happen because we only pass through `provider` / `apiUrl` /
+        // `model`, all of which are in `FIELDS`. Refuse to override
+        // when the invariant is broken — preserves the byte-exact existing
+        // behavior for edge cases.
+        return null;
+    }
+    if (provenance.source !== "default") {
+        // Flag or env already supplied a value. Saved config is the
+        // strictly-LOWER priority layer and MUST NOT override.
+        return null;
+    }
+    const newProvenance = { source: "savedConfig", path };
+    const newFieldProvenance = {
+        ...current.fieldProvenance,
+        [field]: newProvenance,
+    };
+    return {
+        ...current,
+        [field]: value,
+        fieldProvenance: newFieldProvenance,
+    };
+}
 
 ;// CONCATENATED MODULE: ./src/cli/smart-prompt.ts
 // SPDX-License-Identifier: MIT
@@ -7684,6 +7976,15 @@ async function smartPromptForApiConfig(input) {
             ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
         });
     }
+    if (input.credential === "github-token") {
+        const githubToken = await smartPromptForValue({
+            label: "GitHub token with Copilot access",
+            envVarName: "GITHUB_TOKEN",
+            placeholder: "GitHub token",
+            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        });
+        return { apiUrl, apiKey: null, ...(githubToken === null ? {} : { githubToken }) };
+    }
     const apiKey = await smartPromptForValue({
         label: "Model provider API key",
         envVarName: "UMACTUALLY_API_KEY",
@@ -7833,6 +8134,8 @@ jobs:
           GITHUB_TOKEN: \${{ github.token }}
           UMACTUALLY_API_URL: \${{ secrets.UMACTUALLY_API_URL }}
           UMACTUALLY_API_KEY: \${{ secrets.UMACTUALLY_API_KEY }}
+          # Optional: uncomment to select an effort level; omit for provider/model default.
+          # UMACTUALLY_EFFORT: low
         run: umactually review --platform github
 `;
 /**
@@ -7902,6 +8205,8 @@ steps:
       SYSTEM_ACCESSTOKEN: $(System.AccessToken)
       UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
       UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+      # Optional: uncomment to select an effort level; omit for provider/model default.
+      # UMACTUALLY_EFFORT: low
 `;
 /**
  * Render the canonical CI workflow body for a target. Default
@@ -7963,6 +8268,7 @@ function detectCiTarget(input) {
 
 
 
+
 /**
  * Global budget for the entire wizard. Per-prompt budget is
  * `PER_PROMPT_TIMEOUT_MS` (15s) and is enforced by `smartPromptForValue`.
@@ -7989,6 +8295,7 @@ const PROMPT_SEQUENCES = {
     ],
     "openai-compatible": [
         "Provider family",
+        "Reasoning effort",
         "Model provider base URL",
         "Model provider API key",
         "Model name",
@@ -7996,12 +8303,14 @@ const PROMPT_SEQUENCES = {
     ],
     anthropic: [
         "Provider family",
+        "Reasoning effort",
         "Model provider API key",
         "Model name",
         "CI workflow target",
     ],
     copilot: [
         "Provider family",
+        "Reasoning effort",
         "GitHub API base URL",
         "Model name",
     ],
@@ -8030,6 +8339,7 @@ const FLAG_HANDLERS = {
     "--api-key": { consume: true, validate: parseApiKey, apply: (state, value) => { state.apiKey = value; } },
     "--github-api-base": { consume: true, validate: parseGithubApiBase, apply: (state, value) => { state.githubApiBase = value; } },
     "--model": { consume: true, validate: parseModel, apply: (state, value) => { state.model = value; } },
+    "--effort": { consume: true, validate: parseEffortFlag, apply: (state, value) => { state.effort = (0,config_effort/* parseEffort */.k)(value); } },
 };
 function parseFlagToken(token, next, state, errors) {
     const handler = FLAG_HANDLERS[token];
@@ -8059,7 +8369,7 @@ function parseInitArgs(argv, env) {
         if (parseFlagToken(token, argv[i + 1], state, errors))
             i += 1;
     }
-    applyEnvDefaults(state, env);
+    applyEnvDefaults(state, env, errors);
     const mode = resolveInitMode(state);
     return { mode, errors, ...state };
 }
@@ -8077,6 +8387,7 @@ function createParsedInitState() {
         apiKey: undefined,
         githubApiBase: undefined,
         model: undefined,
+        effort: undefined,
         dryRun: false,
         show: false,
         nonInteractive: false,
@@ -8142,12 +8453,21 @@ function parseModel(next) {
         return flagError("--model requires a value");
     return flagValue();
 }
+function parseEffortFlag(next) {
+    if (next === undefined) {
+        return flagError(`--effort requires a value (${config_effort/* EFFORT_LEVELS */.v.join("|")})`);
+    }
+    if ((0,config_effort/* parseEffort */.k)(next) === undefined) {
+        return flagError(`--effort must be one of ${config_effort/* EFFORT_LEVELS */.v.join("|")} (got '${next}')`);
+    }
+    return flagValue();
+}
 /**
  * Env defaults (UMACTUALLY_API_URL, UMACTUALLY_API_KEY, etc.) — only
  * used to backfill if no flag was given. The wizard never persists
  * them (S6); they're consumed for the live provider HEAD probe only.
  */
-function applyEnvDefaults(state, env) {
+function applyEnvDefaults(state, env, errors) {
     if (state.apiUrl === undefined && typeof env["UMACTUALLY_API_URL"] === "string") {
         state.apiUrl = env["UMACTUALLY_API_URL"];
     }
@@ -8165,6 +8485,22 @@ function applyEnvDefaults(state, env) {
         if (envProvider === "openai-compatible" || envProvider === "anthropic" || envProvider === "copilot") {
             state.provider = envProvider;
         }
+    }
+    applyEffortEnvDefault(state, env, errors);
+}
+/**
+ * UMACTUALLY_EFFORT backfill — nonblank invalid values are rejected
+ * without echoing the raw value; blank values are treated as absent.
+ */
+function applyEffortEnvDefault(state, env, errors) {
+    if (state.effort !== undefined || typeof env["UMACTUALLY_EFFORT"] !== "string")
+        return;
+    const rawEffort = env["UMACTUALLY_EFFORT"];
+    if (rawEffort.trim().length > 0 && (0,config_effort/* parseEffort */.k)(rawEffort) === undefined) {
+        errors.push("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
+    }
+    else {
+        state.effort = (0,config_effort/* parseEffort */.k)(rawEffort);
     }
 }
 /**
@@ -8204,6 +8540,7 @@ const init_INIT_HELP_TEXT = [
     "  --api-key <key>            Provider API key (env: UMACTUALLY_API_KEY; NEVER persisted)",
     "  --github-api-base <url>    Copilot API base (env: UMACTUALLY_GITHUB_API_BASE)",
     "  --model <id>               Provider model id (optional; resolved at review time)",
+    "  --effort <level>            Reasoning effort (none|minimal|low|medium|high|xhigh|max)",
     "  --scope <global|repo>      Where to persist the saved config",
     "  --ci <auto|github|azure|none>",
     "                             Generate a CI workflow file (auto-detects)",
@@ -8218,7 +8555,7 @@ const init_INIT_HELP_TEXT = [
     "",
     "Security:",
     "  API keys and tokens are NEVER written to disk. The saved config stores",
-    "  mode 0o600 and contains only provider, optional apiUrl, optional model.",
+    "  mode 0o600 and contains only provider, optional apiUrl, model, and effort.",
     "  Set UMACTUALLY_API_KEY in your shell init / CI secret store.",
     "",
     "Interactive notes:",
@@ -8464,6 +8801,7 @@ async function runShowInit({ deps }) {
             provider: { source: "savedConfig" },
             ...(result.config.apiUrl !== undefined ? { apiUrl: { source: "savedConfig" } } : {}),
             ...(result.config.model !== undefined ? { model: { source: "savedConfig" } } : {}),
+            ...(result.config.effort !== undefined ? { effort: { source: "savedConfig" } } : {}),
         },
     };
 }
@@ -8571,7 +8909,8 @@ async function runDryRunInit({ args, deps, }) {
     const provider = args.provider ?? "openai-compatible";
     const apiUrl = args.apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx;
     const model = args.model;
-    const config = buildConfig(provider, apiUrl, model);
+    const effort = args.effort;
+    const config = buildConfig(provider, apiUrl, model, effort);
     const ciGenerated = [];
     if (args.ci === "github" || args.ci === "azure") {
         ciGenerated.push(args.ci);
@@ -8618,6 +8957,7 @@ async function runDryRunInit({ args, deps, }) {
             provider: { source: args.provider !== undefined ? "flag" : "default" },
             apiUrl: { source: args.apiUrl !== undefined ? "flag" : "default" },
             model: { source: args.model !== undefined ? "flag" : "default" },
+            ...(args.effort !== undefined ? { effort: { source: "flag" } } : {}),
         },
     };
 }
@@ -8637,13 +8977,13 @@ async function runNonInteractiveInit({ args, deps, }) {
     const perProvider = perProviderValidation(args, provider);
     if ("outcome" in perProvider)
         return perProvider;
-    const { apiUrl, model } = perProvider;
+    const { apiUrl, model, effort } = perProvider;
     // Path safety: cwd must not be unsafe (no .., not absolute).
     if (containsUnsafePathSegment(deps.cwd)) {
         return unsafeCwdResult(deps.cwd);
     }
     const scope = args.scope ?? "global";
-    const config = buildConfig(provider, apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, model);
+    const config = buildConfig(provider, apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, model, effort);
     // apiKey and githubApiBase were validated for presence only and
     // intentionally dropped before reaching writeSavedConfig (S6).
     const writeResult = await (0,saved_config/* writeSavedConfig */.rn)(config, {
@@ -8678,6 +9018,7 @@ async function runNonInteractiveInit({ args, deps, }) {
             provider: { source: "flag" },
             ...(config.apiUrl !== undefined ? { apiUrl: { source: "flag" } } : {}),
             ...(config.model !== undefined ? { model: { source: "flag" } } : {}),
+            ...(config.effort !== undefined ? { effort: { source: "flag" } } : {}),
         },
     };
 }
@@ -8751,7 +9092,7 @@ function perProviderValidation(args, provider) {
             sources: {},
         };
     }
-    return { apiUrl, model };
+    return { apiUrl, model, effort: args.effort };
 }
 /**
  * Build the "unsafe cwd" envelope for `runNonInteractiveInit`. The
@@ -8858,7 +9199,14 @@ async function runInteractiveInit({ args, deps, }) {
     if (provider === null) {
         return unknownProviderResult(providerAnswer, args.mode);
     }
-    // Q3 — per-branch sub-prompts
+    const effortAnswer = await safePrompt(reader, isTTY, `? Reasoning effort (${config_effort/* EFFORT_LEVELS */.v.join(" | ")}) [default: provider default]: `, "");
+    if (effortAnswer === null)
+        return abortedResult(args.mode);
+    const effort = effortAnswer.length === 0 ? args.effort : (0,config_effort/* parseEffort */.k)(effortAnswer);
+    if (effortAnswer.length > 0 && effort === undefined) {
+        return invalidEffortResult(effortAnswer, args.mode);
+    }
+    // Q4 — per-branch sub-prompts
     const branch = await promptBranch({ provider, env: deps.env });
     if (branch.outcome === "aborted")
         return abortedResult(args.mode);
@@ -8883,7 +9231,7 @@ async function runInteractiveInit({ args, deps, }) {
     }
     // Persist. The apiKey from branch.apiKey is consumed for the live
     // HEAD probe ONLY; never passed to writeSavedConfig.
-    const config = buildConfig(provider, branch.apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, branch.model);
+    const config = buildConfig(provider, branch.apiUrl ?? saved_config/* DEFAULT_OPENAI_URL */.Nx, branch.model, effort);
     const writeResult = await (0,saved_config/* writeSavedConfig */.rn)(config, {
         homeDir: deps.homeDir,
         cwd: deps.cwd,
@@ -8909,6 +9257,7 @@ async function runInteractiveInit({ args, deps, }) {
             provider: { source: "default" },
             ...(config.apiUrl !== undefined ? { apiUrl: { source: "default" } } : {}),
             ...(config.model !== undefined ? { model: { source: "default" } } : {}),
+            ...(config.effort !== undefined ? { effort: { source: "default" } } : {}),
         },
     };
 }
@@ -8939,6 +9288,23 @@ function nottyResult() {
  * Build the "unknown provider family" envelope for
  * `runInteractiveInit` (Q2 parse failure).
  */
+function invalidEffortResult(effortAnswer, mode) {
+    return {
+        mode,
+        outcome: "error",
+        exitCode: 2,
+        savedConfigPath: null,
+        savedConfigBytes: null,
+        ciGenerated: [],
+        checks: [{
+                id: "effort-choice",
+                status: "fail",
+                message: `invalid effort: ${(0,saved_config/* redactSecretsInString */.$K)(effortAnswer)}`,
+            }],
+        hints: [`expected one of: ${config_effort/* EFFORT_LEVELS */.v.join(", ")}`],
+        sources: {},
+    };
+}
 function unknownProviderResult(providerAnswer, mode) {
     return {
         mode,
@@ -9167,7 +9533,7 @@ async function promptCi(input) {
             const answer = await safePrompt(reader, isTTY, "? Generate CI workflow? (1) github  (2) azure  (3) none  [default: 3]: ", "none");
             if (answer === null)
                 return { outcome: "aborted" };
-            const trimmed = normalizeEnumInput(answer);
+            const trimmed = (0,normalize/* normalizeEnumInput */.D)(answer);
             if (trimmed === "github" || trimmed === "azure")
                 chosen = trimmed;
             else
@@ -9247,7 +9613,7 @@ async function safePrompt(reader, isTTY, prompt, defaultValue) {
  * any unrecognized value (case-insensitive match).
  */
 function parseProviderChoice(answer) {
-    const t = normalizeEnumInput(answer);
+    const t = (0,normalize/* normalizeEnumInput */.D)(answer);
     if (t === "openai-compatible" || t === "openai" || t === "1") {
         return "openai-compatible";
     }
@@ -9281,7 +9647,7 @@ function containsUnsafePathSegment(p) {
  * saved-config bytes never carry the literal "auto" sentinel — model
  * is truly optional, and the runtime resolves it at review time.
  */
-function buildConfig(provider, apiUrl, model) {
+function buildConfig(provider, apiUrl, model, effort) {
     const defaultForProvider = provider === "anthropic" ? saved_config/* DEFAULT_ANTHROPIC_URL */.Tq : saved_config/* DEFAULT_OPENAI_URL */.Nx;
     const base = {
         schemaVersion: saved_config/* SAVED_CONFIG_SCHEMA_VERSION */.uy,
@@ -9289,16 +9655,13 @@ function buildConfig(provider, apiUrl, model) {
     };
     const includeApiUrl = apiUrl !== defaultForProvider;
     const includeModel = typeof model === "string" && model.length > 0;
-    if (includeApiUrl && includeModel) {
-        return { ...base, apiUrl, model };
-    }
-    if (includeApiUrl) {
-        return { ...base, apiUrl };
-    }
-    if (includeModel) {
-        return { ...base, model };
-    }
-    return base;
+    const includeEffort = effort !== undefined;
+    return {
+        ...base,
+        ...(includeApiUrl ? { apiUrl } : {}),
+        ...(includeModel ? { model } : {}),
+        ...(includeEffort ? { effort } : {}),
+    };
 }
 /**
  * Detect CI target via the init-templates helper. We re-implement the
@@ -12296,6 +12659,8 @@ function renderSavedConfig(config, path) {
     if (config.apiUrl !== undefined)
         lines.push(`  apiUrl:   ${config.apiUrl}`);
     lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
+    lines.push(`  effort:    ${config.effort ?? "provider default"}`);
+    lines.push("  effort caveat: model-dependent; provider default may apply.");
     return lines.join("\n");
 }
 /**
@@ -12331,6 +12696,12 @@ async function runConfigFlow() {
     else {
         note(`No saved config found at ${saved.path}\n(run \`umactually init\` to create one)`, "Saved config");
     }
+    note([
+        "Run Review does not prompt for effort.",
+        "UMACTUALLY_EFFORT overrides saved effort.",
+        "If neither is set, the provider/model default is used.",
+        "Invalid nonblank UMACTUALLY_EFFORT values are rejected.",
+    ].join("\n"), "Review effort");
     // Step 3: env-presence table (read process.env only — no mutation).
     note(renderEnvPresence(process.env), "Environment");
     // Step 4: block on the single-option "Back to menu" sentinel so the
@@ -12611,64 +12982,6 @@ function requireLiveConfig(value, envVarName) {
     return value;
 }
 
-;// CONCATENATED MODULE: ./src/util/debug-raw.ts
-/**
- * Single boundary for the `UMACTUALLY_DEBUG_RAW` env-var toggle. The literal
- * name used to appear at 10 sites across 3 files (provider/openai-compatible.ts,
- * render/json-extract.ts, cli/run.ts); every site asked the same question —
- * "is debug-raw logging on?" — and every site did the env-var lookup inline.
- *
- * Centralizing the lookup here means:
- *   - the env-var name is named in exactly one place (`DEBUG_RAW_ENV`),
- *   - read sites stay a one-liner (`if (isDebugRawActive()) { ... }`),
- *   - the dispatcher's set/restore semantics (`cli/run.ts`'s try/finally)
- *     get a typed helper that cannot leak `process.env` state on throw.
- *
- * Behavior is preserved bit-for-bit: `isDebugRawActive()` is exactly
- * `process.env["UMACTUALLY_DEBUG_RAW"] === "1"`, and `withDebugRawEnv`
- * performs the same capture/restore dance the inline code did (delete
- * the var if it was undefined before, restore the previous value if it
- * was set).
- */
-/** Env-var name. Single source of truth. */
-const DEBUG_RAW_ENV = "UMACTUALLY_DEBUG_RAW";
-/** True when debug-raw logging is enabled for the current process. */
-function isDebugRawActive() {
-    return process.env[DEBUG_RAW_ENV] === "1";
-}
-/**
- * Run `fn` with `UMACTUALLY_DEBUG_RAW` set to `"1"` when `enabled` is true.
- *
- * Set/restore semantics — behavior-preserving against the prior inline
- * pattern in `cli/run.ts`:
- *   1. Capture `process.env[DEBUG_RAW_ENV]` (may be undefined).
- *   2. If `enabled`, write `"1"`; otherwise leave env untouched.
- *   3. Run `fn()`; if it throws, the error propagates AFTER the restore.
- *   4. In `finally`: if the prior value was undefined, delete the var;
- *      otherwise restore it verbatim.
- *
- * Pass-through when `enabled` is false so callers that gate on a parsed
- * CLI flag (`withDebugRawEnv(parsed.debugRawResponse === true, fn)`)
- * don't touch `process.env` at all on the off-path.
- */
-async function withDebugRawEnv(enabled, fn) {
-    const previous = process.env[DEBUG_RAW_ENV];
-    if (enabled) {
-        process.env[DEBUG_RAW_ENV] = "1";
-    }
-    try {
-        return await fn();
-    }
-    finally {
-        if (previous === undefined) {
-            delete process.env[DEBUG_RAW_ENV];
-        }
-        else {
-            process.env[DEBUG_RAW_ENV] = previous;
-        }
-    }
-}
-
 ;// CONCATENATED MODULE: ./src/util/json-guards.ts
 /**
  * Type guard for a JSON object (excludes arrays, null, primitives).
@@ -12827,6 +13140,148 @@ function tryParseJson(text) {
     }
     catch {
         return undefined;
+    }
+}
+
+;// CONCATENATED MODULE: ./src/util/redact.ts
+
+/**
+ * Replace each literal secret in `value` with the canonical REDACTED_SECRET_TOKEN.
+ * Uses split().join() (not regex) so secrets containing regex metacharacters
+ * (.+*?()[]{}\|^$) replace literally without surprises. Empty secrets are
+ * skipped to avoid "replace every empty string" which would clobber the value.
+ * Returns `value` unchanged when `secrets` is empty (cheap fast path).
+ *
+ * Behavior contract pinned by test/unit/redact-secrets.test.ts:
+ *   - Empty secrets → returns value unchanged (identity).
+ *   - Single secret: every occurrence of the literal string is replaced.
+ *   - Multiple secrets: replaced in array order (earlier wins on overlap).
+ *   - Secrets containing regex metacharacters are treated literally.
+ *   - Empty string in secrets array is skipped (no clobber).
+ */
+function replaceSecretsLiterally(value, secrets) {
+    if (secrets.length === 0)
+        return value;
+    let out = value;
+    for (const secret of secrets) {
+        if (secret.length === 0)
+            continue;
+        out = out.split(secret).join(brand/* REDACTED_SECRET_TOKEN */.uq);
+    }
+    return out;
+}
+
+;// CONCATENATED MODULE: ./src/provider/provider-effort-error.ts
+
+
+
+const GUIDANCE = "Choose a supported effort for this provider/model or omit --effort to use the provider default.";
+function effortRejectionDetail(envelope, raw) {
+    if (json_guards_isRecord(envelope))
+        return json_guards_readStringField(envelope, "message") ?? raw;
+    if (typeof envelope === "string")
+        return envelope;
+    return raw;
+}
+function assertAnthropicEffort(effort) {
+    if (effort === "none" || effort === "minimal") {
+        throw new ProviderError("provider_error", "anthropic", null, "", `Anthropic does not accept effort '${effort}'. ${GUIDANCE}`, { providerErrorDetails: { kind: "effort-rejection", message: GUIDANCE } });
+    }
+}
+async function checkEffortRejection(response, context) {
+    if (context.reasoningEffort === undefined)
+        return;
+    let raw;
+    try {
+        raw = await response.clone().text();
+    }
+    catch (error) {
+        // The body stream was unreadable. A successful response has no
+        // rejection to mask, so a 2xx response can still short-circuit
+        // (callers rely on no-throw on success). A non-OK response might
+        // carry an effort-shaped rejection that we cannot inspect — do
+        // NOT classify it as "no rejection"; let the read failure surface
+        // so upstream callers (which catch ProviderError or the raw error)
+        // can decide. Review 5180365033 finding A.
+        if (response.ok)
+            return;
+        throw error;
+    }
+    const parsed = tryParseJson(raw);
+    const envelope = json_guards_isRecord(parsed) ? parsed["error"] : undefined;
+    if (response.ok && envelope === undefined)
+        return;
+    const detail = effortRejectionDetail(envelope, raw);
+    // Match only the wire parameter names that carry an effort value:
+    // OpenAI Responses uses `reasoning.effort`, Chat uses `reasoning_effort`,
+    // Anthropic uses `output_config.effort`. A bare `\beffort\b` also matched
+    // unrelated 4xx prose (e.g. "the effort you requested"), misclassifying
+    // non-effort failures as effort rejections.
+    if (!/reasoning\.effort|reasoning_effort|output_config\.effort/iu.test(raw))
+        return;
+    const safe = replaceSecretsLiterally(detail, context.secrets)
+        .replace(/\b(?:sk-[\w-]+|gh[pousr]_\w+)\b/gu, "[REDACTED]")
+        .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
+        .replace(/[\u0000-\u001f\u007f]+/gu, " ").trim().slice(0, 600);
+    const message = `Provider ${context.endpoint} rejected effort '${context.reasoningEffort}' (HTTP ${response.status}): ${safe} ${GUIDANCE}`;
+    throw new ProviderError("provider_error", context.endpoint, response.status, context.requestId, message, { providerErrorDetails: { kind: "effort-rejection", message } });
+}
+
+;// CONCATENATED MODULE: ./src/util/debug-raw.ts
+/**
+ * Single boundary for the `UMACTUALLY_DEBUG_RAW` env-var toggle. The literal
+ * name used to appear at 10 sites across 3 files (provider/openai-compatible.ts,
+ * render/json-extract.ts, cli/run.ts); every site asked the same question —
+ * "is debug-raw logging on?" — and every site did the env-var lookup inline.
+ *
+ * Centralizing the lookup here means:
+ *   - the env-var name is named in exactly one place (`DEBUG_RAW_ENV`),
+ *   - read sites stay a one-liner (`if (isDebugRawActive()) { ... }`),
+ *   - the dispatcher's set/restore semantics (`cli/run.ts`'s try/finally)
+ *     get a typed helper that cannot leak `process.env` state on throw.
+ *
+ * Behavior is preserved bit-for-bit: `isDebugRawActive()` is exactly
+ * `process.env["UMACTUALLY_DEBUG_RAW"] === "1"`, and `withDebugRawEnv`
+ * performs the same capture/restore dance the inline code did (delete
+ * the var if it was undefined before, restore the previous value if it
+ * was set).
+ */
+/** Env-var name. Single source of truth. */
+const DEBUG_RAW_ENV = "UMACTUALLY_DEBUG_RAW";
+/** True when debug-raw logging is enabled for the current process. */
+function isDebugRawActive() {
+    return process.env[DEBUG_RAW_ENV] === "1";
+}
+/**
+ * Run `fn` with `UMACTUALLY_DEBUG_RAW` set to `"1"` when `enabled` is true.
+ *
+ * Set/restore semantics — behavior-preserving against the prior inline
+ * pattern in `cli/run.ts`:
+ *   1. Capture `process.env[DEBUG_RAW_ENV]` (may be undefined).
+ *   2. If `enabled`, write `"1"`; otherwise leave env untouched.
+ *   3. Run `fn()`; if it throws, the error propagates AFTER the restore.
+ *   4. In `finally`: if the prior value was undefined, delete the var;
+ *      otherwise restore it verbatim.
+ *
+ * Pass-through when `enabled` is false so callers that gate on a parsed
+ * CLI flag (`withDebugRawEnv(parsed.debugRawResponse === true, fn)`)
+ * don't touch `process.env` at all on the off-path.
+ */
+async function withDebugRawEnv(enabled, fn) {
+    const previous = process.env[DEBUG_RAW_ENV];
+    if (enabled) {
+        process.env[DEBUG_RAW_ENV] = "1";
+    }
+    try {
+        return await fn();
+    }
+    finally {
+        if (previous === undefined) {
+            delete process.env[DEBUG_RAW_ENV];
+        }
+        else {
+            process.env[DEBUG_RAW_ENV] = previous;
+        }
     }
 }
 
@@ -15115,6 +15570,7 @@ function assertCopilotTokenEndpointAllowed(tokenUrl) {
 
 
 
+
 const COPILOT_EDITOR_VERSION = "vscode/1.96.0";
 const COPILOT_EDITOR_PLUGIN_VERSION = `${brand/* BRAND */.qt}/0.1.0`;
 const COPILOT_INTEGRATION_ID = "vscode-chat";
@@ -15176,6 +15632,8 @@ async function runChatCall(config, fetchImpl, requestId, session) {
             fetchImpl,
             buildHeaders: () => buildChatHeaders(session.token),
         });
+        await checkEffortRejection(response, { ...config, endpoint: ENDPOINT_CHAT, requestId,
+            secrets: [config.githubToken, session.token] });
     }
     catch (error) {
         if (error instanceof ProviderError) {
@@ -15274,8 +15732,13 @@ async function runChatCall(config, fetchImpl, requestId, session) {
             fetchImpl,
             buildHeaders: () => buildChatHeaders(session.token),
         });
+        await checkEffortRejection(retryResponse, { ...config, endpoint: ENDPOINT_CHAT, requestId,
+            secrets: [config.githubToken, session.token] });
     }
-    catch {
+    catch (error) {
+        if (error instanceof ProviderError && error.providerErrorDetails?.kind === "effort-rejection") {
+            return { ok: false, error };
+        }
         // Retry HTTP call itself failed. Hard path: surface the ORIGINAL
         // parse failure (not the retry's network error) so the parse-fail
         // path's diagnostic captures the actual root cause. Soft path: the
@@ -15393,35 +15856,8 @@ function buildTokenUrl(apiBase) {
     return `${trimmedBase}/api/copilot_internal/v2/token`;
 }
 
-;// CONCATENATED MODULE: ./src/util/redact.ts
-
-/**
- * Replace each literal secret in `value` with the canonical REDACTED_SECRET_TOKEN.
- * Uses split().join() (not regex) so secrets containing regex metacharacters
- * (.+*?()[]{}\|^$) replace literally without surprises. Empty secrets are
- * skipped to avoid "replace every empty string" which would clobber the value.
- * Returns `value` unchanged when `secrets` is empty (cheap fast path).
- *
- * Behavior contract pinned by test/unit/redact-secrets.test.ts:
- *   - Empty secrets → returns value unchanged (identity).
- *   - Single secret: every occurrence of the literal string is replaced.
- *   - Multiple secrets: replaced in array order (earlier wins on overlap).
- *   - Secrets containing regex metacharacters are treated literally.
- *   - Empty string in secrets array is skipped (no clobber).
- */
-function replaceSecretsLiterally(value, secrets) {
-    if (secrets.length === 0)
-        return value;
-    let out = value;
-    for (const secret of secrets) {
-        if (secret.length === 0)
-            continue;
-        out = out.split(secret).join(brand/* REDACTED_SECRET_TOKEN */.uq);
-    }
-    return out;
-}
-
 ;// CONCATENATED MODULE: ./src/provider/openai-compatible.ts
+
 
 
 
@@ -15571,6 +16007,8 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
         fetchImpl,
         buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
     });
+    await checkEffortRejection(response, { ...config, endpoint, requestId,
+        secrets: [config.apiKey] });
     if (!response.ok) {
         throw new ProviderError(endpoint === ENDPOINT_RESPONSES ? "responses_4xx" : "chat_4xx", endpoint, response.status, requestId, sanitizeHttpStatus(endpoint, response.status));
     }
@@ -15733,6 +16171,8 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
             fetchImpl,
             buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
         });
+        await checkEffortRejection(retryResponse, { ...config, endpoint, requestId,
+            secrets: [config.apiKey] });
         retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
             const retryRawText = await readResponseText(retryResponse, endpoint, requestId);
@@ -15751,7 +16191,9 @@ async function callEndpoint(config, fetchImpl, requestId, endpoint, baseUrl) {
             }
         }
     }
-    catch {
+    catch (error) {
+        if (error instanceof ProviderError && error.providerErrorDetails?.kind === "effort-rejection")
+            throw error;
         // Retry HTTP/parse path threw (network error, body read error,
         // etc.) — fall through to the parse-error throw below with the
         // ORIGINAL rawText. retryResponseStatus stays null in this branch.
@@ -15824,174 +16266,11 @@ function buildOpenAiCompatibleHeaders(config, requestId) {
     };
 }
 function shouldFallback(error) {
-    return error.status === 404 || error.status === 400;
-}
-
-;// CONCATENATED MODULE: ./src/config/field-resolution.ts
-
-
-
-
-
-/**
- * Resolve a config field through the canonical precedence chain: parsed > env > fallback.
- *
- * Returns the first value in the chain that is non-null, non-undefined, AND (when a
- * string) non-empty. This matches the behavior the live path hand-rolls inline at
- * multiple sites (`parsed.X ?? env["Y"] ?? DEFAULT_Z`).
- *
- * Why this exists: the config loader (`src/config/loader.ts`) has private pickX
- * helpers used only inside loadConfigFromSources. The live path cannot call those
- * directly — it builds parsed/env from different inputs (CLI argv + action inputs +
- * env) and needs the same chain. Centralizing eliminates the 7+ hand-rolled
- * `parsed.X ?? env["Y"]` occurrences scattered across cli/ that future maintainers
- * could "fix" by adding a default to one site but not the others.
- *
- * Treats the empty string as "missing" for string-typed fields. This matches the
- * CLI's existing behavior (`parseStringFromUnknown` raises on empty input, and the
- * shell typically passes empty strings for unset flags).
- *
- * @param parsedValue  CLI/inputs value (already parsed).
- * @param envValue     Env-var value (read via ENV_KEYS.X).
- * @param fallback     The schema default (from FIELDS.<x>.defaultValue or a derived constant).
- * @returns            The first non-null/non-empty value, or `fallback`.
- */
-function resolveField(parsedValue, envValue, fallback) {
-    if (parsedValue !== undefined && parsedValue !== null) {
-        if (typeof parsedValue === "string" && parsedValue.length === 0) {
-            // Empty string is treated as missing for string fields.
-        }
-        else {
-            return parsedValue;
-        }
-    }
-    if (envValue !== undefined && envValue !== null) {
-        if (typeof envValue === "string" && envValue.length === 0) {
-            // Empty string from env is treated as missing.
-        }
-        else {
-            return envValue;
-        }
-    }
-    return fallback;
-}
-function resolveFromSchema(parsed, env) {
-    const resolved = { ...parsed };
-    const fieldProvenance = {};
-    for (const field of Object.values(FIELDS)) {
-        const parsedValue = parsedValueForField(parsed, field);
-        const envValue = firstNonBlankEnv(field.env, env);
-        const raw = parsedValue ?? envValue?.value ?? field.defaultValue;
-        resolved[field.field] = coerceField(field, raw);
-        fieldProvenance[field.field] = parsedValue !== undefined
-            ? { source: "flag" }
-            : envValue !== undefined
-                ? { source: "env", envName: envValue.envName }
-                : { source: "default" };
-    }
-    resolved["minimumSeverityInternal"] = parseSeverityFromUnknown(resolved["minimumSeverity"], FIELDS.minimumSeverity.field);
-    return Object.assign({}, parsed, resolved, { fieldProvenance });
-}
-function parsedValueForField(parsed, field) {
-    if (!(field.field in parsed)) {
-        return undefined;
-    }
-    if (field.flag !== null && !wasCliFieldExplicitlySet(parsed, field.field)) {
-        return undefined;
-    }
-    const value = Reflect.get(parsed, field.field);
-    return value === null ? undefined : value;
-}
-function firstNonBlankEnv(aliases, env) {
-    for (const alias of aliases) {
-        const value = env[alias];
-        if (typeof value === "string" && value.trim().length > 0) {
-            return { envName: alias, value };
-        }
-    }
-    return undefined;
-}
-function coerceField(field, raw) {
-    switch (field.type) {
-        case "string":
-            if (typeof raw !== "string") {
-                throw new errors_InvalidConfigError(field.field, `expected string, received ${typeof raw}`);
-            }
-            return raw;
-        case "boolean":
-            return parseBooleanFromUnknown(raw, field.field);
-        case "integer":
-            return parseIntegerFromUnknown(raw, field.field);
-        case "enum":
-            return parseEnumField(field, raw);
-        default:
-            return assertNever(field.type);
-    }
-}
-function parseEnumField(field, raw) {
-    if (field.field === "platform") {
-        return parsePlatformFromUnknown(raw, field.field);
-    }
-    if (field.field === "minimumSeverity") {
-        parseSeverityFromUnknown(raw, field.field);
-    }
-    if (typeof raw !== "string") {
-        throw new errors_InvalidConfigError(field.field, `expected enum string, received ${typeof raw}`);
-    }
-    const normalized = normalizeEnumInput(raw);
-    if (!(field.enumValues ?? []).includes(normalized)) {
-        throw new errors_InvalidConfigError(field.field, `unknown enum value ${brand/* REDACTED_PLACEHOLDER */.Vj}`);
-    }
-    return normalized;
-}
-function assertNever(value) {
-    throw new errors_InvalidConfigError("field.type", `unknown field type ${String(value)}`);
+    return isRoutableFailureForUrlCandidate(error);
 }
 
 ;// CONCATENATED MODULE: ./src/provider/anthropic-messages.ts
-/**
- * Native Anthropic Messages API client.
- *
- * Implements `POST {baseUrl}/v1/messages` against Anthropic's
- * `/v1/messages` protocol — but with the path-prefix convention of the
- * official @anthropic-ai/sdk: the operator's `baseUrl` is treated as a
- * path-prefix and `/v1/messages` is appended to it (with a guard for
- * the `/v1` and `/v1/messages` already-appended cases). This is the
- * same convention Claude Code uses for `ANTHROPIC_BASE_URL` and the
- * same fix as anthropic-sdk-kotlin's
- * https://github.com/xemantic/anthropic-sdk-kotlin/pull/145.
- *
- * Path-preserving matters because Anthropic-compatible gateways
- * commonly mount the protocol under a path prefix. For example,
- * `https://gateway.example.invalid/llm/anthropic` resolves to
- * `https://gateway.example.invalid/llm/anthropic/v1/messages`. The
- * previous "always strip the path" version of this helper silently
- * returned 404 for such gateways.
- *
- * The wire shape differs from the OpenAI Chat Completions / Responses
- * API in three meaningful ways:
- *
- *  1. **Auth header**: `x-api-key: <key>` (not `Authorization: Bearer ...`)
- *     plus the required `anthropic-version: 2023-06-01` version pin.
- *  2. **Body layout**: `system` is a top-level field, NOT a system-role
- *     message inside `messages[]`. `messages[]` only carries user/assistant
- *     turns.
- *  3. **Response body**: success returns `content: [{type:"text", text:"..."}]`
- *     and `stop_reason: "end_turn" | "max_tokens" | "tool_use" | ...`;
- *     errors are nested as `{type:"error", error:{type, message}}`.
- *
- * Anthropic does NOT support OpenAI's `response_format: { type: "json_schema", ...}`
- * constraint. The strict-JSON contract is enforced entirely by the in-context
- * system prompt and the parser — same fallback the OpenAI client uses AFTER
- * its `response_format`-stripped self-healing retry. So we never send
- * `response_format` and never strip it.
- *
- * The retry / parse-fail / bumped-budget / network-retry / provider-error
- * flows are shared byte-for-byte with `openai-compatible.ts` so the
- * end-to-end behavior (recover from parse-fail, surface truncated-stream
- * diagnostic, hard-fail on router errors) is identical regardless of which
- * provider family the operator picks.
- */
+
 
 
 
@@ -16060,12 +16339,9 @@ function buildAnthropicBody(config, opts) {
     // when the operator did not pin one so the call works even in tests
     // that omit the cap.
     body["max_tokens"] = config.maxOutputTokens ?? 4096;
-    // Forward the operator's reasoning-effort hint when set. Omitted
-    // entirely (not sent as `null`) when --effort is not set, so
-    // gateways that reject unknown fields stay happy. See the field
-    // docstring for the wire-compat rationale.
+    assertAnthropicEffort(config.reasoningEffort);
     if (config.reasoningEffort !== undefined) {
-        body["reasoning_effort"] = config.reasoningEffort;
+        body["output_config"] = { effort: config.reasoningEffort };
     }
     return body;
 }
@@ -16166,6 +16442,14 @@ function readNumberField(record, key) {
 async function runAnthropicRequest(config) {
     const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
     const requestId = createRequestId();
+    try {
+        assertAnthropicEffort(config.reasoningEffort);
+    }
+    catch (error) {
+        if (error instanceof ProviderError)
+            return { ok: false, error };
+        throw error;
+    }
     // Resolve to the full Anthropic Messages URL, preserving any
     // operator-supplied path prefix. This matches the OFFICIAL
     // @anthropic-ai/sdk convention (Claude Code's `ANTHROPIC_BASE_URL`
@@ -16215,6 +16499,7 @@ async function runOnce(config, fetchImpl, requestId, url) {
             fetchImpl,
             buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
         });
+        await checkEffortRejection(response, { ...config, endpoint: ENDPOINT, requestId, secrets: [config.apiKey] });
     }
     catch (error) {
         if (error instanceof ProviderError) {
@@ -16343,6 +16628,7 @@ async function runOnce(config, fetchImpl, requestId, url) {
             fetchImpl,
             buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
         });
+        await checkEffortRejection(retryResponse, { ...config, endpoint: ENDPOINT, requestId, secrets: [config.apiKey] });
         retryResponseStatus = retryResponse.status;
         if (retryResponse.ok) {
             const retryRawText = await readResponseText(retryResponse, ENDPOINT, requestId);
@@ -16353,7 +16639,10 @@ async function runOnce(config, fetchImpl, requestId, url) {
             }
         }
     }
-    catch {
+    catch (error) {
+        if (error instanceof ProviderError && error.providerErrorDetails?.kind === "effort-rejection") {
+            return { ok: false, error };
+        }
         // Retry path threw — fall through to the original-rawText parse-fail
         // throw below. retryResponseStatus stays null in this branch.
     }
@@ -16488,6 +16777,329 @@ function redactLineSecrets(line) {
         redactedLine = redactedLine.replace(pattern, brand/* REDACTED_SECRET_TOKEN */.uq);
     }
     return redactedLine;
+}
+
+;// CONCATENATED MODULE: ./src/platform/detect.ts
+
+class PlatformDetectionError extends Error {
+    name = "PlatformDetectionError";
+    code = "PLATFORM_UNKNOWN";
+    constructor() {
+        super("Unable to detect a supported CI platform from the process environment.");
+    }
+}
+const GITHUB_ACTIONS_KEY = ENV_KEYS.GITHUB_ACTIONS;
+const AZURE_TF_BUILD_KEY = ENV_KEYS.TF_BUILD;
+/**
+ * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
+ * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
+ * but possible in nested CI) routes to GitHub. The order is part of the
+ * contract — swapping the two arms would silently change behaviour for
+ * anyone running the action in a cross-platform test harness.
+ */
+function detectPlatform(env) {
+    if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
+        return "github";
+    }
+    if (isTruthy(env[AZURE_TF_BUILD_KEY])) {
+        return "azure-devops";
+    }
+    throw new PlatformDetectionError();
+}
+/**
+ * Recognise CI-platform "marker present" values.
+ *
+ * Azure Pipelines emits `TF_BUILD=True` (capital T) — the canonical
+ * runner value. The helper also accepts `"true"` (lowercase) so local
+ * mocked pipelines and `pipeline-init.sh` shell scripts that
+ * `export TF_BUILD=true` continue to work, and `"TRUE"` (all uppercase)
+ * so a PowerShell `Set-Item env:TF_BUILD=TRUE` mistake does not
+ * silently land in `PLATFORM_UNKNOWN` for the operator. Everything else
+ * (including `"1"`, `"yes"`, whitespace-padded) is intentionally
+ * rejected: the goal is to recognise the three real-world casings, not
+ * to be a general truthy-string helper.
+ */
+function isTruthy(value) {
+    return value === "true" || value === "True" || value === "TRUE";
+}
+
+;// CONCATENATED MODULE: ./src/cli/validate.ts
+
+
+
+/** Provider credentials never fall back to the platform posting token. */
+function resolveProviderCredential(parsed, env) {
+    switch (parsed.provider ?? env["UMACTUALLY_PROVIDER"] ?? "openai-compatible") {
+        case "copilot": {
+            const token = [parsed.githubToken, env["GITHUB_TOKEN"], env["GH_TOKEN"]]
+                .find((value) => value !== undefined && value.trim().length > 0);
+            if (token === undefined) {
+                throw new RequiredConfigError("LIVE_CONFIG_MISSING", "GITHUB_TOKEN must be set for Copilot live review.", "Pass --github-token <token> or set GITHUB_TOKEN / GH_TOKEN to a GitHub token with Copilot access.");
+            }
+            return token;
+        }
+        default:
+            return requireLiveConfig(resolveField(parsed.apiKey, env["UMACTUALLY_API_KEY"], ""), "UMACTUALLY_API_KEY");
+    }
+}
+function resolvePlatform(platform, env = process.env) {
+    switch (platform) {
+        case "github":
+            return "github";
+        case "azure":
+            return "azure";
+        case "auto":
+            // Route through the canonical detector so auto-resolution and
+            // detection share one truth-table (catches TF_BUILD=True AND
+            // GITHUB_ACTIONS=true, with GitHub precedence). Narrow catch:
+            // any non-PlatformDetectionError is an internal invariant
+            // failure that must surface — matching the orchestrator.ts and
+            // index.ts symmetric narrow-catch pattern.
+            //
+            // Fallback to "github" (not "null" like orchestrator.ts, not
+            // "fall through" like index.ts) is intentional: the validator
+            // must return a concrete ResolvedPlatform so subsequent error
+            // messages can name it, whereas orchestrator needs `null` to
+            // surface "Live review requires GitHub Actions (...)" and
+            // index.ts has no Azure path on the bare-entry side. Unifying
+            // these three contracts would break the validator.
+            try {
+                const detected = detectPlatform(env);
+                return detected === "azure-devops" ? "azure" : "github";
+            }
+            catch (error) {
+                if (error instanceof PlatformDetectionError) {
+                    return "github";
+                }
+                throw error;
+            }
+        default:
+            return validate_assertNever(platform);
+    }
+}
+/**
+ * Did the operator ask the CLI to actually post? Posting identity must
+ * be present iff true.
+ *
+ * Posting intent is signaled by `--review`: that's the only artifact path
+ * the operator must explicitly opt into. ADO requires it for thread
+ * posting; GH Actions derives it from `$GITHUB_EVENT_PATH` automatically,
+ * which the wrapper runtime fills in (`src/index.ts:resolveGithubEventPath`)
+ * before the CLI parser runs. Operator-supplied --dry-run is a hard kill
+ * switch — even with --review, dry-run never posts.
+ */
+function isPostingRequested(parsed) {
+    if (parsed.dryRun) {
+        return false;
+    }
+    return parsed.reviewPath !== null;
+}
+/**
+ * Errors that ALWAYS apply regardless of whether the run is posting.
+ * These are invariants the operator must satisfy in every mode.
+ *
+ * Returns {@link ValidationError} objects so the runner can render the
+ * `message` (legacy contract) AND the structured `hint` so the operator
+ * knows exactly what to set. The `message` field on each entry is the
+ * byte-identical legacy string the old flat-join consumer printed, so
+ * grep-friendly CI logs and any test that does `.includes("--api-url")`
+ * keep working.
+ */
+function collectAlwaysValidationErrors(parsed) {
+    const errors = [];
+    if (parsed.includeSonarqube) {
+        if (parsed.sonarHostUrl === null) {
+            errors.push({
+                flag: "--sonar-host-url",
+                message: "--sonar-host-url is required when --include-sonarqube is set",
+                hint: "Pass `--sonar-host-url <url>` (e.g. `https://sonar.example.com`) or `UMACTUALLY_SONAR_HOST_URL=<url>`.",
+            });
+        }
+        if (parsed.sonarToken === null) {
+            errors.push({
+                flag: "--sonar-token",
+                message: "--sonar-token is required when --include-sonarqube is set",
+                hint: "Pass `--sonar-token <token>` or `UMACTUALLY_SONAR_TOKEN=<token>` (use a CI secret, never source).",
+            });
+        }
+        if (parsed.sonarProjectKey === null) {
+            errors.push({
+                flag: "--sonar-project-key",
+                message: "--sonar-project-key is required when --include-sonarqube is set",
+                hint: "Pass `--sonar-project-key <key>` (e.g. `myorg_myrepo`) or `UMACTUALLY_SONAR_PROJECT_KEY=<key>`.",
+            });
+        }
+    }
+    // Provider config is required in live mode (the CLI talks to a
+    // provider when it runs for real). --dry-run skips the provider call
+    // entirely, so api-url/api-key are optional there. Copilot + Anthropic-
+    // native providers don't need --api-url (Copilot → GitHub Copilot
+    // token exchange; Anthropic → api.anthropic.com default).
+    if (!parsed.dryRun) {
+        if ((parsed.apiUrl === null || parsed.apiUrl.length === 0) &&
+            parsed.provider !== "copilot" &&
+            parsed.provider !== "anthropic") {
+            errors.push({
+                flag: "--api-url",
+                message: "--api-url is required",
+                hint: "Pass --api-url <url> or UMACTUALLY_API_URL=<url>, or use --dry-run to skip the provider call.",
+            });
+        }
+        if (parsed.provider === "copilot" && !parsed.githubToken?.trim()) {
+            errors.push({ flag: "--github-token", message: "--github-token is required for Copilot", hint: "Pass --github-token <token> or set GITHUB_TOKEN / GH_TOKEN to a GitHub token with Copilot access." });
+        }
+        if (parsed.provider !== "copilot" && (parsed.apiKey === null || parsed.apiKey.length === 0)) {
+            errors.push({
+                flag: "--api-key",
+                message: "--api-key is required",
+                hint: "Pass --api-key <key> or UMACTUALLY_API_KEY=<key> (use a CI secret, never source), or use --dry-run to skip the provider call.",
+            });
+        }
+    }
+    return errors;
+}
+/**
+ * Errors that apply ONLY when posting is requested.
+ *
+ * Posting-target identity (--event, --diff, --pr-number, --repo) is
+ * genuinely required to post somewhere. If the operator did not request
+ * posting (dry-run, or no --review), these errors do NOT apply —
+ * because the CLI never reaches the posting step.
+ *
+ * ADO additionally requires prNumber + repo because the PR-event shape
+ * demands them; GitHub Actions can derive these from GITHUB_EVENT_PATH.
+ *
+ * Returns {@link ValidationError} objects with hints so the runner can
+ * render remediation text alongside the failure (see
+ * `renderValidationErrors` in cli.ts).
+ */
+function collectPostingValidationErrors(parsed) {
+    if (!isPostingRequested(parsed)) {
+        return [];
+    }
+    // Local-files mode never posts; the api-credential checks still fire
+    // from collectAlwaysValidationErrors (constraint C-2).
+    if (parsed.files !== null) {
+        return [];
+    }
+    const errors = [];
+    const resolved = resolvePlatform(parsed.platform);
+    // Event + diff are posting-side inputs for BOTH GitHub and Azure flows:
+    // they're read by buildGithubDryRunArtifact / buildAzureDryRunArtifact /
+    // the dispatcher's runLiveReview path.
+    if (parsed.eventPath === null) {
+        errors.push({
+            flag: "--event",
+            message: "--review requires --event",
+            hint: "Pass `--event <path>` (GitHub `event.json` or Azure equivalent).",
+        });
+    }
+    if (parsed.diffPath === null) {
+        errors.push({
+            flag: "--diff",
+            message: "--review requires --diff",
+            hint: "Pass `--diff <path>` (unified PR diff). See `umactually --help`.",
+        });
+    }
+    if (resolved === "azure") {
+        if (parsed.prNumber === null) {
+            errors.push({
+                flag: "--pr-number",
+                message: "--review requires --pr-number for --platform azure",
+                hint: "Pass `--pr-number <N>` (positive integer).",
+            });
+        }
+        if (parsed.repo === null) {
+            errors.push({
+                flag: "--repo",
+                message: "--review requires --repo for --platform azure",
+                hint: "Pass `--repo <org>/<project>/<repository>` or set `SYSTEM_TEAMPROJECT` + `BUILD_REPOSITORY_NAME`.",
+            });
+        }
+    }
+    return errors;
+}
+/**
+ * Errors that apply ONLY when --files is supplied AND one of the
+ * pre-rendered-diff-path flags is also supplied. --files is the
+ * local-files review mode; combining it with --diff/--event/--review
+ * would create two contradictory input pipelines in the same run.
+ * Per-flag messages so each conflicting combination is named directly.
+ */
+function collectLocalFilesExclusionErrors(parsed) {
+    if (parsed.files === null) {
+        return [];
+    }
+    const errors = [];
+    if (parsed.diffPath !== null) {
+        errors.push({
+            flag: "--files",
+            message: "--files cannot be combined with --diff",
+            hint: "Pass --files alone for local-files review, or pass --diff (and --event) without --files for the pre-rendered-diff path.",
+        });
+    }
+    if (parsed.eventPath !== null) {
+        errors.push({
+            flag: "--files",
+            message: "--files cannot be combined with --event",
+            hint: "Pass --files alone for local-files review, or pass --event (and --diff) without --files for the pre-rendered-diff path.",
+        });
+    }
+    if (parsed.reviewPath !== null) {
+        errors.push({
+            flag: "--files",
+            message: "--files cannot be combined with --review",
+            hint: "Pass --files alone for local-files review, or pass --review (and --event, --diff) without --files for the pre-rendered-diff path.",
+        });
+    }
+    return errors;
+}
+/**
+ * Defensive check for a literal `,` inside a single --files entry.
+ * The parser splits on `,` with no escape mechanism, so a path that
+ * contains a comma inside one logical entry can only land in this
+ * validator if the user's input preserves the comma through some
+ * wrapping (e.g. shell-quoted). If any trimmed split element still
+ * contains a `,`, the user's input is ambiguous and we surface one
+ * error.
+ */
+function collectLocalFilesCommaErrors(parsed) {
+    if (parsed.files === null) {
+        return [];
+    }
+    const offending = parsed.files.split(",").map((p) => p.trim()).find((p) => p.includes(","));
+    if (offending === undefined) {
+        return [];
+    }
+    return [{
+            flag: "--files",
+            message: `--files does not accept paths containing commas (got '${offending}')`,
+            hint: "Use a different separator; pass each path on a separate --files invocation if needed.",
+        }];
+}
+/**
+ * Composed validator. Always-errors ALWAYS apply; posting-errors apply
+ * only when posting is requested; local-files exclusion errors apply
+ * only when --files is supplied. Local-files comma errors apply only
+ * when --files is supplied and a single entry still contains a `,`
+ * after splitting (defensive check). Backwards-compatible at the level
+ * of the `message` field (each entry carries the legacy flat string),
+ * and forwards-compatible via `flag`+`hint` so structured renderers can
+ * surface remediation.
+ *
+ * Returns {@link ValidationError} records; legacy flat-string callers
+ * can map `errors.map((e) => e.message)` to recover the old shape.
+ */
+function collectValidationErrors(parsed) {
+    return [
+        ...collectAlwaysValidationErrors(parsed),
+        ...collectPostingValidationErrors(parsed),
+        ...collectLocalFilesExclusionErrors(parsed),
+        ...collectLocalFilesCommaErrors(parsed),
+    ];
+}
+function validate_assertNever(value) {
+    throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
 }
 
 ;// CONCATENATED MODULE: ./src/diff/parse-positions.ts
@@ -19323,19 +19935,24 @@ function selectPostableCommentsWithPositions(input) {
         if (comments.length >= maxComments) {
             break;
         }
-        // Position validation is bypassed for `category: "sonar"`
-        // findings. SonarCloud's reported line numbers are authoritative
-        // for the source FILE (not the diff context), so a finding on a
-        // line that the diff doesn't touch is still a valid inline-comment
-        // anchor — GitHub's API accepts any positive line number within
-        // the file. Without the bypass, `positions.hasPosition` would
-        // drop every SonarCloud finding whose flagged line is outside the
-        // changed region, leaving the bot's review body saying
-        // "0 inline findings — ship it" while SonarCloud MAJOR/CRITICAL
-        // findings sit ignored in the same PR. See the merge block in
-        // live-github.ts for the inline-finding pipeline.
-        const isSonarFinding = comment.category === "sonar";
-        if (!isSonarFinding && !input.positions.hasPosition(comment)) {
+        // Position validation applies to EVERY comment, including
+        // `category: "sonar"` findings. GitHub's create-review REST
+        // endpoint requires each inline comment's path+line to sit inside
+        // a diff hunk of the given commit — an off-hunk anchor makes the
+        // whole POST fail atomically with 422 (PR #246: SonarCloud S3776
+        // findings anchored function-declaration lines outside the hunks
+        // and nuked the review). SonarCloud's line numbers are authoritative
+        // for the source FILE, not the diff, so they are NOT valid inline
+        // anchors by themselves. Off-diff SonarCloud findings are not lost:
+        // `preparePostedReview` calls `selectOffDiffCommentsWithPositions`
+        // and sums the returned length into its `suppressedCommentCount`
+        // (returned on `PreparedPostedReview`), which `buildReviewBody`
+        // renders as the manifest's `suppressedCount`; `runGithubLive` also
+        // annotates the dropped count. A former bypass that
+        // let sonar findings skip this gate was removed — its premise
+        // ("GitHub accepts any positive line number within the file") is
+        // false for the reviews endpoint.
+        if (!input.positions.hasPosition(comment)) {
             continue;
         }
         if (!passesSeverityPolicy(comment, input.parsed)) {
@@ -22435,6 +23052,7 @@ function bodyContainsAnyHunkLine(body, hunkContent) {
 
 
 
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const PROVIDER_NAME = "openai-compatible";
 const COPILOT_PROVIDER_NAME = "github-copilot";
@@ -22460,7 +23078,7 @@ async function requestLiveReview(input) {
         diffText: input.diffText,
         expectedArtifact: "artifacts/manual/s5-redaction-report.json",
     });
-    const providerApiKey = requireLiveConfig(resolveField(input.parsed.apiKey, input.env[ENV_KEYS.UMACTUALLY_API_KEY], ""), ENV_KEYS.UMACTUALLY_API_KEY);
+    const providerApiKey = resolveProviderCredential(input.parsed, input.env);
     const providerUrl = resolveProviderUrl(input.parsed, input.env);
     const modelId = await resolveRequestModel({
         configuredModel: input.parsed.model,
@@ -23220,7 +23838,8 @@ async function runStandalone(input) {
     }
     const artifactPath = (0,external_node_path_.resolve)(input.cwd, input.overrideArtifactPath ?? "./umactually-review.json");
     const diffText = await (0,promises_.readFile)(input.parsed.diffPath, "utf8");
-    const providerApiKey = input.parsed.apiKey ?? "";
+    const providerSecrets = [input.parsed.apiKey, input.env["UMACTUALLY_API_KEY"], input.parsed.githubToken, input.env["GITHUB_TOKEN"], input.env["GH_TOKEN"]]
+        .filter((value) => typeof value === "string" && value.length > 0);
     if (diffText.length === 0) {
         const note = "No diff content was found; provider review was skipped.";
         const body = {
@@ -23274,7 +23893,7 @@ async function runStandalone(input) {
             kind: "provider-error",
             exitCode: 1,
             message,
-            sanitizedForLog: sanitizeForPost(message, [providerApiKey]),
+            sanitizedForLog: sanitizeForPost(message, providerSecrets),
             ...(hint !== undefined ? { hint } : {}),
         };
     }
@@ -23308,6 +23927,7 @@ async function runStandalone(input) {
 }
 
 ;// CONCATENATED MODULE: ./src/cli/tui/flows/review.ts
+
 
 
 
@@ -23444,9 +24064,24 @@ async function runWizardPrompts(savedConfig) {
     });
     if (dist_isCancel(modelAnswer))
         return { cancel: true };
-    const model = modelAnswer;
+    const model = modelAnswer.length > 0 ? modelAnswer : (savedConfig?.model ?? null);
+    const rawEffort = process.env["UMACTUALLY_EFFORT"];
+    if (typeof rawEffort === "string" && rawEffort.trim().length > 0 && (0,config_effort/* parseEffort */.k)(rawEffort) === undefined) {
+        throw new Error("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
+    }
+    const effort = (0,config_effort/* parseEffort */.k)(rawEffort) ?? savedConfig?.effort ?? null;
     let apiKeyLocal = null;
-    if (process.env["UMACTUALLY_API_KEY"] === undefined) {
+    let githubTokenLocal = null;
+    if (provider === "copilot") {
+        const token = process.env["GITHUB_TOKEN"] ?? process.env["GH_TOKEN"];
+        if (token === undefined) {
+            const answer = await dist_password({ message: "GitHub token", mask: "*" });
+            if (dist_isCancel(answer))
+                return { cancel: true };
+            githubTokenLocal = answer;
+        }
+    }
+    else if (process.env["UMACTUALLY_API_KEY"] === undefined) {
         const answer = await dist_password({ message: "API key", mask: "*" });
         if (dist_isCancel(answer))
             return { cancel: true };
@@ -23467,7 +24102,9 @@ async function runWizardPrompts(savedConfig) {
         provider: provider,
         apiUrl,
         model: model,
+        effort: effort ?? null,
         apiKeyLocal,
+        githubTokenLocal,
         source: diffSource,
         diffPath,
         diffText,
@@ -23484,12 +24121,13 @@ async function runWizardPrompts(savedConfig) {
  * Returns a small `RunOutcome` so the outer loop can keep its
  * `retry` flag out of the helper's scope.
  */
-async function runAndHandle(parsed, diffText, apiKeyLocal) {
+async function runAndHandle(parsed, diffText, apiKeyLocal, githubTokenLocal) {
     // Build the env so the freshly captured key reaches the provider
     // even when the operator typed it into the wizard.
     const env = {
         ...process.env,
         ...(apiKeyLocal !== null && { UMACTUALLY_API_KEY: apiKeyLocal }),
+        ...(githubTokenLocal !== null && { GITHUB_TOKEN: githubTokenLocal }),
     };
     const result = await runStandalone({ parsed, cwd: process.cwd(), env });
     if (result.kind === "ok" || result.kind === "ok-no-diff") {
@@ -23542,11 +24180,13 @@ async function runWizardLoopIteration() {
             provider: prompt.provider,
             apiUrl: prompt.apiUrl,
             model: prompt.model,
+            effort: prompt.effort,
             apiKey: apiKeyLocal,
+            ...(prompt.githubTokenLocal !== null ? { githubToken: prompt.githubTokenLocal } : {}),
             diffPath: prompt.diffPath,
             files: prompt.source === "files" ? "." : null,
         };
-        const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal);
+        const outcome = await runAndHandle(parsed, prompt.diffText, apiKeyLocal, prompt.githubTokenLocal);
         if (outcome.exit)
             return { exit: true };
         return { exit: false, retry: outcome.retry };
@@ -23802,6 +24442,9 @@ function emitJsonEnvelope(envelope, out = process.stdout) {
 
 
 
+
+
+
 const GLOBAL_ONLY_FLAGS = new Set(["--json", "--no-color"]);
 const dispatch_execFile = (0,external_node_util_namespaceObject.promisify)(external_node_child_process_.execFile);
 function firstPositionalToken(argv) {
@@ -23841,7 +24484,7 @@ async function dispatch(argv) {
     // `firstPositionalToken(argv)` short-circuits on the flag presence
     // before any command routing.
     if (argv.includes("--show-config")) {
-        return runShowConfig(process.cwd());
+        return runShowConfig(process.cwd(), argv);
     }
     const command = firstPositionalToken(argv);
     if (command === null) {
@@ -24107,12 +24750,61 @@ function renderPolicySection(policyResult) {
     }
     return lines;
 }
-function renderShowConfig(config, path, policyResult) {
-    const savedLines = renderSavedConfigSection(config, path);
-    const policyLines = renderPolicySection(policyResult);
-    return [...savedLines, "", ...policyLines].join("\n") + "\n";
+/**
+ * Render a single provenance label. `resolveFromSchema` records the
+ * env-var NAME alongside an `env` source (e.g. `UMACTUALLY_EFFORT`), so
+ * the operator can see WHICH variable supplied the value — otherwise a
+ * bare `source: env` is ambiguous when a field has multiple aliases
+ * (`githubToken` reads `GITHUB_TOKEN` then `GH_TOKEN`). `savedConfig`
+ * carries no name because the `saved config:` header already names the
+ * file path.
+ */
+function formatFieldProvenance(provenance) {
+    const source = provenance?.source ?? "default";
+    if (source === "env" && provenance?.envName !== undefined) {
+        return `source: env (${provenance.envName})`;
+    }
+    return `source: ${source}`;
 }
-function runShowConfig(cwd) {
+/**
+ * Render one field of the effective view: the resolved value plus the
+ * precedence layer it came from. `emptyLabel` is the human label used
+ * when the resolved value is `""` / `null` / `undefined` (e.g. `unset`
+ * for an optional URL, `auto (resolved at review time)` for a model id
+ * the runtime picks later) — mirrors `renderSavedConfigSection` so the
+ * two sections stay visually consistent.
+ */
+function renderEffectiveField(lines, label, value, provenance, emptyLabel) {
+    const rendered = value === undefined || value === null || value === "" ? emptyLabel : String(value);
+    const paddedLabel = `${label}:`.padEnd(9);
+    lines.push(`  ${paddedLabel} ${rendered} (${formatFieldProvenance(provenance)})`);
+}
+/**
+ * The effective view of the resolved config: same user-facing fields the
+ * on-disk section shows, but after the full precedence chain
+ * (`flag > env > saved config > default`) has run. Deriving it from
+ * `resolved` (not `savedRead.config`) is what keeps the two sections
+ * from contradicting each other: `saved config:` is the on-disk file,
+ * `effective config:` is what the runtime would actually use. Secret
+ * fields (`apiKey`, tokens) are never in this list — same field-by-field
+ * S6 contract as `renderSavedConfigSection`.
+ */
+function renderEffectiveConfigSection(resolved) {
+    const provenance = resolved.fieldProvenance;
+    const lines = ["effective config (precedence: flag > env > saved config > default):"];
+    renderEffectiveField(lines, "provider", resolved.provider, provenance["provider"], "unset");
+    renderEffectiveField(lines, "apiUrl", resolved.apiUrl, provenance["apiUrl"], "unset");
+    renderEffectiveField(lines, "model", resolved.model, provenance["model"], "auto (resolved at review time)");
+    renderEffectiveField(lines, "effort", resolved.effort, provenance["effort"], "unset");
+    return lines;
+}
+function renderShowConfig(config, path, policyResult, resolved) {
+    const savedLines = renderSavedConfigSection(config, path);
+    const effectiveLines = renderEffectiveConfigSection(resolved);
+    const policyLines = renderPolicySection(policyResult);
+    return [...savedLines, "", ...effectiveLines, "", ...policyLines].join("\n") + "\n";
+}
+function runShowConfig(cwd, argv) {
     const savedRead = tryReadSavedConfig({ cwd });
     const policyResult = loadReviewPolicy({ cwd });
     if (savedRead.warning !== null) {
@@ -24123,7 +24815,11 @@ function runShowConfig(cwd) {
         process.stderr.write(`umactually: ${policyResult.warning}\n`);
         return Promise.resolve({ exitCode: 1 });
     }
-    process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult));
+    const args = argv.filter((arg) => arg !== "--show-config" && arg !== "--json" && arg !== "--no-color");
+    const command = firstPositionalToken(args);
+    const parsed = parseCliArgs(command === null ? args : stripLeadingCommand(args, command));
+    const { resolved } = applySavedConfig(resolveFromSchema(parsed, process.env), savedRead.config, savedRead.path);
+    process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult, resolved));
     return Promise.resolve({ exitCode: 0 });
 }
 async function runReviewBranch(args) {
@@ -25670,309 +26366,6 @@ function readEnvSources(env = process.env) {
         }
     }
     return out;
-}
-
-;// CONCATENATED MODULE: ./src/platform/detect.ts
-
-class PlatformDetectionError extends Error {
-    name = "PlatformDetectionError";
-    code = "PLATFORM_UNKNOWN";
-    constructor() {
-        super("Unable to detect a supported CI platform from the process environment.");
-    }
-}
-const GITHUB_ACTIONS_KEY = ENV_KEYS.GITHUB_ACTIONS;
-const AZURE_TF_BUILD_KEY = ENV_KEYS.TF_BUILD;
-/**
- * GitHub precedence: GITHUB_ACTIONS is checked first, so a process that
- * somehow exposes both `GITHUB_ACTIONS=true` and `TF_BUILD=True` (rare,
- * but possible in nested CI) routes to GitHub. The order is part of the
- * contract — swapping the two arms would silently change behaviour for
- * anyone running the action in a cross-platform test harness.
- */
-function detectPlatform(env) {
-    if (isTruthy(env[GITHUB_ACTIONS_KEY])) {
-        return "github";
-    }
-    if (isTruthy(env[AZURE_TF_BUILD_KEY])) {
-        return "azure-devops";
-    }
-    throw new PlatformDetectionError();
-}
-/**
- * Recognise CI-platform "marker present" values.
- *
- * Azure Pipelines emits `TF_BUILD=True` (capital T) — the canonical
- * runner value. The helper also accepts `"true"` (lowercase) so local
- * mocked pipelines and `pipeline-init.sh` shell scripts that
- * `export TF_BUILD=true` continue to work, and `"TRUE"` (all uppercase)
- * so a PowerShell `Set-Item env:TF_BUILD=TRUE` mistake does not
- * silently land in `PLATFORM_UNKNOWN` for the operator. Everything else
- * (including `"1"`, `"yes"`, whitespace-padded) is intentionally
- * rejected: the goal is to recognise the three real-world casings, not
- * to be a general truthy-string helper.
- */
-function isTruthy(value) {
-    return value === "true" || value === "True" || value === "TRUE";
-}
-
-;// CONCATENATED MODULE: ./src/cli/validate.ts
-
-function resolvePlatform(platform, env = process.env) {
-    switch (platform) {
-        case "github":
-            return "github";
-        case "azure":
-            return "azure";
-        case "auto":
-            // Route through the canonical detector so auto-resolution and
-            // detection share one truth-table (catches TF_BUILD=True AND
-            // GITHUB_ACTIONS=true, with GitHub precedence). Narrow catch:
-            // any non-PlatformDetectionError is an internal invariant
-            // failure that must surface — matching the orchestrator.ts and
-            // index.ts symmetric narrow-catch pattern.
-            //
-            // Fallback to "github" (not "null" like orchestrator.ts, not
-            // "fall through" like index.ts) is intentional: the validator
-            // must return a concrete ResolvedPlatform so subsequent error
-            // messages can name it, whereas orchestrator needs `null` to
-            // surface "Live review requires GitHub Actions (...)" and
-            // index.ts has no Azure path on the bare-entry side. Unifying
-            // these three contracts would break the validator.
-            try {
-                const detected = detectPlatform(env);
-                return detected === "azure-devops" ? "azure" : "github";
-            }
-            catch (error) {
-                if (error instanceof PlatformDetectionError) {
-                    return "github";
-                }
-                throw error;
-            }
-        default:
-            return validate_assertNever(platform);
-    }
-}
-/**
- * Did the operator ask the CLI to actually post? Posting identity must
- * be present iff true.
- *
- * Posting intent is signaled by `--review`: that's the only artifact path
- * the operator must explicitly opt into. ADO requires it for thread
- * posting; GH Actions derives it from `$GITHUB_EVENT_PATH` automatically,
- * which the wrapper runtime fills in (`src/index.ts:resolveGithubEventPath`)
- * before the CLI parser runs. Operator-supplied --dry-run is a hard kill
- * switch — even with --review, dry-run never posts.
- */
-function isPostingRequested(parsed) {
-    if (parsed.dryRun) {
-        return false;
-    }
-    return parsed.reviewPath !== null;
-}
-/**
- * Errors that ALWAYS apply regardless of whether the run is posting.
- * These are invariants the operator must satisfy in every mode.
- *
- * Returns {@link ValidationError} objects so the runner can render the
- * `message` (legacy contract) AND the structured `hint` so the operator
- * knows exactly what to set. The `message` field on each entry is the
- * byte-identical legacy string the old flat-join consumer printed, so
- * grep-friendly CI logs and any test that does `.includes("--api-url")`
- * keep working.
- */
-function collectAlwaysValidationErrors(parsed) {
-    const errors = [];
-    if (parsed.includeSonarqube) {
-        if (parsed.sonarHostUrl === null) {
-            errors.push({
-                flag: "--sonar-host-url",
-                message: "--sonar-host-url is required when --include-sonarqube is set",
-                hint: "Pass `--sonar-host-url <url>` (e.g. `https://sonar.example.com`) or `UMACTUALLY_SONAR_HOST_URL=<url>`.",
-            });
-        }
-        if (parsed.sonarToken === null) {
-            errors.push({
-                flag: "--sonar-token",
-                message: "--sonar-token is required when --include-sonarqube is set",
-                hint: "Pass `--sonar-token <token>` or `UMACTUALLY_SONAR_TOKEN=<token>` (use a CI secret, never source).",
-            });
-        }
-        if (parsed.sonarProjectKey === null) {
-            errors.push({
-                flag: "--sonar-project-key",
-                message: "--sonar-project-key is required when --include-sonarqube is set",
-                hint: "Pass `--sonar-project-key <key>` (e.g. `myorg_myrepo`) or `UMACTUALLY_SONAR_PROJECT_KEY=<key>`.",
-            });
-        }
-    }
-    // Provider config is required in live mode (the CLI talks to a
-    // provider when it runs for real). --dry-run skips the provider call
-    // entirely, so api-url/api-key are optional there. Copilot + Anthropic-
-    // native providers don't need --api-url (Copilot → GitHub Copilot
-    // token exchange; Anthropic → api.anthropic.com default).
-    if (!parsed.dryRun) {
-        if ((parsed.apiUrl === null || parsed.apiUrl.length === 0) &&
-            parsed.provider !== "copilot" &&
-            parsed.provider !== "anthropic") {
-            errors.push({
-                flag: "--api-url",
-                message: "--api-url is required",
-                hint: "Pass --api-url <url> or UMACTUALLY_API_URL=<url>, or use --dry-run to skip the provider call.",
-            });
-        }
-        if (parsed.apiKey === null || parsed.apiKey.length === 0) {
-            errors.push({
-                flag: "--api-key",
-                message: "--api-key is required",
-                hint: "Pass --api-key <key> or UMACTUALLY_API_KEY=<key> (use a CI secret, never source), or use --dry-run to skip the provider call.",
-            });
-        }
-    }
-    return errors;
-}
-/**
- * Errors that apply ONLY when posting is requested.
- *
- * Posting-target identity (--event, --diff, --pr-number, --repo) is
- * genuinely required to post somewhere. If the operator did not request
- * posting (dry-run, or no --review), these errors do NOT apply —
- * because the CLI never reaches the posting step.
- *
- * ADO additionally requires prNumber + repo because the PR-event shape
- * demands them; GitHub Actions can derive these from GITHUB_EVENT_PATH.
- *
- * Returns {@link ValidationError} objects with hints so the runner can
- * render remediation text alongside the failure (see
- * `renderValidationErrors` in cli.ts).
- */
-function collectPostingValidationErrors(parsed) {
-    if (!isPostingRequested(parsed)) {
-        return [];
-    }
-    // Local-files mode never posts; the api-credential checks still fire
-    // from collectAlwaysValidationErrors (constraint C-2).
-    if (parsed.files !== null) {
-        return [];
-    }
-    const errors = [];
-    const resolved = resolvePlatform(parsed.platform);
-    // Event + diff are posting-side inputs for BOTH GitHub and Azure flows:
-    // they're read by buildGithubDryRunArtifact / buildAzureDryRunArtifact /
-    // the dispatcher's runLiveReview path.
-    if (parsed.eventPath === null) {
-        errors.push({
-            flag: "--event",
-            message: "--review requires --event",
-            hint: "Pass `--event <path>` (GitHub `event.json` or Azure equivalent).",
-        });
-    }
-    if (parsed.diffPath === null) {
-        errors.push({
-            flag: "--diff",
-            message: "--review requires --diff",
-            hint: "Pass `--diff <path>` (unified PR diff). See `umactually --help`.",
-        });
-    }
-    if (resolved === "azure") {
-        if (parsed.prNumber === null) {
-            errors.push({
-                flag: "--pr-number",
-                message: "--review requires --pr-number for --platform azure",
-                hint: "Pass `--pr-number <N>` (positive integer).",
-            });
-        }
-        if (parsed.repo === null) {
-            errors.push({
-                flag: "--repo",
-                message: "--review requires --repo for --platform azure",
-                hint: "Pass `--repo <org>/<project>/<repository>` or set `SYSTEM_TEAMPROJECT` + `BUILD_REPOSITORY_NAME`.",
-            });
-        }
-    }
-    return errors;
-}
-/**
- * Errors that apply ONLY when --files is supplied AND one of the
- * pre-rendered-diff-path flags is also supplied. --files is the
- * local-files review mode; combining it with --diff/--event/--review
- * would create two contradictory input pipelines in the same run.
- * Per-flag messages so each conflicting combination is named directly.
- */
-function collectLocalFilesExclusionErrors(parsed) {
-    if (parsed.files === null) {
-        return [];
-    }
-    const errors = [];
-    if (parsed.diffPath !== null) {
-        errors.push({
-            flag: "--files",
-            message: "--files cannot be combined with --diff",
-            hint: "Pass --files alone for local-files review, or pass --diff (and --event) without --files for the pre-rendered-diff path.",
-        });
-    }
-    if (parsed.eventPath !== null) {
-        errors.push({
-            flag: "--files",
-            message: "--files cannot be combined with --event",
-            hint: "Pass --files alone for local-files review, or pass --event (and --diff) without --files for the pre-rendered-diff path.",
-        });
-    }
-    if (parsed.reviewPath !== null) {
-        errors.push({
-            flag: "--files",
-            message: "--files cannot be combined with --review",
-            hint: "Pass --files alone for local-files review, or pass --review (and --event, --diff) without --files for the pre-rendered-diff path.",
-        });
-    }
-    return errors;
-}
-/**
- * Defensive check for a literal `,` inside a single --files entry.
- * The parser splits on `,` with no escape mechanism, so a path that
- * contains a comma inside one logical entry can only land in this
- * validator if the user's input preserves the comma through some
- * wrapping (e.g. shell-quoted). If any trimmed split element still
- * contains a `,`, the user's input is ambiguous and we surface one
- * error.
- */
-function collectLocalFilesCommaErrors(parsed) {
-    if (parsed.files === null) {
-        return [];
-    }
-    const offending = parsed.files.split(",").map((p) => p.trim()).find((p) => p.includes(","));
-    if (offending === undefined) {
-        return [];
-    }
-    return [{
-            flag: "--files",
-            message: `--files does not accept paths containing commas (got '${offending}')`,
-            hint: "Use a different separator; pass each path on a separate --files invocation if needed.",
-        }];
-}
-/**
- * Composed validator. Always-errors ALWAYS apply; posting-errors apply
- * only when posting is requested; local-files exclusion errors apply
- * only when --files is supplied. Local-files comma errors apply only
- * when --files is supplied and a single entry still contains a `,`
- * after splitting (defensive check). Backwards-compatible at the level
- * of the `message` field (each entry carries the legacy flat string),
- * and forwards-compatible via `flag`+`hint` so structured renderers can
- * surface remediation.
- *
- * Returns {@link ValidationError} records; legacy flat-string callers
- * can map `errors.map((e) => e.message)` to recover the old shape.
- */
-function collectValidationErrors(parsed) {
-    return [
-        ...collectAlwaysValidationErrors(parsed),
-        ...collectPostingValidationErrors(parsed),
-        ...collectLocalFilesExclusionErrors(parsed),
-        ...collectLocalFilesCommaErrors(parsed),
-    ];
-}
-function validate_assertNever(value) {
-    throw new TypeError(`unhandled platform variant: ${JSON.stringify(value)}`);
 }
 
 ;// CONCATENATED MODULE: ./src/platform/azure/chunk.ts
@@ -27665,19 +28058,55 @@ async function deleteExistingReview(input) {
     }
     writeBrandedAnnotation("warning", `failed to delete existing review ${input.review.id} (${response.status}); posting new review anyway.`);
 }
+const CREATE_REVIEW_FAILED_HINT = "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.";
+async function readRedactedBodySnippet(response, secrets) {
+    try {
+        const text = await response.clone().text();
+        return text.length === 0 ? "" : truncateBodyForLog(sanitizeForPost(text, secrets), 500);
+    }
+    catch {
+        return "";
+    }
+}
 async function createGithubReview(input) {
-    const request = {
-        commit_id: input.context.headSha,
-        body: input.body,
-        event: input.event,
-        comments: input.comments,
+    const postReview = (comments) => {
+        const request = {
+            commit_id: input.context.headSha,
+            body: input.body,
+            event: input.event,
+            comments,
+        };
+        return input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
+            method: "POST",
+            headers: githubHeaders(input.context.token),
+            body: JSON.stringify(request),
+        });
     };
-    const response = await input.fetchImpl(githubReviewsUrl(input.context, buildGithubApiBaseFromEnv()), {
-        method: "POST",
-        headers: githubHeaders(input.context.token),
-        body: JSON.stringify(request),
-    });
-    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.");
+    const response = await postReview(input.comments);
+    // Defense in depth behind the uniform position gate in
+    // `selectPostableComments`: if GitHub still rejects a comments-bearing
+    // POST with 422 (a single anchor outside the diff hunk fails the WHOLE
+    // review atomically — e.g. diff drift between the fetch and the POST),
+    // retry ONCE with an empty comments array so the review body (manifest,
+    // findings summary, verdict) still lands. The dropped inline findings
+    // remain auditable via the body's manifest suppressed count.
+    if (response.status === 422 && input.comments.length > 0) {
+        const rejectedBody = await readRedactedBodySnippet(response, [input.context.token]);
+        const bodySuffix = rejectedBody.length > 0 ? ` Rejected body: ${rejectedBody}` : "";
+        writeBrandedAnnotation("warning", `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.${bodySuffix}`);
+        const retryResponse = await postReview([]);
+        // Only a retry that is ITSELF 422 points at the inline-comment anchor
+        // path (GITHUB_CREATE_REVIEW_ANCHOR_REJECTED). Any other retry status
+        // (401, 5xx, ...) is a generic create-review failure — mislabelling it
+        // as an anchor rejection would misdirect the operator. Review
+        // 5181102069 finding F2(a).
+        const retryRejected = retryResponse.status === 422;
+        ensureHttpOk(retryResponse, retryRejected ? "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED" : "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", retryRejected
+            ? "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event."
+            : CREATE_REVIEW_FAILED_HINT);
+        return readResponseId(await readJsonResponse(retryResponse));
+    }
+    ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", CREATE_REVIEW_FAILED_HINT);
     return readResponseId(await readJsonResponse(response));
 }
 function parseExistingReview(value) {
@@ -28717,6 +29146,7 @@ function wrapAuditEnvelope(metrics) {
 
 
 
+
 /**
  * Number of chunks to process concurrently when the chunked path is
  * active. 4 is a safe default that respects provider rate-limit headers
@@ -28857,7 +29287,7 @@ async function runLive(input) {
         if (!isCopilot && !isAnthropic) {
             requireLiveConfig(resolveField(input.parsed.apiUrl, env[ENV_KEYS.UMACTUALLY_API_URL], ""), ENV_KEYS.UMACTUALLY_API_URL);
         }
-        requireLiveConfig(resolveField(input.parsed.apiKey, env[ENV_KEYS.UMACTUALLY_API_KEY], ""), ENV_KEYS.UMACTUALLY_API_KEY);
+        resolveProviderCredential(input.parsed, env);
     }
     catch (error) {
         if (error instanceof RequiredConfigError) {
@@ -30135,109 +30565,6 @@ function resolveDefaultBranch(cwd) {
     }
 }
 
-;// CONCATENATED MODULE: ./src/cli/apply-saved-config.ts
-// SPDX-License-Identifier: MIT
-// Apply saved-config values to fields that fell through to their schema
-// default after flag + env resolution. Single source of truth for the
-// "saved config supplies defaults" behavior shared by `umactually review`
-// and `umactually --files`.
-//
-// Resolution order (final, after this function runs):
-//   - explicit CLI flag    → source = "flag"
-//   - environment variable  → source = "env"
-//   - saved config (~/.umactually/config.json) → source = "savedConfig"
-//   - schema default        → source = "default"
-//
-// `apiKey` deliberately does NOT participate: the S6 contract (v0.6.23)
-// bans persisting credentials to disk. The `SavedConfig` type excludes
-// `apiKey`, so there is no value to read even if a caller passes one.
-// `apiKey` resolves via flag > `UMACTUALLY_API_KEY` env > error.
-const SAVED_CONFIG_FIELDS = (/* unused pure expression or super */ null && (["provider", "apiUrl", "model"]));
-/**
- * Pure resolver. Returns a NEW `SchemaResolvedCliArgs` with `provider` /
- * `apiUrl` / `model` overridden from `saved` when the current
- * `fieldProvenance[field].source === "default"`. Fields whose values
- * were already supplied by `--flag` or env var are left alone — flag
- * and env ALWAYS win over saved config (matches the contract for every
- * other well-behaved tool: flag > env > persisted > default).
- *
- * `saved === null` (no config file present, or read failed) is a
- * no-op; the resolver returns `resolved` unchanged with an empty
- * `applied` list.
- *
- * `path` is required when `saved !== null` (it tells the operator
- * which file supplied the value). The empty-string placeholder is
- * reserved for the `saved === null` fast path.
- */
-function applySavedConfig(resolved, saved, path) {
-    if (saved === null) {
-        return { resolved, applied: [] };
-    }
-    let current = resolved;
-    const applied = [];
-    if (saved.provider !== undefined) {
-        const next = maybeOverride(current, "provider", saved.provider, path);
-        if (next !== null) {
-            current = next;
-            applied.push("provider");
-        }
-    }
-    // `apiUrl` and `model` are optional on SavedConfig. Skip when absent
-    // — no override, no provenance flip.
-    if (saved.apiUrl !== undefined) {
-        const next = maybeOverride(current, "apiUrl", saved.apiUrl, path);
-        if (next !== null) {
-            current = next;
-            applied.push("apiUrl");
-        }
-    }
-    if (saved.model !== undefined) {
-        const next = maybeOverride(current, "model", saved.model, path);
-        if (next !== null) {
-            current = next;
-            applied.push("model");
-        }
-    }
-    return { resolved: current, applied };
-}
-/**
- * Override a single field IFF its current provenance is "default".
- * Returns the new `SchemaResolvedCliArgs` on success, `null` when the
- * field should be left alone (already supplied by flag or env).
- *
- * Pure function over `current.fieldProvenance[field]` and the field's
- * current value. Does NOT mutate — returns a new object. The nested
- * `fieldProvenance` map is also shallow-cloned so subsequent
- * overrides to a different field don't accidentally leak the
- * earlier provenance update.
- */
-function maybeOverride(current, field, value, path) {
-    const provenance = current.fieldProvenance[field];
-    if (provenance === undefined) {
-        // Field wasn't resolved by `resolveFromSchema`. This shouldn't
-        // happen because we only pass through `provider` / `apiUrl` /
-        // `model`, all of which are in `FIELDS`. Refuse to override
-        // when the invariant is broken — preserves the byte-exact existing
-        // behavior for edge cases.
-        return null;
-    }
-    if (provenance.source !== "default") {
-        // Flag or env already supplied a value. Saved config is the
-        // strictly-LOWER priority layer and MUST NOT override.
-        return null;
-    }
-    const newProvenance = { source: "savedConfig", path };
-    const newFieldProvenance = {
-        ...current.fieldProvenance,
-        [field]: newProvenance,
-    };
-    return {
-        ...current,
-        [field]: value,
-        fieldProvenance: newFieldProvenance,
-    };
-}
-
 ;// CONCATENATED MODULE: ./src/cli.ts
 
 
@@ -30728,7 +31055,7 @@ function shouldOfferInteractiveCredentials(resolved, errors) {
  */
 async function tryInteractiveCredentialsRecovery(resolved, initialErrors, cwd, generatedArtifacts, policyMeta) {
     const promptForUrl = initialErrors.some((e) => e.flag === "--api-url");
-    const prompted = await smartPromptForApiConfig({ promptForUrl });
+    const prompted = await smartPromptForApiConfig({ promptForUrl, credential: resolved.provider === "copilot" ? "github-token" : "api-key" });
     // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
     // applyPromptedConfig helper works on both.
     const augmented = applyPromptedConfig(resolved, prompted);
@@ -30853,7 +31180,7 @@ async function runAfterValidation(input) {
  * model provider config".
  */
 function everyErrorIsApiConfig(errors) {
-    return errors.every((e) => e.flag === "--api-url" || e.flag === "--api-key");
+    return errors.every((e) => e.flag === "--api-url" || e.flag === "--api-key" || e.flag === "--github-token");
 }
 /**
  * Apply the prompted values to the resolved parsed CLI args. Returns a
@@ -30874,6 +31201,7 @@ function applyPromptedConfig(resolved, prompted) {
         ...resolved,
         apiUrl: nextApiUrl,
         apiKey: nextApiKey,
+        ...(!resolved.githubToken && prompted.githubToken !== undefined ? { githubToken: prompted.githubToken } : {}),
     };
 }
 async function main(argv) {

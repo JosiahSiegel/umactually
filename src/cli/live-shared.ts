@@ -859,19 +859,24 @@ function selectPostableCommentsWithPositions(input: {
     if (comments.length >= maxComments) {
       break;
     }
-    // Position validation is bypassed for `category: "sonar"`
-    // findings. SonarCloud's reported line numbers are authoritative
-    // for the source FILE (not the diff context), so a finding on a
-    // line that the diff doesn't touch is still a valid inline-comment
-    // anchor — GitHub's API accepts any positive line number within
-    // the file. Without the bypass, `positions.hasPosition` would
-    // drop every SonarCloud finding whose flagged line is outside the
-    // changed region, leaving the bot's review body saying
-    // "0 inline findings — ship it" while SonarCloud MAJOR/CRITICAL
-    // findings sit ignored in the same PR. See the merge block in
-    // live-github.ts for the inline-finding pipeline.
-    const isSonarFinding = comment.category === "sonar";
-    if (!isSonarFinding && !input.positions.hasPosition(comment)) {
+    // Position validation applies to EVERY comment, including
+    // `category: "sonar"` findings. GitHub's create-review REST
+    // endpoint requires each inline comment's path+line to sit inside
+    // a diff hunk of the given commit — an off-hunk anchor makes the
+    // whole POST fail atomically with 422 (PR #246: SonarCloud S3776
+    // findings anchored function-declaration lines outside the hunks
+    // and nuked the review). SonarCloud's line numbers are authoritative
+    // for the source FILE, not the diff, so they are NOT valid inline
+    // anchors by themselves. Off-diff SonarCloud findings are not lost:
+    // `preparePostedReview` calls `selectOffDiffCommentsWithPositions`
+    // and sums the returned length into its `suppressedCommentCount`
+    // (returned on `PreparedPostedReview`), which `buildReviewBody`
+    // renders as the manifest's `suppressedCount`; `runGithubLive` also
+    // annotates the dropped count. A former bypass that
+    // let sonar findings skip this gate was removed — its premise
+    // ("GitHub accepts any positive line number within the file") is
+    // false for the reviews endpoint.
+    if (!input.positions.hasPosition(comment)) {
       continue;
     }
     if (!passesSeverityPolicy(comment, input.parsed)) {

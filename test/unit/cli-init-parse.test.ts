@@ -9,6 +9,9 @@
 // ITER-1/2a/2c/2d test files.
 
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   INIT_HELP_TEXT,
@@ -21,6 +24,38 @@ import {
 
 function emptyEnv(): Readonly<Record<string, string | undefined>> {
   return {};
+}
+
+function initSandbox(): { readonly homeDir: string; readonly cwd: string } {
+  const root = mkdtempSync(join(tmpdir(), "umactually-init-effort-"));
+  return { homeDir: root, cwd: root };
+}
+
+function removeInitSandbox(sandbox: { readonly homeDir: string; readonly cwd: string }): void {
+  rmSync(sandbox.homeDir, { recursive: true, force: true });
+}
+
+async function withProcessEnv(
+  values: Readonly<Record<string, string>>,
+  run: () => Promise<void>,
+): Promise<void> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function readInitConfig(homeDir: string): Promise<Record<string, unknown>> {
+  return JSON.parse(readFileSync(join(homeDir, ".umactually", "config.json"), "utf8")) as Record<string, unknown>;
 }
 
 describe("parseInitArgs — flag parsing (ITER-2e)", () => {
@@ -99,6 +134,61 @@ describe("parseInitArgs — flag parsing (ITER-2e)", () => {
     expect(result.errors.some((e) => e.includes("--provider requires a value"))).toBe(true);
   });
 
+  it("parses --effort for every recognized level without adding an implicit default", () => {
+    for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const) {
+      expect(parseInitArgs(["--effort", effort], emptyEnv()).effort).toBe(effort);
+    }
+    expect(parseInitArgs([], emptyEnv()).effort).toBeUndefined();
+  });
+
+  it("rejects an invalid or missing init effort value", () => {
+    expect(parseInitArgs(["--effort", "turbo"], emptyEnv()).errors).toContain(
+      "--effort must be one of none|minimal|low|medium|high|xhigh|max (got 'turbo')",
+    );
+    expect(parseInitArgs(["--effort"], emptyEnv()).errors).toContain(
+      "--effort requires a value (none|minimal|low|medium|high|xhigh|max)",
+    );
+  });
+
+  it("rejects a nonblank invalid UMACTUALLY_EFFORT value without echoing it", () => {
+    const result = parseInitArgs([], { UMACTUALLY_EFFORT: "invalid-effort-secret" });
+    expect(result.errors).toContain("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
+    expect(result.errors.join(" ")).not.toContain("invalid-effort-secret");
+    expect(result.effort).toBeUndefined();
+  });
+
+  it("treats blank UMACTUALLY_EFFORT as absent", () => {
+    expect(parseInitArgs([], { UMACTUALLY_EFFORT: "" }).errors).toEqual([]);
+    expect(parseInitArgs([], { UMACTUALLY_EFFORT: "   " }).errors).toEqual([]);
+    expect(parseInitArgs([], { UMACTUALLY_EFFORT: "   " }).effort).toBeUndefined();
+  });
+
+  it("returns a sanitized init failure for invalid nonblank effort env", async () => {
+    const result = await runInit({
+      argv: ["--non-interactive", "--provider", "copilot", "--ci", "none"],
+      deps: {
+        argv: [],
+        env: { UMACTUALLY_EFFORT: "invalid-effort-secret" },
+        homeDir: "/tmp/invalid-effort-home",
+        cwd: "/tmp/invalid-effort-cwd",
+        platform: "linux",
+        packageVersion: "0.0.0",
+        isTTY: false,
+      },
+    });
+    expect(result.outcome).toBe("error");
+    expect(result.exitCode).toBe(2);
+    expect(result.checks[0]?.message).toBe(
+      "invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max",
+    );
+    expect(JSON.stringify(result)).not.toContain("invalid-effort-secret");
+  });
+
+  it("uses UMACTUALLY_EFFORT only when the flag is absent", () => {
+    expect(parseInitArgs([], { UMACTUALLY_EFFORT: "HIGH" }).effort).toBe("high");
+    expect(parseInitArgs(["--effort", "low"], { UMACTUALLY_EFFORT: "HIGH" }).effort).toBe("low");
+  });
+
   it("parses --model as a free-form string", () => {
     expect(parseInitArgs(["--model", "gpt-4o-mini"], emptyEnv()).model).toBe("gpt-4o-mini");
   });
@@ -129,6 +219,61 @@ describe("parseInitArgs — flag parsing (ITER-2e)", () => {
     const result = parseInitArgs([], { UMACTUALLY_PROVIDER: "gpt-9000" });
     expect(result.errors).toHaveLength(0);
     expect(result.provider).toBeUndefined();
+  });
+
+  it("persists an optional non-interactive effort without persisting the API key", async () => {
+    const sandbox = initSandbox();
+    try {
+      const result = await runInit({
+        argv: ["--non-interactive", "--provider", "copilot", "--effort", "xhigh", "--ci", "none"],
+        deps: {
+          argv: [],
+          env: {},
+          homeDir: sandbox.homeDir,
+          cwd: sandbox.cwd,
+          platform: "linux",
+          packageVersion: "0.0.0",
+          isTTY: false,
+        },
+      });
+      expect(result.outcome).toBe("ok");
+      expect(await readInitConfig(sandbox.homeDir)).toMatchObject({ provider: "copilot", effort: "xhigh" });
+    } finally {
+      removeInitSandbox(sandbox);
+    }
+  });
+
+  it("uses the provider default when interactive effort is left blank", async () => {
+    const sandbox = initSandbox();
+    try {
+      await withProcessEnv(
+        { UMACTUALLY_GITHUB_API_BASE: "https://api.github.com", UMACTUALLY_MODEL: "copilot-model" },
+        async () => {
+          const prompts: string[] = [];
+          const result = await runInit({
+            argv: ["--ci", "none", "--force"],
+            deps: {
+              argv: [],
+              env: {},
+              homeDir: sandbox.homeDir,
+              cwd: sandbox.cwd,
+              platform: "linux",
+              packageVersion: "0.0.0",
+              isTTY: true,
+              stdinReader: async (prompt) => {
+                prompts.push(prompt);
+                return ["1", "3", "", "y"][prompts.length - 1] ?? null;
+              },
+            },
+          });
+          expect(result.outcome).toBe("ok");
+          expect(prompts.some((prompt) => prompt.includes("Reasoning effort"))).toBe(true);
+          expect(await readInitConfig(sandbox.homeDir)).not.toHaveProperty("effort");
+        },
+      );
+    } finally {
+      removeInitSandbox(sandbox);
+    }
   });
 });
 

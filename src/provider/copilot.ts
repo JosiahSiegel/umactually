@@ -1,3 +1,5 @@
+import type { Effort } from "../config/effort.js";
+import { checkEffortRejection } from "./provider-effort-error.js";
 import {
   buildChatBody,
   countPopulatedBodies,
@@ -43,7 +45,7 @@ export type CopilotCallConfig = {
   readonly model: string;
   readonly requestTimeoutMs: number;
   readonly maxOutputTokens?: number;
-  readonly reasoningEffort?: "low" | "medium" | "high";
+  readonly reasoningEffort?: Effort;
   readonly fetchImpl?: typeof fetch;
   /**
    * Optional strict JSON schema enforced via `response_format`. The
@@ -155,6 +157,8 @@ async function runChatCall(
       fetchImpl,
       buildHeaders: () => buildChatHeaders(session.token),
     });
+    await checkEffortRejection(response, { ...config, endpoint: ENDPOINT_CHAT, requestId,
+      secrets: [config.githubToken, session.token] });
   } catch (error) {
     if (error instanceof ProviderError) {
       return { ok: false, error };
@@ -274,7 +278,12 @@ async function runChatCall(
       fetchImpl,
       buildHeaders: () => buildChatHeaders(session.token),
     });
-  } catch {
+    await checkEffortRejection(retryResponse, { ...config, endpoint: ENDPOINT_CHAT, requestId,
+      secrets: [config.githubToken, session.token] });
+  } catch (error) {
+    if (error instanceof ProviderError && error.providerErrorDetails?.kind === "effort-rejection") {
+      return { ok: false, error };
+    }
     // Retry HTTP call itself failed. Hard path: surface the ORIGINAL
     // parse failure (not the retry's network error) so the parse-fail
     // path's diagnostic captures the actual root cause. Soft path: the

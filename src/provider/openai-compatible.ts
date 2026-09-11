@@ -1,3 +1,5 @@
+import type { Effort } from "../config/effort.js";
+import { checkEffortRejection } from "./provider-effort-error.js";
 import {
   buildChatBody,
   buildResponsesBody,
@@ -67,7 +69,7 @@ export type ProviderCallConfig = {
   readonly fetchImpl?: typeof fetch;
   readonly signal?: AbortSignal;
   readonly maxOutputTokens?: number;
-  readonly reasoningEffort?: "low" | "medium" | "high";
+  readonly reasoningEffort?: Effort;
   readonly promptOverride?: string;
   readonly additionalPromptOverride?: string;
   readonly githubApiBase?: string;
@@ -99,7 +101,7 @@ function buildBodyConfig(config: ProviderCallConfig): {
   readonly system: string;
   readonly user: string;
   readonly maxOutputTokens?: number;
-  readonly reasoningEffort?: "low" | "medium" | "high";
+  readonly reasoningEffort?: Effort;
   readonly responseFormat?: import("./provider-parse.js").ResponseFormat;
 } {
   return {
@@ -263,6 +265,8 @@ async function callEndpoint(
     buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
   });
 
+  await checkEffortRejection(response, { ...config, endpoint, requestId,
+    secrets: [config.apiKey] });
   if (!response.ok) {
     throw new ProviderError(
       endpoint === ENDPOINT_RESPONSES ? "responses_4xx" : "chat_4xx",
@@ -450,6 +454,8 @@ async function callEndpoint(
       fetchImpl,
       buildHeaders: () => buildOpenAiCompatibleHeaders(config, requestId),
     });
+    await checkEffortRejection(retryResponse, { ...config, endpoint, requestId,
+      secrets: [config.apiKey] });
     retryResponseStatus = retryResponse.status;
     if (retryResponse.ok) {
       const retryRawText = await readResponseText(retryResponse, endpoint, requestId);
@@ -470,7 +476,8 @@ async function callEndpoint(
         retryReview = parsedRetry;
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof ProviderError && error.providerErrorDetails?.kind === "effort-rejection") throw error;
     // Retry HTTP/parse path threw (network error, body read error,
     // etc.) — fall through to the parse-error throw below with the
     // ORIGINAL rawText. retryResponseStatus stays null in this branch.
@@ -552,5 +559,5 @@ function buildOpenAiCompatibleHeaders(
 }
 
 function shouldFallback(error: ProviderError): boolean {
-  return error.status === 404 || error.status === 400;
+  return isRoutableFailureForUrlCandidate(error);
 }

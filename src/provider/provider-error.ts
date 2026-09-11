@@ -131,12 +131,14 @@ export type ProviderUsage = {
  * review attributed to the OTHER protocol without ever knowing their
  * original call was malformed.
  */
-export function isRoutableFailureForUrlCandidate(error: { readonly status: number | null }): boolean {
-  return error.status === 404 || error.status === 400;
+type RoutingFailure = { readonly status: number | null; readonly providerErrorDetails?: ProviderErrorDetails | undefined };
+
+export function isRoutableFailureForUrlCandidate(error: RoutingFailure): boolean {
+  return error.providerErrorDetails?.kind !== "effort-rejection" && (error.status === 404 || error.status === 400);
 }
 
-export function isRoutableFailureForCrossProtocol(error: { readonly status: number | null }): boolean {
-  return error.status === 404;
+export function isRoutableFailureForCrossProtocol(error: RoutingFailure): boolean {
+  return error.providerErrorDetails?.kind !== "effort-rejection" && error.status === 404;
 }
 
 export function sanitizeHttpStatus(endpoint: ProviderEndpoint, status: number): string {

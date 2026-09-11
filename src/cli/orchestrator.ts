@@ -1,5 +1,6 @@
 import { DEFAULT_MAX_COMMENTS_MERGE, DEFAULT_REVIEW_FILE_LIMIT } from "../config/defaults.js";
 import { resolveField } from "../config/field-resolution.js";
+import { resolveProviderCredential } from "./validate.js";
 import { fetchAzurePrDiff, fetchAzurePrInstructions } from "../platform/azure/api.js";
 import { chunkDiffByFile, countDiffFiles } from "../platform/azure/chunk.js";
 import { AzureContextError, readAzureContext } from "../platform/azure/context.js";
@@ -203,10 +204,7 @@ export async function runLive(input: RunLiveInput): Promise<LiveRunResult> {
         ENV_KEYS.UMACTUALLY_API_URL,
       );
     }
-    requireLiveConfig(
-      resolveField(input.parsed.apiKey, env[ENV_KEYS.UMACTUALLY_API_KEY], ""),
-      ENV_KEYS.UMACTUALLY_API_KEY,
-    );
+    resolveProviderCredential(input.parsed, env);
   } catch (error) {
     if (error instanceof RequiredConfigError) {
       const message = error.userMessage;

@@ -47,9 +47,9 @@ function renderSavedConfig(
     `  provider: ${config.provider}`,
   ];
   if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
-  lines.push(
-    `  model:    ${config.model ?? "auto (resolved at review time)"}`,
-  );
+  lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
+  lines.push(`  effort:    ${config.effort ?? "provider default"}`);
+  lines.push("  effort caveat: model-dependent; provider default may apply.");
   return lines.join("\n");
 }
 
@@ -93,6 +93,16 @@ export async function runConfigFlow(): Promise<{ exitCode: 0 }> {
       "Saved config",
     );
   }
+
+  note(
+    [
+      "Run Review does not prompt for effort.",
+      "UMACTUALLY_EFFORT overrides saved effort.",
+      "If neither is set, the provider/model default is used.",
+      "Invalid nonblank UMACTUALLY_EFFORT values are rejected.",
+    ].join("\n"),
+    "Review effort",
+  );
 
   // Step 3: env-presence table (read process.env only — no mutation).
   note(renderEnvPresence(process.env), "Environment");
