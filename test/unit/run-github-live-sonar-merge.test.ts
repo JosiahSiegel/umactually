@@ -398,7 +398,7 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
         capturedPosts.push(body as { comments: Array<{ path: string; line: number }>; event: string });
         if (postAttempts === 1) {
           return Promise.resolve(
-            new Response("Validation Failed", { status: 422, headers: { "content-type": "text/plain" } }),
+            new Response("Validation Failed: token github-token", { status: 422, headers: { "content-type": "text/plain" } }),
           );
         }
         return Promise.resolve(makeJsonResponse({ id: 8888 }));
@@ -428,12 +428,17 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
         .filter((chunk) => chunk.startsWith("::warning::"));
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("1");
+      // Review 5181102069 finding F2(b): the warning carries the original
+      // 422 body so the operator can see which anchor/field was rejected,
+      // with the token redacted by the post sanitizer.
+      expect(warnings[0]).toContain("Rejected body: Validation Failed: token");
+      expect(warnings[0]).not.toContain("github-token");
     } finally {
       stderrSpy.mockRestore();
     }
   });
 
-  it("still fails with GITHUB_CREATE_REVIEW_FAILED when the body-only retry also returns 422", async () => {
+  it("still fails with GITHUB_CREATE_REVIEW_ANCHOR_REJECTED when the body-only retry also returns 422", async () => {
     // The 422 fallback is bounded: one retry, then the original typed
     // failure propagates so the operator sees the typed exit code.
     // Review 5180365033 finding B: the retry-also-422 path uses a distinct
@@ -473,6 +478,92 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
       }),
     ).rejects.toMatchObject({ code: "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED" });
     expect(postAttempts).toBe(2);
+  });
+
+  it("uses GITHUB_CREATE_REVIEW_FAILED when the body-only retry fails with a non-422 status", async () => {
+    // Review 5181102069 finding F2(a): the body-only retry is only an
+    // anchor rejection when the retry is ITSELF 422. A retry that fails
+    // with 401 (or any non-422) is a generic create-review failure and
+    // must not be labelled GITHUB_CREATE_REVIEW_ANCHOR_REJECTED.
+    const inDiffComment: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      line: 1296,
+      body: "Model finding anchored inside the diff hunk.",
+      severity: "high",
+      category: "bug",
+    };
+    let postAttempts = 0;
+    const fetchImpl: FetchImpl = (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const urlString = typeof url === "string" ? url : url.toString();
+      if (method === "GET" && urlString.endsWith("/pulls/42/reviews")) {
+        return Promise.resolve(makeJsonResponse([]));
+      }
+      if (method === "POST" && urlString.endsWith("/pulls/42/reviews")) {
+        postAttempts += 1;
+        return Promise.resolve(
+          postAttempts === 1
+            ? new Response("Validation Failed", { status: 422, headers: { "content-type": "text/plain" } })
+            : new Response("Bad credentials", { status: 401, headers: { "content-type": "text/plain" } }),
+        );
+      }
+      throw new Error(`unexpected ${method} ${urlString}`);
+    };
+    const stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    try {
+      await expect(
+        runGithubLive({
+          context: makeContext(),
+          diffText: makeDiffText(),
+          provider: makeProviderOutcome([inDiffComment]),
+          parsed: baseParsedArgs(),
+          fetchImpl,
+        }),
+      ).rejects.toMatchObject({ code: "GITHUB_CREATE_REVIEW_FAILED" });
+      expect(postAttempts).toBe(2);
+    } finally {
+      stderrSpy.mockRestore();
+    }
+  });
+
+  it("does not retry body-only when the first POST fails with a non-422 status", async () => {
+    // Review 5181102069 finding F2: the fallback must only trigger on the
+    // ORIGINAL comments-bearing POST returning 422. A 401 with comments
+    // present throws GITHUB_CREATE_REVIEW_FAILED after exactly one attempt.
+    const inDiffComment: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      line: 1296,
+      body: "Model finding anchored inside the diff hunk.",
+      severity: "high",
+      category: "bug",
+    };
+    let postAttempts = 0;
+    const fetchImpl: FetchImpl = (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      const urlString = typeof url === "string" ? url : url.toString();
+      if (method === "GET" && urlString.endsWith("/pulls/42/reviews")) {
+        return Promise.resolve(makeJsonResponse([]));
+      }
+      if (method === "POST" && urlString.endsWith("/pulls/42/reviews")) {
+        postAttempts += 1;
+        return Promise.resolve(
+          new Response("Bad credentials", { status: 401, headers: { "content-type": "text/plain" } }),
+        );
+      }
+      throw new Error(`unexpected ${method} ${urlString}`);
+    };
+
+    await expect(
+      runGithubLive({
+        context: makeContext(),
+        diffText: makeDiffText(),
+        provider: makeProviderOutcome([inDiffComment]),
+        parsed: baseParsedArgs(),
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ code: "GITHUB_CREATE_REVIEW_FAILED" });
+    expect(postAttempts).toBe(1);
   });
 
   it("uses GITHUB_CREATE_REVIEW_FAILED on the non-retry permanent failure path (no 422-then-422 escalation)", async () => {
