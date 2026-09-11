@@ -2,12 +2,12 @@
 
 The Composite Action is the one-line install path for GitHub Actions. It owns Node.js 24 setup, `npm install -g umactually@<cli-version>`, the first-run secret bootstrap, the live PR review, and verdict output for branch protection.
 
-This document is the canonical reference for the action. The README's [Quickstart](../README.md#quickstart) shows the one-line snippet; this page documents the input matrix, the env-passthrough contract, the first-run bootstrap behavior, and the branch-protection contract in full. The installed CLI is the source of feature support: use a `cli-version` that includes the optional effort feature. The unchanged action ref does not promise that every existing CLI version pin supports it.
+This document is the canonical reference for the action. The README's [Quickstart](../README.md#quickstart) shows the one-line snippet; this page documents the input matrix, the env-passthrough contract, the first-run bootstrap behavior, and the branch-protection contract in full. The installed CLI is the source of feature support: the `effort` input requires a `cli-version` that recognizes `--effort` (0.12.0 or newer). The refreshed action ref forwards the input, but it does not upgrade an older `cli-version` for you.
 
 ## One-line install
 
 ```yaml
-- uses: JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9  # v1
+- uses: JosiahSiegel/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2  # v1
   with:
     provider: openai-compatible
     api-url: ${{ secrets.UMACTUALLY_API_URL }}
@@ -29,6 +29,7 @@ The full input matrix from the published [`JosiahSiegel/umactually-action`](http
 | `api-key` | no | `""` | Provider API key. Default empty — forward via `with: api-key: ${{ secrets.UMACTUALLY_API_KEY }}`. |
 | `provider` | no | `openai-compatible` | Provider family: `openai-compatible`, `anthropic`, or `copilot`. |
 | `model` | no | `""` | Provider-specific model identifier (optional). |
+| `effort` | no | `""` | Optional reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max` (requires a CLI version with `--effort` support, i.e. `0.12.0+`). Forwarded to the CLI as `--effort` only when non-empty; empty defers to a caller-provided `UMACTUALLY_EFFORT` env var, then saved config, then the provider/model default. |
 | `config-path` | no | `./umactually.review.json` | Declared for wizard back-compat; **not forwarded to the CLI** since action release 1.0.1 — the CLI auto-discovers `umactually.review.json` from cwd. |
 | `output-artifact` | no | `umactually-review.json` | Path the CLI writes the review artifact to. |
 | `skip-draft` | no | `'true'` | Declared for wizard back-compat; **not forwarded to the CLI** since action release 1.0.1 — incremental review is per-PR via GitHub thread queries. |
@@ -44,13 +45,33 @@ The full input matrix from the published [`JosiahSiegel/umactually-action`](http
 
 ## Env passthrough
 
-The action sets these env vars before invoking the CLI (the equivalent of the longform workflow's `env:` block). The examples use `UMACTUALLY_EFFORT` directly in the caller environment; no companion action input or task input is invented.
+The action sets these env vars before invoking the CLI (the equivalent of the longform workflow's `env:` block):
 
 - `UMACTUALLY_API_URL` ← `${{ inputs.api-url }}`
 - `UMACTUALLY_API_KEY` ← `${{ inputs.api-key }}`
 - `GITHUB_TOKEN` ← `${{ github.token }}`
 
-The pinned action's `action.yml` at [`9924e799c11ae31a694caf761bdfe7d66b7e78e9`](https://github.com/JosiahSiegel/umactually-action/blob/9924e799c11ae31a694caf761bdfe7d66b7e78e9/action.yml) has no `effort` input and does not override `UMACTUALLY_EFFORT`. To opt into effort from GitHub Actions, set it on the caller job or the action step:
+### Effort
+
+The action's refreshed `action.yml` at [`d5f6da00a72933cd30ab31973e6e80cd313528d2`](https://github.com/JosiahSiegel/umactually-action/blob/d5f6da00a72933cd30ab31973e6e80cd313528d2/action.yml) adds a first-class `effort` input. When non-empty, the action forwards it to the CLI as `--effort`; an empty input is not forwarded, so leaving `effort` unset preserves the caller-env passthrough described below.
+
+```yaml
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: JosiahSiegel/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2  # v1
+        with:
+          cli-version: 0.12.0
+          provider: openai-compatible
+          effort: high
+          api-url: ${{ secrets.UMACTUALLY_API_URL }}
+          api-key: ${{ secrets.UMACTUALLY_API_KEY }}
+```
+
+The `effort` input accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`, and requires a `cli-version` that recognizes `--effort` (0.12.0 or newer). This pinned action ref does not upgrade an older `cli-version` for you.
+
+As an alternative, leave `effort` empty and set `UMACTUALLY_EFFORT` on the caller job or action step. The action does not set or clear `UMACTUALLY_EFFORT` in its step `env:` block, so a caller-provided value is inherited by the composite action's shell steps and resolved by the CLI with precedence `--effort` > `UMACTUALLY_EFFORT` > saved config > provider/model default.
 
 ```yaml
 jobs:
@@ -59,17 +80,17 @@ jobs:
     env:
       UMACTUALLY_EFFORT: low
     steps:
-      - uses: JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9  # v1
+      - uses: JosiahSiegel/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2  # v1
         with:
-          cli-version: "REPLACE_WITH_A_RELEASE_THAT_RECOGNIZES_UMACTUALLY_EFFORT"
+          cli-version: 0.12.0
           provider: openai-compatible
           api-url: ${{ secrets.UMACTUALLY_API_URL }}
           api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
 
-GitHub documents that workflow/job/step `env` variables are available to the corresponding steps, and the runner carries caller env into composite-action run steps ([workflow `env` scope](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#env), [composite step env](https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax#runsstepsenv)). Do not infer that a reusable workflow has the same inheritance behavior. The `secrets` context still is not available inside a composite action ([secrets context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#secrets-context)), which is why provider secrets use `with:` inputs. The CLI must be new enough to recognize `UMACTUALLY_EFFORT`; this pinned action ref does not upgrade an older `cli-version` for you.
+GitHub documents that workflow/job/step `env` variables are available to the corresponding steps, and the runner carries caller env into composite-action run steps ([workflow `env` scope](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#env), [composite step env](https://docs.github.com/en/actions/reference/workflows-and-actions/metadata-syntax#runsstepsenv)). Do not infer that a reusable workflow has the same inheritance behavior. The `secrets` context still is not available inside a composite action ([secrets context](https://docs.github.com/en/actions/reference/workflows-and-actions/contexts#secrets-context)), which is why provider secrets use `with:` inputs. The CLI must be new enough to recognize `UMACTUALLY_EFFORT`.
 
-The action reads `inputs.api-url` and `inputs.api-key` only. Pass repository secrets into those `with:` inputs in the calling workflow; the former `secrets.* || inputs.*` coalesce was removed in `JosiahSiegel/umactually-action@4d5a5f4`. The pinned action does not set or clear `UMACTUALLY_EFFORT`; a caller-provided job- or action-step `env:` value is inherited by the composite action's shell steps according to GitHub's workflow `env` scope. This is caller env inheritance, not a new action input.
+The action reads `inputs.api-url` and `inputs.api-key` only. Pass repository secrets into those `with:` inputs in the calling workflow; the former `secrets.* || inputs.*` coalesce was removed in `JosiahSiegel/umactually-action@4d5a5f4`.
 
 ## CLI-flag passthrough
 
@@ -77,6 +98,7 @@ Since action release 1.0.1 (the flag-drop landed in commit `317613a`, an ancesto
 
 - `--provider` ← `${{ inputs.provider }}` (always forwarded; default `openai-compatible`)
 - `--model` ← `${{ inputs.model }}` (forwarded ONLY when non-empty; the action's default `""` would override the wizard's saved config if always forwarded)
+- `--effort` ← `${{ inputs.effort }}` (forwarded ONLY when non-empty; an empty default would otherwise override a caller-provided `UMACTUALLY_EFFORT` or the saved config)
 - `--output-artifact` ← `${{ inputs.output-artifact }}` (default `umactually-review.json`)
 
 The `config-path`, `skip-draft`, and `paths-ignore` inputs remain declared for backward compatibility with the wizard template and pre-action-1.0.1 examples, but are no longer forwarded: the CLI auto-discovers `umactually.review.json` from cwd, incremental review is per-PR via GitHub thread queries, and the `--files` flag plus the diff's own ignore list handle path filtering. Passing them is dead config.
