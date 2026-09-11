@@ -443,13 +443,24 @@ function applyEnvDefaults(
       state.provider = envProvider;
     }
   }
-  if (state.effort === undefined && typeof env["UMACTUALLY_EFFORT"] === "string") {
-    const rawEffort = env["UMACTUALLY_EFFORT"];
-    if (rawEffort.trim().length > 0 && parseEffort(rawEffort) === undefined) {
-      errors.push("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
-    } else {
-      state.effort = parseEffort(rawEffort);
-    }
+  applyEffortEnvDefault(state, env, errors);
+}
+
+/**
+ * UMACTUALLY_EFFORT backfill — nonblank invalid values are rejected
+ * without echoing the raw value; blank values are treated as absent.
+ */
+function applyEffortEnvDefault(
+  state: ParsedInitState,
+  env: Readonly<Record<string, string | undefined>>,
+  errors: string[],
+): void {
+  if (state.effort !== undefined || typeof env["UMACTUALLY_EFFORT"] !== "string") return;
+  const rawEffort = env["UMACTUALLY_EFFORT"];
+  if (rawEffort.trim().length > 0 && parseEffort(rawEffort) === undefined) {
+    errors.push("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
+  } else {
+    state.effort = parseEffort(rawEffort);
   }
 }
 
