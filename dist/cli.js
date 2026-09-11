@@ -12689,6 +12689,12 @@ async function runConfigFlow() {
     else {
         note(`No saved config found at ${saved.path}\n(run \`umactually init\` to create one)`, "Saved config");
     }
+    note([
+        "Run Review does not prompt for effort.",
+        "UMACTUALLY_EFFORT overrides saved effort.",
+        "If neither is set, the provider/model default is used.",
+        "Invalid nonblank UMACTUALLY_EFFORT values are rejected.",
+    ].join("\n"), "Review effort");
     // Step 3: env-presence table (read process.env only — no mutation).
     note(renderEnvPresence(process.env), "Environment");
     // Step 4: block on the single-option "Back to menu" sentinel so the
