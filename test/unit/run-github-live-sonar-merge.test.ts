@@ -4,7 +4,12 @@ import { runGithubLive } from "../../src/cli/live-github.js";
 import { parseCliArgs } from "../../src/cli/parse-args.js";
 import type { GithubContext } from "../../src/platform/github/context.js";
 import type { FetchImpl } from "../../src/cli/live-shared.js";
-import type { LiveProviderOutcome, LiveReviewComment } from "../../src/cli/live-shared.js";
+import {
+  preparePostedReview,
+  type LiveProviderOutcome,
+  type LiveReview,
+  type LiveReviewComment,
+} from "../../src/cli/live-shared.js";
 import type { ParsedCliArgs } from "../../src/cli/parse-args.js";
 import { REVIEW_MARKER } from "../../src/util/marker.js";
 
@@ -317,6 +322,52 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
     // NOT have suppressed the model-emitted one, so this number is the
     // regression lock).
     expect(postedReview?.body).toContain("\"suppressedCount\":2");
+  });
+
+  it("preparePostedReview directly returns suppressedCommentCount covering off-diff sonar AND off-diff model findings", () => {
+    // Finding 2 producer assertion: the `selectPostableCommentsWithPositions`
+    // doc comment claims off-diff sonar findings are routed into the
+    // suppressed count by `selectOffDiffCommentsWithPositions`. This test
+    // calls the ACTUAL producer (`preparePostedReview`) with one off-diff
+    // `category: "sonar"` finding and one off-diff `category: "bug"` model
+    // finding, then asserts the returned `suppressedCommentCount` includes
+    // both — a direct producer assertion, not only the end-to-end body check.
+    const offDiffSonar: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      // Line 5 is outside the diff hunks (1295-1301).
+      line: 5,
+      body: "Sonar finding outside the diff.",
+      severity: "critical",
+      category: "sonar",
+    };
+    const offDiffModel: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      // Line 7 is also outside the diff hunks.
+      line: 7,
+      body: "Model bug outside the diff.",
+      severity: "medium",
+      category: "bug",
+    };
+    const review: LiveReview = {
+      summary: "Looks good, ship it.",
+      verdict: "SHIP",
+      comments: [offDiffSonar, offDiffModel],
+      suppressedComments: [],
+    };
+
+    const prepared = preparePostedReview({
+      review,
+      provider: "openai-compatible",
+      modelId: "review-model",
+      diffText: makeDiffText(),
+      parsed: baseParsedArgs(),
+      secrets: [],
+    });
+
+    expect(prepared.postableComments).toHaveLength(0);
+    expect(prepared.offDiffFromComments).toHaveLength(2);
+    expect(prepared.suppressedCommentCount).toBe(2);
+    expect(prepared.body).toContain("\"suppressedCount\":2");
   });
 
   it("retries the review POST body-only once when GitHub rejects the comments-bearing POST with 422", async () => {

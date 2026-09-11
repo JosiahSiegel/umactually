@@ -868,9 +868,11 @@ function selectPostableCommentsWithPositions(input: {
     // and nuked the review). SonarCloud's line numbers are authoritative
     // for the source FILE, not the diff, so they are NOT valid inline
     // anchors by themselves. Off-diff SonarCloud findings are not lost:
-    // `selectOffDiffCommentsWithPositions` routes them into the
-    // suppressed count surfaced in the review body's manifest, and
-    // runGithubLive annotates the dropped count. A former bypass that
+    // `preparePostedReview` calls `selectOffDiffCommentsWithPositions`
+    // and sums the returned length into its `suppressedCommentCount`
+    // (returned on `PreparedPostedReview`), which `buildReviewBody`
+    // renders as the manifest's `suppressedCount`; `runGithubLive` also
+    // annotates the dropped count. A former bypass that
     // let sonar findings skip this gate was removed — its premise
     // ("GitHub accepts any positive line number within the file") is
     // false for the reviews endpoint.
