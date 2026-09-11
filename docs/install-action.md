@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9  # v1
         with:
-          cli-version: "<version-that-includes-effort>"
+          cli-version: "REPLACE_WITH_A_RELEASE_THAT_RECOGNIZES_UMACTUALLY_EFFORT"
           provider: openai-compatible
           api-url: ${{ secrets.UMACTUALLY_API_URL }}
           api-key: ${{ secrets.UMACTUALLY_API_KEY }}
