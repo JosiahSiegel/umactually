@@ -80,7 +80,7 @@ describe("README quickstart freshness", () => {
     // pinned as the recommended Quickstart path anymore. This is a
     // deliberate inversion, not a regression: see plan task T16.
     const readme = readFileSync(join(REPO_ROOT, "README.md"), "utf8");
-    const actionRefIndex = readme.indexOf("JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9");
+    const actionRefIndex = readme.indexOf("JosiahSiegel/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2");
     const advancedHeadingIndex = readme.indexOf("### Advanced / local install");
     const initIndex = readme.indexOf("umactually init");
     const npmInstallIndex = readme.indexOf("npm install -g umactually");
@@ -145,7 +145,7 @@ describe("README quickstart freshness", () => {
       ?? "";
     expect(mainPath.length, "Quickstart main-path body must be non-empty").toBeGreaterThan(0);
     // The action-install flow must be the Quickstart main path.
-    expect(mainPath, "Quickstart main path must reference the SHA-pinned action install").toMatch(/JosiahSiegel\/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9/u);
+    expect(mainPath, "Quickstart main path must reference the SHA-pinned action install").toMatch(/JosiahSiegel\/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2/u);
     expect(mainPath, "Quickstart main path must describe adding two secrets").toMatch(/UMACTUALLY_API_KEY/u);
     expect(mainPath, "Quickstart main path must describe opening a PR").toMatch(/pull_request/u);
     // The wizard must NOT be pinned as part of the Quickstart main path

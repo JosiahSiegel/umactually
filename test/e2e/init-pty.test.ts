@@ -404,7 +404,7 @@ describe.skipIf(SKIP_REASON !== null)(
       const steps = review["steps"] as ReadonlyArray<Record<string, unknown>>;
       const uses = steps.map((step) => step["uses"]);
       expect(uses).toContain("actions/checkout@v4");
-      expect(uses).toContain("JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9");
+      expect(uses).toContain("JosiahSiegel/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2");
 
       // Clean up the generated workflow so it doesn't pollute the repo.
       await rm(workflowPath, { force: true });

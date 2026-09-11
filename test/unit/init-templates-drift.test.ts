@@ -137,7 +137,7 @@ describe("init CI templates drift contract", () => {
   // independent of the byte-equality check above.
   it("github shortform: canonical action-ref fixture references the published action (SHA-pinned) and lists every documented `with:` input", () => {
     const body = readFileSync(resolve(shortformFiles.github), "utf8");
-    expect(body).toMatch(/JosiahSiegel\/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9\s+# v1/u);
+    expect(body).toMatch(/JosiahSiegel\/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2\s+# v1/u);
     expect(body).toMatch(/pull_request:\s*\n\s*branches:\s*\[main\]/u);
     expect(body).toMatch(/paths:\s*\n\s*-\s*"\*\*\.ts"/u);
     expect(body).toMatch(/concurrency:/u);

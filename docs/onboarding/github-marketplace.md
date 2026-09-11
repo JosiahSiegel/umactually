@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: JosiahSiegel/umactually-action@9924e799c11ae31a694caf761bdfe7d66b7e78e9  # v1
+      - uses: JosiahSiegel/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2  # v1
         with:
           cli-version: 0.10.1
           provider: openai-compatible
@@ -29,7 +29,7 @@ jobs:
           api-key: ${{ secrets.UMACTUALLY_API_KEY }}
 ```
 
-Secrets are forwarded via the `with:` inputs (`api-url`, `api-key`). Composite Actions cannot access the `secrets.` context; a `secrets:` block on `uses:` is not honored here. The trigger is `pull_request`, not `pull_request_target` — fork PRs never get a privileged token against your code.
+Secrets are forwarded via the `with:` inputs (`api-url`, `api-key`). Composite Actions cannot access the `secrets.` context; a `secrets:` block on `uses:` is not honored here. The trigger is `pull_request`, not `pull_request_target` — fork PRs never get a privileged token against your code. The `cli-version: 0.10.1` pin is the same as the prior release and this snippet omits the optional `effort` input, which needs a CLI that recognizes `--effort` (`0.12.0` or newer); see [`docs/install-action.md`](../install-action.md) for the effort contract.
 
 ## Why the SHA pin
 
