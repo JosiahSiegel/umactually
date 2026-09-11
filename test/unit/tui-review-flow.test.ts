@@ -1,4 +1,10 @@
+import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const gitDiff = vi.hoisted(() => vi.fn<() => Promise<{ stdout: string; stderr: string }>>());
+vi.mock("node:child_process", () => ({
+  execFile: Object.assign(vi.fn(), { [Symbol.for("nodejs.util.promisify.custom")]: gitDiff }),
+}));
 
 vi.mock("@clack/prompts", () => ({
   select: vi.fn(),
@@ -53,9 +59,17 @@ const setAnswers = (answers: readonly (string | symbol)[]): void => {
   vi.mocked(isCancel).mockReturnValue(false);
 };
 
-describe("Run Review wizard", () => {
+describe.each([
+  { state: "empty", stdout: "", diffPath: null },
+  {
+    state: "nonempty",
+    stdout: "diff --git a/file.ts b/file.ts\n--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new\n",
+    diffPath: expect.stringMatching(/^\.\/\.umactually-tui-diff-/u),
+  },
+])("Run Review wizard ($state git diff)", ({ stdout, diffPath }) => {
   beforeEach(() => {
     vi.clearAllMocks();
+    gitDiff.mockResolvedValue({ stdout, stderr: "" });
     promptSequence = [];
     delete process.env["UMACTUALLY_API_KEY"];
     delete process.env["UMACTUALLY_EFFORT"];
@@ -63,10 +77,19 @@ describe("Run Review wizard", () => {
     delete process.env["GH_TOKEN"];
   });
   it("A: maps Anthropic answers to provider, URL, model, API key, and diff source", async () => {
+    // Given a deterministic git diff, independent of the checkout's changes.
     setAnswers(["anthropic", "https://api.example", "model-x", "secret", "diff"]);
-    vi.mocked(runStandalone).mockResolvedValue({ kind: "ok-no-diff", artifactPath: "x", note: "done" });
+    let consumedDiff: string | undefined;
+    vi.mocked(runStandalone).mockImplementation(async ({ parsed }) => {
+      consumedDiff = parsed.diffPath === null ? "" : await readFile(parsed.diffPath, "utf8");
+      return { kind: "ok-no-diff", artifactPath: "x", note: "done" };
+    });
 
+    // When the wizard hands the selected source to standalone.
     await expect(runReviewFlow()).resolves.toEqual({ exitCode: 0 });
+
+    // Then standalone receives the exact diff bytes, or the no-diff path.
+    expect(consumedDiff).toBe(stdout);
 
     const captured = vi.mocked(runStandalone).mock.calls[0]?.[0];
     expect(captured?.parsed).toMatchObject({
@@ -77,7 +100,8 @@ describe("Run Review wizard", () => {
       apiKey: "secret",
       files: null,
     });
-    expect(captured?.parsed.diffPath).toMatch(/^\.\/\.umactually-tui-diff-/u);
+    expect(captured?.parsed.diffPath).toEqual(diffPath);
+    expect(gitDiff).toHaveBeenCalledWith("git", ["diff"], { cwd: process.cwd() });
     expect(captured?.env?.["UMACTUALLY_API_KEY"]).toBe("secret");
     expect(promptSequence).toEqual(["select", "text", "text", "password", "select"]);
   });
@@ -131,7 +155,8 @@ describe("Run Review wizard", () => {
       apiKey: null,
       files: null,
     });
-    expect(captured?.parsed.diffPath).toMatch(/^\.\/\.umactually-tui-diff-/u);
+    expect(captured?.parsed.diffPath).toEqual(diffPath);
+    expect(gitDiff).toHaveBeenCalledWith("git", ["diff"], { cwd: process.cwd() });
     expect(promptSequence).toEqual(["select", "text", "select"]);
     expect(resolveProviderCredential(captured?.parsed ?? { ...parseCliArgs([]), provider: "copilot" }, captured?.env ?? {})).toBe("github-env-token");
   });
@@ -152,7 +177,8 @@ describe("Run Review wizard", () => {
       githubToken: "prompted-github-token",
       files: null,
     });
-    expect(captured?.parsed.diffPath).toMatch(/^\.\/\.umactually-tui-diff-/u);
+    expect(captured?.parsed.diffPath).toEqual(diffPath);
+    expect(gitDiff).toHaveBeenCalledWith("git", ["diff"], { cwd: process.cwd() });
     expect(captured?.env?.["GITHUB_TOKEN"]).toBe("prompted-github-token");
     expect(promptSequence).toEqual(["select", "text", "password", "select"]);
     expect(resolveProviderCredential(captured?.parsed ?? parseCliArgs([]), captured?.env ?? {})).toBe("prompted-github-token");
