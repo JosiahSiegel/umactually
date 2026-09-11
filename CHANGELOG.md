@@ -10,6 +10,10 @@ ship a tag).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The release workflow's `Verify npm publication` step no longer false-fails on a slow npm registry.** Phase 1 (the package-level `dist-tags.latest` fast-path) is now best-effort: its budget is tightened to 30s and, on a miss, it logs `::warning::` and falls through to the authoritative per-version probe instead of aborting the step — the exact false-negative that marked the v0.12.0 release run red after the publish had already succeeded. Phase 2 now reads the Sigstore provenance attestation from `dist.attestations` (where npm stores it) rather than the top level of the version document, so it stops rejecting every valid publish. `[.github/workflows/release.yml]`
+
 ## [0.12.0] - 2026-09-11
 
 ### Added

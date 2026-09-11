@@ -1854,6 +1854,60 @@ describe("Release workflow design contract — tag-push publishes, dispatch is d
 });
 
 // ===========================================================================
+// npm publication verification probe contract.
+//
+// Locks the two fixes for the v0.12.0 `Verify npm publication` false
+// negative:
+//   1. Phase 1 (`dist-tags.latest`) is a best-effort fast-path and MUST
+//      NOT fail the step. A miss warns and falls through to Phase 2.
+//      When Phase 1 was fatal, a 60s registry-propagation delay aborted
+//      the step before the authoritative probe ever ran (v0.12.0).
+//   2. Phase 2 requires the Sigstore provenance attestation at
+//      `dist.attestations` on the per-version document. npm stores the
+//      attestation there, NOT at the top level, so the previous
+//      `Object.hasOwn(o, 'attestations')` check false-failed every
+//      publish from v0.8.0 onward (the field does not exist on the
+//      version document root).
+// ===========================================================================
+
+describe("npm publication verification probe contract", () => {
+  const verifyStepRun = (): string => {
+    const jobs = readJobs(loadCurrentWorkflow()["jobs"]);
+    const job = jobs["publish-npm"] ?? EMPTY_JOB;
+    const step = job.steps.find((candidate) => candidate.name === "Verify npm publication");
+    expect(step, "publish-npm must have a `Verify npm publication` step").toBeTypeOf("object");
+    return step?.run ?? "";
+  };
+
+  it("NPM-VERIFY-PHASE1-NONFATAL: the dist-tags.latest fast-path warns and falls through, never fails the step", () => {
+    const run = verifyStepRun();
+    expect(run, "Phase 1 must warn (not error) on a dist-tags.latest miss").toContain("::warning::Phase 1");
+    expect(run, "Phase 1 must never hard-fail the step").not.toContain("::error::Phase 1");
+    expect(run, "Phase 1 warning must explain the fall-through to Phase 2").toMatch(/falling through/i);
+  });
+
+  it("NPM-VERIFY-PHASE2-PROVENANCE: the authoritative probe reads dist.attestations, not the top-level field", () => {
+    const run = verifyStepRun();
+    expect(run, "Phase 2 must read the npm provenance path dist.attestations").toMatch(
+      /o\.dist\s*&&\s*o\.dist\.attestations/,
+    );
+    expect(
+      run,
+      "Phase 2 must NOT probe only the top-level `attestations` field (npm stores it under dist)",
+    ).not.toMatch(/Object\.hasOwn\(\s*o\s*,\s*['"]attestations['"]\s*\)/);
+  });
+
+  it("NPM-VERIFY-PHASE2-AUTHORITATIVE: Phase 2 keeps the long per-version budget and only fails when provenance never appears", () => {
+    const run = verifyStepRun();
+    expect(run, "Phase 2 must poll the per-version URL").toMatch(
+      /registry\.npmjs\.org\/umactually\/\$\{VERSION\}/,
+    );
+    expect(run, "Phase 2 must retain the 60x10s (600s) propagation budget").toMatch(/seq 1 60/);
+    expect(run, "Phase 2 must fail the step when provenance never appears").toContain("::error::Phase 2");
+  });
+});
+
+// ===========================================================================
 // Post-release e2e workflow contract.
 //
 // These tests lock in the wire format of
