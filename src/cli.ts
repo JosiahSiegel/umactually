@@ -624,7 +624,7 @@ async function tryInteractiveCredentialsRecovery(
   policyMeta: { readonly path: string | null; readonly hash: string | null; readonly schemaVersion: number | null },
 ): Promise<CliExecutionResult | null> {
   const promptForUrl = initialErrors.some((e) => e.flag === "--api-url");
-  const prompted = await smartPromptForApiConfig({ promptForUrl });
+  const prompted = await smartPromptForApiConfig({ promptForUrl, credential: resolved.provider === "copilot" ? "github-token" : "api-key" });
   // SchemaResolvedCliArgs extends ParsedCliArgs, so the same
   // applyPromptedConfig helper works on both.
   const augmented = applyPromptedConfig(resolved as unknown as ParsedCliArgs, prompted);
@@ -768,7 +768,7 @@ async function runAfterValidation(input: {
  * model provider config".
  */
 function everyErrorIsApiConfig(errors: readonly ValidationError[]): boolean {
-  return errors.every((e) => e.flag === "--api-url" || e.flag === "--api-key");
+  return errors.every((e) => e.flag === "--api-url" || e.flag === "--api-key" || e.flag === "--github-token");
 }
 
 /**
@@ -781,7 +781,7 @@ function everyErrorIsApiConfig(errors: readonly ValidationError[]): boolean {
  */
 function applyPromptedConfig(
   resolved: ParsedCliArgs,
-  prompted: { readonly apiUrl: string | null; readonly apiKey: string | null },
+  prompted: { readonly apiUrl: string | null; readonly apiKey: string | null; readonly githubToken?: string },
 ): ParsedCliArgs {
   const nextApiUrl = prompted.apiUrl !== null && (resolved.apiUrl === null || resolved.apiUrl.length === 0)
     ? prompted.apiUrl
@@ -793,6 +793,7 @@ function applyPromptedConfig(
     ...resolved,
     apiUrl: nextApiUrl,
     apiKey: nextApiKey,
+    ...(!resolved.githubToken && prompted.githubToken !== undefined ? { githubToken: prompted.githubToken } : {}),
   };
 }
 

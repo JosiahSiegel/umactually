@@ -232,8 +232,9 @@ export async function smartPromptForValue(input: {
  */
 export async function smartPromptForApiConfig(input: {
   readonly promptForUrl: boolean;
+  readonly credential?: "api-key" | "github-token";
   readonly timeoutMs?: number;
-}): Promise<{ readonly apiUrl: string | null; readonly apiKey: string | null }> {
+}): Promise<{ readonly apiUrl: string | null; readonly apiKey: string | null; readonly githubToken?: string }> {
   let apiUrl: string | null = null;
   if (input.promptForUrl) {
     apiUrl = await smartPromptForValue({
@@ -242,6 +243,15 @@ export async function smartPromptForApiConfig(input: {
       placeholder: "https://api.openai.com/v1",
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     });
+  }
+  if (input.credential === "github-token") {
+    const githubToken = await smartPromptForValue({
+      label: "GitHub token with Copilot access",
+      envVarName: "GITHUB_TOKEN",
+      placeholder: "GitHub token",
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    });
+    return { apiUrl, apiKey: null, ...(githubToken === null ? {} : { githubToken }) };
   }
   const apiKey = await smartPromptForValue({
     label: "Model provider API key",
