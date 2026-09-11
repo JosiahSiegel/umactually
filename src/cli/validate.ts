@@ -1,9 +1,28 @@
+import { resolveField } from "../config/field-resolution.js";
+import { requireLiveConfig, RequiredConfigError } from "../util/required-config.js";
 import type { Platform } from "../config/types.js";
 import type { ParsedCliArgs } from "./parse-args.js";
 import { detectPlatform, PlatformDetectionError } from "../platform/detect.js";
 
 /** Platform after auto-resolution. Mirrors `Platform` minus the "auto" variant. */
 export type ResolvedPlatform = Exclude<Platform, "auto">;
+
+/** Provider credentials never fall back to the platform posting token. */
+export function resolveProviderCredential(parsed: ParsedCliArgs, env: NodeJS.ProcessEnv): string {
+  switch (parsed.provider ?? env["UMACTUALLY_PROVIDER"] ?? "openai-compatible") {
+    case "copilot": {
+      const token = [parsed.githubToken, env["GITHUB_TOKEN"], env["GH_TOKEN"]]
+        .find((value) => value !== undefined && value.trim().length > 0);
+      if (token === undefined) {
+        throw new RequiredConfigError("LIVE_CONFIG_MISSING", "GITHUB_TOKEN must be set for Copilot live review.",
+          "Pass --github-token <token> or set GITHUB_TOKEN / GH_TOKEN to a GitHub token with Copilot access.");
+      }
+      return token;
+    }
+    default:
+      return requireLiveConfig(resolveField(parsed.apiKey, env["UMACTUALLY_API_KEY"], ""), "UMACTUALLY_API_KEY");
+  }
+}
 
 /**
  * Structured validation error. Carries the originating flag (or
@@ -137,7 +156,10 @@ function collectAlwaysValidationErrors(parsed: ParsedCliArgs): readonly Validati
         hint: "Pass --api-url <url> or UMACTUALLY_API_URL=<url>, or use --dry-run to skip the provider call.",
       });
     }
-    if (parsed.apiKey === null || parsed.apiKey.length === 0) {
+    if (parsed.provider === "copilot" && !parsed.githubToken?.trim()) {
+      errors.push({ flag: "--github-token", message: "--github-token is required for Copilot", hint: "Pass --github-token <token> or set GITHUB_TOKEN / GH_TOKEN to a GitHub token with Copilot access." });
+    }
+    if (parsed.provider !== "copilot" && (parsed.apiKey === null || parsed.apiKey.length === 0)) {
       errors.push({
         flag: "--api-key",
         message: "--api-key is required",
