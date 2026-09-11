@@ -151,9 +151,11 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
     expect(result.verdict).toBe("NEEDS_FIX");
     // Regression lock for the "0 inline findings — ship it" bug: the
     // returned inlineThreadCount must include the merged SonarCloud
-    // findings, not just the model-emitted ones. Before the position-
-    // validation bypass for `category: "sonar"`, this would have been 0
-    // because SonarCloud line numbers don't always match the diff.
+    // findings, not just the model-emitted ones. In-diff SonarCloud
+    // findings pass the same uniform `positions.hasPosition` gate as
+    // model findings (there is no category-based bypass — GitHub's
+    // REST API rejects any inline anchor outside a diff hunk with a
+    // 422 that would nuke the whole review).
     expect(result.inlineThreadCount).toBe(2);
   });
 
@@ -220,17 +222,16 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
     expect(result.inlineThreadCount).toBe(0);
   });
 
-  it("includes a merged SonarCloud finding even when its line is outside the diff context (position-validation bypass)", async () => {
-    // Regression for the symptom-image bug: the green box said
-    // "0 inline findings — ship it" while two sonar threads were
-    // actually posted under the same review. The cause was that
-    // `selectPostableCommentsWithPositions` dropped SonarCloud
-    // findings whose reported line numbers fell outside the diff's
-    // context. After the position-validation bypass for `category:
-    // "sonar"`, a finding on an unchanged file line still reaches the
-    // postable set — SonarCloud's line numbers are authoritative for
-    // the file, not the diff.
-    const capturedBodies: Array<{ comments: Array<{ path: string; line: number }> }> = [];
+  it("excludes a SonarCloud finding whose path+line is absent from the diff from the POSTed inline comments (off-diff goes to the manifest)", async () => {
+    // GitHub's create-review REST endpoint requires every inline comment
+    // path+line to sit inside a diff hunk of the given commit; an
+    // off-diff anchor makes the whole POST fail atomically with 422
+    // (PR #246 head 6988012: 4 of 7 SonarCloud S3776 findings anchored
+    // function-declaration lines outside the hunks). Position validation
+    // therefore applies to `category: "sonar"` findings uniformly — the
+    // dropped finding is NOT lost: it is counted in the body's hidden
+    // manifest (`suppressedCount`) via selectOffDiffCommentsWithPositions.
+    const capturedBodies: Array<{ body: string; comments: Array<{ path: string; line: number }>; event: string }> = [];
     const fetchImpl: FetchImpl = (url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
       const urlString = typeof url === "string" ? url : url.toString();
@@ -241,10 +242,10 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
             issues: [
               {
                 // Line 5 is NOT touched by the diff (the diff's hunks are
-                // around lines 1296-1301). Before the fix, this finding
-                // would have been dropped by `positions.hasPosition`.
+                // around lines 1295-1301), so this finding can never be
+                // posted as an inline comment on this commit.
                 component: "JosiahSiegel_umactually:src/cli/init.ts",
-                rule: "typescript:S9999",
+                rule: "typescript:S3776",
                 line: 5,
                 severity: "CRITICAL",
                 message: "Critical issue on a line outside the diff context.",
@@ -259,7 +260,7 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
       if (method === "POST" && urlString.endsWith("/pulls/42/reviews")) {
         const rawBody = typeof init?.body === "string" ? init.body : "";
         const body = rawBody === "" ? {} : JSON.parse(rawBody);
-        capturedBodies.push(body as { comments: Array<{ path: string; line: number }> });
+        capturedBodies.push(body as { body: string; comments: Array<{ path: string; line: number }>; event: string });
         return Promise.resolve(makeJsonResponse({ id: 7777 }));
       }
       throw new Error(`unexpected ${method} ${urlString}`);
@@ -278,7 +279,16 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
       fetchImpl,
     });
 
-    expect(result.inlineThreadCount).toBe(1);
-    expect(capturedBodies[0]?.comments[0]?.line).toBe(5);
+    expect(result.posted).toBe(true);
+    expect(result.inlineThreadCount).toBe(0);
+    const postedReview = capturedBodies[0];
+    expect(postedReview).toBeDefined();
+    expect(postedReview?.comments).toHaveLength(0);
+    // Off-diff findings don't escalate the verdict (severity counts are
+    // computed from the posted set), so the review posts as a neutral
+    // COMMENT and the finding is auditable via the manifest's
+    // suppressedCount — machine-parseable, not prose.
+    expect(postedReview?.event).toBe("COMMENT");
+    expect(postedReview?.body).toContain("\"suppressedCount\":1");
   });
 });
