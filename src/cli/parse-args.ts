@@ -1,11 +1,12 @@
 import { FIELDS } from "../config/field-schema.js";
+import { EFFORT_LEVELS, parseEffort, type Effort } from "../config/effort.js";
 import { didYouMean, parseStrictInt, readEnum } from "../util/cli-args.js";
 import type { Severity } from "../config/types.js";
 import { parseSeverityFromUnknown } from "../config/parsers.js";
 
 export type CliPlatform = "auto" | "github" | "azure";
 export type CliMinimumSeverity = "low" | "medium" | "high";
-export type CliEffort = "low" | "medium" | "high";
+export type CliEffort = Effort;
 export type CliProvider = "openai-compatible" | "copilot" | "anthropic";
 
 const explicitFieldsByParse = new WeakMap<ParsedCliArgs, ReadonlySet<string>>();
@@ -567,7 +568,11 @@ function readPlatform(value: string): CliPlatform {
 
 function readEffort(args: readonly string[], index: number): CliEffort {
   const raw = readValue(args, index, "effort");
-  return readEnum<CliEffort>("--effort", raw, FIELDS.effort.enumValues as readonly CliEffort[], CliUsageError);
+  const effort = parseEffort(raw);
+  if (effort === undefined) {
+    throw new CliUsageError("invalid --effort value", `Accepted values: ${EFFORT_LEVELS.join(", ")}`);
+  }
+  return effort;
 }
 
 function readProvider(value: string): CliProvider {

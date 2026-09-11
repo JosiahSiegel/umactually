@@ -446,7 +446,6 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
     // Belt-and-suspenders: assert no policy key ever leaks through the
     // serialization even via a cast.
     const evil = baseConfig as unknown as Record<string, unknown>;
-    evil["effort"] = "high";
     evil["pathRules"] = [{ pattern: "src/**/*.ts" }];
     evil["gateMode"] = "block";
     evil["minimumSeverity"] = "warning";

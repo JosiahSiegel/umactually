@@ -25,6 +25,7 @@
 // no-secrets-at-rest guarantee.
 
 import { join } from "node:path";
+import { parseEffort, type Effort } from "./effort.js";
 import { mkdirSync, openSync, closeSync, renameSync, statSync } from "node:fs";
 import {
   defaultFsAdapter,
@@ -53,6 +54,7 @@ export type SavedConfig = {
   readonly provider: SavedConfigProvider;
   readonly apiUrl?: string;
   readonly model?: string;
+  readonly effort?: Effort;
 };
 
 export const SAVED_CONFIG_GLOBAL_PATH = (homeDir: string): string =>
@@ -260,6 +262,12 @@ function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSaved
     };
   }
 
+  const effortRaw = obj["effort"];
+  const effort = parseEffort(effortRaw);
+  if (effortRaw !== undefined && effort === undefined) {
+    return { ok: false, path: candidate, exitCode: 2, message: `invalid effort in ${candidate}: expected a recognized effort level` };
+  }
+
   const apiUrlRaw = obj["apiUrl"];
   const modelRaw = obj["model"];
 
@@ -295,6 +303,7 @@ function validateSavedConfig(parsed: unknown, candidate: string): ValidatedSaved
     provider: obj["provider"] as SavedConfigProvider,
     ...(apiUrl !== undefined ? { apiUrl } : {}),
     ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
   };
   return { ok: true, config };
 }
@@ -690,6 +699,7 @@ export function serializeSavedConfig(config: SavedConfig): string {
   };
   if (config.apiUrl !== undefined) ordered["apiUrl"] = config.apiUrl;
   if (config.model !== undefined) ordered["model"] = config.model;
+  if (config.effort !== undefined) ordered["effort"] = config.effort;
   return JSON.stringify(ordered, null, 2) + "\n";
 }
 

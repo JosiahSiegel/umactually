@@ -121,6 +121,7 @@ function coerceField(
   field: FieldDef<FieldType>,
   raw: unknown,
 ): string | number | boolean | null {
+  if (raw === null && field.defaultValue === null) return null;
   switch (field.type) {
     case "string":
       if (typeof raw !== "string") {

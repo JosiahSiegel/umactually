@@ -21,7 +21,7 @@ import type {
 } from "../config/field-resolution.js";
 import type { SavedConfig } from "../config/saved-config.js";
 
-const SAVED_CONFIG_FIELDS = ["provider", "apiUrl", "model"] as const;
+const SAVED_CONFIG_FIELDS = ["provider", "apiUrl", "model", "effort"] as const;
 type SavedConfigField = (typeof SAVED_CONFIG_FIELDS)[number];
 
 type SavedConfigSource = {
@@ -85,6 +85,15 @@ export function applySavedConfig(
       current = next;
       applied.push("model");
     }
+  }
+
+  if (saved.effort !== undefined && current.fieldProvenance["effort"]?.source === "default") {
+    current = {
+      ...current,
+      effort: saved.effort,
+      fieldProvenance: { ...current.fieldProvenance, effort: { source: "savedConfig" } },
+    };
+    applied.push("effort");
   }
 
   return { resolved: current, applied };
