@@ -232,6 +232,25 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
     // therefore applies to `category: "sonar"` findings uniformly — the
     // dropped finding is NOT lost: it is counted in the body's hidden
     // manifest (`suppressedCount`) via selectOffDiffCommentsWithPositions.
+    //
+    // Review 5180365033 finding C: this test now also feeds a
+    // model-emitted off-diff finding alongside the sonar off-diff
+    // finding so the suppressedCount assertion proves the off-diff
+    // SUPPRESSED ENTRY's CATEGORY — both `category: "sonar"` and
+    // `category: "bug"` paths increment the manifest, not just the
+    // sonar one. A former bypass that let sonar findings skip the
+    // position gate would have broken this invariant (suppressedCount
+    // would have stayed at 1).
+    const offDiffModelComment: LiveReviewComment = {
+      path: "src/cli/init.ts",
+      // Line 7 is OUTSIDE the diff hunk (hunks cover 1295-1301), so this
+      // model finding is also off-diff and should be counted in the same
+      // suppressedCount bucket as the sonar finding.
+      line: 7,
+      body: "Model finding anchored outside the diff.",
+      severity: "medium",
+      category: "bug",
+    };
     const capturedBodies: Array<{ body: string; comments: Array<{ path: string; line: number }>; event: string }> = [];
     const fetchImpl: FetchImpl = (url, init) => {
       const method = (init?.method ?? "GET").toUpperCase();
@@ -270,7 +289,7 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
     const result = await runGithubLive({
       context: makeContext(),
       diffText: makeDiffText(),
-      provider: makeProviderOutcome(),
+      provider: makeProviderOutcome([offDiffModelComment]),
       parsed: baseParsedArgs({
         includePrSonarFindings: true,
         sonarHostUrl: "https://sonarcloud.io",
@@ -290,7 +309,14 @@ describe("runGithubLive — SonarCloud PR issues merge", () => {
     // COMMENT and the finding is auditable via the manifest's
     // suppressedCount — machine-parseable, not prose.
     expect(postedReview?.event).toBe("COMMENT");
-    expect(postedReview?.body).toContain("\"suppressedCount\":1");
+    // Finding C: both the `category: "sonar"` finding AND the
+    // `category: "bug"` model finding are off-diff, so suppressedCount
+    // must reflect BOTH entries — proving the suppressed-entry category
+    // attribute is honored on the way through selectPostableComments
+    // (a category-based bypass that only let sonar skip the gate would
+    // NOT have suppressed the model-emitted one, so this number is the
+    // regression lock).
+    expect(postedReview?.body).toContain("\"suppressedCount\":2");
   });
 
   it("retries the review POST body-only once when GitHub rejects the comments-bearing POST with 422", async () => {
