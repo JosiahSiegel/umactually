@@ -1,3 +1,4 @@
+import type { Effort } from "../config/effort.js";
 import { extractJsonBlock } from "../render/json-extract.js";
 import {
   isRecord,
@@ -339,7 +340,7 @@ export function buildResponsesBody(
     readonly system: string;
     readonly user: string;
     readonly maxOutputTokens?: number;
-    readonly reasoningEffort?: "low" | "medium" | "high";
+    readonly reasoningEffort?: Effort;
     readonly responseFormat?: ResponseFormat;
   },
   opts?: { readonly userOverride?: string },
@@ -377,7 +378,7 @@ export function buildChatBody(
     readonly system: string;
     readonly user: string;
     readonly maxOutputTokens?: number;
-    readonly reasoningEffort?: "low" | "medium" | "high";
+    readonly reasoningEffort?: Effort;
     readonly responseFormat?: ResponseFormat;
   },
   opts?: { readonly userOverride?: string },

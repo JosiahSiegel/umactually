@@ -41,6 +41,8 @@
  * diagnostic, hard-fail on router errors) is identical regardless of which
  * provider family the operator picks.
  */
+import type { Effort } from "../config/effort.js";
+import { assertAnthropicEffort, checkEffortRejection } from "./provider-effort-error.js";
 import {
   countPopulatedBodies,
   detectProviderError,
@@ -101,17 +103,7 @@ export type AnthropicProviderCallConfig = {
   readonly fetchImpl?: typeof fetch;
   readonly signal?: AbortSignal;
   readonly maxOutputTokens?: number;
-  /**
-   * Optional reasoning-effort hint forwarded from `--effort`. Anthropic's
-   * native Messages API does NOT define a `reasoning_effort` field, but
-   * some Anthropic-protocol-compatible gateways (e.g. dual-protocol
-   * gateways that also serve an OpenAI-style reasoning model) do honor
-   * it. We forward the value as `reasoning_effort` on the wire; the
-   * gateway decides what to do with it. Native Anthropic.com simply
-   * ignores unknown fields per its API spec, so the worst case is a
-   * no-op (the value is ignored), not a wire-shape error.
-   */
-  readonly reasoningEffort?: "low" | "medium" | "high";
+  readonly reasoningEffort?: Effort;
 };
 
 export { ProviderError };
@@ -126,7 +118,7 @@ function buildBodyConfig(config: AnthropicProviderCallConfig): {
   readonly system: string;
   readonly user: string;
   readonly maxOutputTokens?: number;
-  readonly reasoningEffort?: "low" | "medium" | "high";
+  readonly reasoningEffort?: Effort;
 } {
   return {
     model: config.model,
@@ -167,17 +159,7 @@ export function buildAnthropicBody(
     readonly system: string;
     readonly user: string;
     readonly maxOutputTokens?: number;
-    /**
-     * Optional reasoning-effort hint forwarded from `--effort`. Anthropic's
-     * native Messages API does NOT define a `reasoning_effort` field, but
-     * some Anthropic-protocol-compatible gateways (e.g. dual-protocol
-     * gateways that also serve an OpenAI-style reasoning model) do honor
-     * it. We forward the value as `reasoning_effort` on the wire; the
-     * gateway decides what to do with it. Native Anthropic.com simply
-     * ignores unknown fields per its API spec, so the worst case is a
-     * no-op (the value is ignored), not a wire-shape error.
-     */
-    readonly reasoningEffort?: "low" | "medium" | "high";
+    readonly reasoningEffort?: Effort;
   },
   opts?: { readonly userOverride?: string },
 ): Record<string, unknown> {
@@ -199,12 +181,9 @@ export function buildAnthropicBody(
   // when the operator did not pin one so the call works even in tests
   // that omit the cap.
   body["max_tokens"] = config.maxOutputTokens ?? 4096;
-  // Forward the operator's reasoning-effort hint when set. Omitted
-  // entirely (not sent as `null`) when --effort is not set, so
-  // gateways that reject unknown fields stay happy. See the field
-  // docstring for the wire-compat rationale.
+  assertAnthropicEffort(config.reasoningEffort);
   if (config.reasoningEffort !== undefined) {
-    body["reasoning_effort"] = config.reasoningEffort;
+    body["output_config"] = { effort: config.reasoningEffort };
   }
   return body;
 }
@@ -300,6 +279,12 @@ export async function runAnthropicRequest(
 ): Promise<AnthropicProviderCallResult> {
   const fetchImpl = config.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const requestId = createRequestId();
+  try {
+    assertAnthropicEffort(config.reasoningEffort);
+  } catch (error) {
+    if (error instanceof ProviderError) return { ok: false, error };
+    throw error;
+  }
 
   // Resolve to the full Anthropic Messages URL, preserving any
   // operator-supplied path prefix. This matches the OFFICIAL
@@ -364,6 +349,7 @@ async function runOnce(
       fetchImpl,
       buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
     });
+    await checkEffortRejection(response, { ...config, endpoint: ENDPOINT, requestId, secrets: [config.apiKey] });
   } catch (error) {
     if (error instanceof ProviderError) {
       return { ok: false, error };
@@ -508,6 +494,7 @@ async function runOnce(
       fetchImpl,
       buildHeaders: () => buildAnthropicHeaders(config.apiKey, requestId),
     });
+    await checkEffortRejection(retryResponse, { ...config, endpoint: ENDPOINT, requestId, secrets: [config.apiKey] });
     retryResponseStatus = retryResponse.status;
     if (retryResponse.ok) {
       const retryRawText = await readResponseText(retryResponse, ENDPOINT, requestId);
@@ -517,7 +504,10 @@ async function runOnce(
         retryReview = parsedRetry;
       }
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof ProviderError && error.providerErrorDetails?.kind === "effort-rejection") {
+      return { ok: false, error };
+    }
     // Retry path threw — fall through to the original-rawText parse-fail
     // throw below. retryResponseStatus stays null in this branch.
   }
