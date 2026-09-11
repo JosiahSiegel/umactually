@@ -11,7 +11,7 @@ Latest release: **[v0.12.0](https://github.com/JosiahSiegel/umactually/releases/
 
 Add `umactually-action` to a pull-request workflow, configure two repo secrets, ship. The action owns Node.js 24 setup, `npm install -g umactually`, the first-run secret bootstrap, the live review, and the verdict output for branch protection. Full reference: [`docs/install-action.md`](docs/install-action.md).
 
-1. **Add the action** to `.github/workflows/umactually-pr-review.yml` (SHA-pinned; enable Dependabot on `uses:` to auto-bump the SHA):
+1. **Add the action** to `.github/workflows/umactually-pr-review.yml` (SHA-pinned; enable Dependabot on `uses:` to auto-bump the SHA). The `cli-version: 0.10.1` pin is the same as the prior release and this snippet omits the optional `effort` input, which needs a CLI that recognizes `--effort` (`0.12.0` or newer):
 
    ```yaml
    - uses: JosiahSiegel/umactually-action@d5f6da00a72933cd30ab31973e6e80cd313528d2  # v1
