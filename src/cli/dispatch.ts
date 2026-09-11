@@ -17,7 +17,11 @@ import { formatCheckLines } from "../util/check-format.js";
 import { type HelpCommand, printContextualHelp, renderCommandsTable } from "./help.js";
 import { tryReadSavedConfig } from "./load-saved-config.js";
 import { parseCliArgs } from "./parse-args.js";
-import { resolveFromSchema } from "../config/field-resolution.js";
+import {
+  resolveFromSchema,
+  type FieldProvenance,
+  type SchemaResolvedCliArgs,
+} from "../config/field-resolution.js";
 import { applySavedConfig } from "./apply-saved-config.js";
 import type { SavedConfig } from "../config/saved-config.js";
 import { loadReviewPolicy } from "../config/review-policy.js";
@@ -396,14 +400,79 @@ function renderPolicySection(
   return lines;
 }
 
+/**
+ * Render a single provenance label. `resolveFromSchema` records the
+ * env-var NAME alongside an `env` source (e.g. `UMACTUALLY_EFFORT`), so
+ * the operator can see WHICH variable supplied the value — otherwise a
+ * bare `source: env` is ambiguous when a field has multiple aliases
+ * (`githubToken` reads `GITHUB_TOKEN` then `GH_TOKEN`). `savedConfig`
+ * carries no name because the `saved config:` header already names the
+ * file path.
+ */
+function formatFieldProvenance(provenance: FieldProvenance | undefined): string {
+  const source = provenance?.source ?? "default";
+  if (source === "env" && provenance?.envName !== undefined) {
+    return `source: env (${provenance.envName})`;
+  }
+  return `source: ${source}`;
+}
+
+/**
+ * Render one field of the effective view: the resolved value plus the
+ * precedence layer it came from. `emptyLabel` is the human label used
+ * when the resolved value is `""` / `null` / `undefined` (e.g. `unset`
+ * for an optional URL, `auto (resolved at review time)` for a model id
+ * the runtime picks later) — mirrors `renderSavedConfigSection` so the
+ * two sections stay visually consistent.
+ */
+function renderEffectiveField(
+  lines: string[],
+  label: string,
+  value: unknown,
+  provenance: FieldProvenance | undefined,
+  emptyLabel: string,
+): void {
+  const rendered =
+    value === undefined || value === null || value === "" ? emptyLabel : String(value);
+  lines.push(`  ${`${label}:`.padEnd(9)} ${rendered} (${formatFieldProvenance(provenance)})`);
+}
+
+/**
+ * The effective view of the resolved config: same user-facing fields the
+ * on-disk section shows, but after the full precedence chain
+ * (`flag > env > saved config > default`) has run. Deriving it from
+ * `resolved` (not `savedRead.config`) is what keeps the two sections
+ * from contradicting each other: `saved config:` is the on-disk file,
+ * `effective config:` is what the runtime would actually use. Secret
+ * fields (`apiKey`, tokens) are never in this list — same field-by-field
+ * S6 contract as `renderSavedConfigSection`.
+ */
+function renderEffectiveConfigSection(resolved: SchemaResolvedCliArgs): string[] {
+  const provenance = resolved.fieldProvenance;
+  const lines = ["effective config (precedence: flag > env > saved config > default):"];
+  renderEffectiveField(lines, "provider", resolved.provider, provenance["provider"], "unset");
+  renderEffectiveField(lines, "apiUrl", resolved.apiUrl, provenance["apiUrl"], "unset");
+  renderEffectiveField(
+    lines,
+    "model",
+    resolved.model,
+    provenance["model"],
+    "auto (resolved at review time)",
+  );
+  renderEffectiveField(lines, "effort", resolved.effort, provenance["effort"], "unset");
+  return lines;
+}
+
 function renderShowConfig(
   config: SavedConfig | null,
   path: string,
   policyResult: ReturnType<typeof loadReviewPolicy>,
+  resolved: SchemaResolvedCliArgs,
 ): string {
   const savedLines = renderSavedConfigSection(config, path);
+  const effectiveLines = renderEffectiveConfigSection(resolved);
   const policyLines = renderPolicySection(policyResult);
-  return [...savedLines, "", ...policyLines].join("\n") + "\n";
+  return [...savedLines, "", ...effectiveLines, "", ...policyLines].join("\n") + "\n";
 }
 
 function runShowConfig(cwd: string, argv: readonly string[]): Promise<DispatchResult> {
@@ -421,8 +490,7 @@ function runShowConfig(cwd: string, argv: readonly string[]): Promise<DispatchRe
   const command = firstPositionalToken(args);
   const parsed = parseCliArgs(command === null ? args : stripLeadingCommand(args, command));
   const { resolved } = applySavedConfig(resolveFromSchema(parsed, process.env), savedRead.config, savedRead.path);
-  process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult));
-  process.stdout.write(`effective config:\n  effort: ${resolved.effort ?? "unset"} (source: ${resolved.fieldProvenance["effort"]?.source ?? "default"})\n`);
+  process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult, resolved));
   return Promise.resolve({ exitCode: 0 });
 }
 
