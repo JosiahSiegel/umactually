@@ -16,6 +16,9 @@ import { runFullDoctor, type DoctorCheckResult } from "./doctor-full.js";
 import { formatCheckLines } from "../util/check-format.js";
 import { type HelpCommand, printContextualHelp, renderCommandsTable } from "./help.js";
 import { tryReadSavedConfig } from "./load-saved-config.js";
+import { parseCliArgs } from "./parse-args.js";
+import { resolveFromSchema } from "../config/field-resolution.js";
+import { applySavedConfig } from "./apply-saved-config.js";
 import type { SavedConfig } from "../config/saved-config.js";
 import { loadReviewPolicy } from "../config/review-policy.js";
 import {
@@ -100,7 +103,7 @@ export async function dispatch(argv: readonly string[]): Promise<DispatchResult 
   // `firstPositionalToken(argv)` short-circuits on the flag presence
   // before any command routing.
   if (argv.includes("--show-config")) {
-    return runShowConfig(process.cwd());
+    return runShowConfig(process.cwd(), argv);
   }
 
   const command = firstPositionalToken(argv);
@@ -403,7 +406,7 @@ function renderShowConfig(
   return [...savedLines, "", ...policyLines].join("\n") + "\n";
 }
 
-function runShowConfig(cwd: string): Promise<DispatchResult> {
+function runShowConfig(cwd: string, argv: readonly string[]): Promise<DispatchResult> {
   const savedRead = tryReadSavedConfig({ cwd });
   const policyResult = loadReviewPolicy({ cwd });
   if (savedRead.warning !== null) {
@@ -414,7 +417,12 @@ function runShowConfig(cwd: string): Promise<DispatchResult> {
     process.stderr.write(`umactually: ${policyResult.warning}\n`);
     return Promise.resolve({ exitCode: 1 });
   }
+  const args = argv.filter((arg) => arg !== "--show-config" && arg !== "--json" && arg !== "--no-color");
+  const command = firstPositionalToken(args);
+  const parsed = parseCliArgs(command === null ? args : stripLeadingCommand(args, command));
+  const { resolved } = applySavedConfig(resolveFromSchema(parsed, process.env), savedRead.config, savedRead.path);
   process.stdout.write(renderShowConfig(savedRead.config, savedRead.path, policyResult));
+  process.stdout.write(`effective config:\n  effort: ${resolved.effort ?? "unset"} (source: ${resolved.fieldProvenance["effort"]?.source ?? "default"})\n`);
   return Promise.resolve({ exitCode: 0 });
 }
 

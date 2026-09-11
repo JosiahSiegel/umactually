@@ -55,6 +55,7 @@ function captureStdoutStderr(): StdoutStderrCapture {
 }
 
 const ENV_KEYS_TO_CLEAR = [
+  "UMACTUALLY_EFFORT",
   "HOME",
   "USERPROFILE",
   "GITHUB_ACTIONS",
@@ -101,6 +102,25 @@ describe("CLI --show-config (v0.6.26)", () => {
       rmSync(tempHome, { recursive: true, force: true });
       tempHome = null;
     }
+  });
+
+  it.each([
+    { saved: "low", env: undefined, flags: [], value: "low", source: "savedConfig" },
+    { saved: "low", env: "high", flags: [], value: "high", source: "env" },
+    { saved: "low", env: "high", flags: ["--effort", "max"], value: "max", source: "flag" },
+    { saved: undefined, env: undefined, flags: [], value: "unset", source: "default" },
+  ])("shows effective effort $value from $source", async ({ saved, env, flags, value, source }) => {
+    // Given
+    if (tempHome === null) throw new Error("missing fixture");
+    mkdirSync(join(tempHome, ".umactually"), { recursive: true });
+    writeFileSync(join(tempHome, ".umactually", "config.json"), JSON.stringify({ schemaVersion: 1, provider: "copilot", effort: saved }));
+    if (env !== undefined) process.env["UMACTUALLY_EFFORT"] = env;
+    const { dispatch } = await import(dispatchModule);
+    const capture = captureStdoutStderr();
+    // When
+    try { await dispatch(["--show-config", ...flags]); } finally { capture.restore(); }
+    // Then
+    expect(capture.stdout.text).toMatch(new RegExp(`effort:\\s+${value} \\(source: ${source}\\)`));
   });
 
   it("CLI-SHOW-1: with valid config — renders field-by-field + exits 0", async () => {
