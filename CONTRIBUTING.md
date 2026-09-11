@@ -131,6 +131,8 @@ If the automated path fails and a maintainer needs to push a version directly, t
 npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/
 ```
 
+> **This path publishes with no provenance.** `--provenance=false` means the version has no `dist.attestations`. The workflow's `Verify npm publication` step requires that attestation, so treat this as a break-glass escape for the package itself — it is not a way to turn a red `publish-npm` run green.
+
 The CLI prints a fresh `https://www.npmjs.com/auth/cli/<id>` URL; open it, complete the GitHub-backed sign-in, and the publish proceeds. No token to mint, no `--otp` to type, no 90-day clock.
 
 #### Publish authentication in 2026: WebAuth / device flow
