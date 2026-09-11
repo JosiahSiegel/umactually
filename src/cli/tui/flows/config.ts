@@ -47,9 +47,9 @@ function renderSavedConfig(
     `  provider: ${config.provider}`,
   ];
   if (config.apiUrl !== undefined) lines.push(`  apiUrl:   ${config.apiUrl}`);
-  lines.push(
-    `  model:    ${config.model ?? "auto (resolved at review time)"}`,
-  );
+  lines.push(`  model:    ${config.model ?? "auto (resolved at review time)"}`);
+  lines.push(`  effort:    ${config.effort ?? "provider default"}`);
+  lines.push("  effort caveat: model-dependent; provider default may apply.");
   return lines.join("\n");
 }
 

@@ -77,8 +77,10 @@ describe("tui config flow (runConfigFlow)", () => {
         schemaVersion: 1,
         provider: "openai-compatible",
         apiUrl: "https://api.example.com/v1",
-        model: "gpt-4o",
-      },
+       model: "gpt-4o",
+         effort: "high",
+       },
+
       path: "/home/test/.umactually/config.json",
       warning: null,
     });
@@ -101,6 +103,8 @@ describe("tui config flow (runConfigFlow)", () => {
     expect(savedConfigBody).toContain("openai-compatible");
     expect(savedConfigBody).toContain("https://api.example.com/v1");
     expect(savedConfigBody).toContain("gpt-4o");
+    expect(savedConfigBody).toContain("effort:    high");
+    expect(savedConfigBody).toContain("effort caveat");
 
     // And: no warning was emitted (the file was clean).
     expect(MOCKED_STREAM_WARN).not.toHaveBeenCalled();
@@ -113,6 +117,22 @@ describe("tui config flow (runConfigFlow)", () => {
     expect(selectOpts.options).toEqual([
       { value: "menu", label: "Back to menu" },
     ]);
+  });
+
+  it("CFG-A2: when effort is absent, the display says provider default rather than medium", async () => {
+    MOCKED_TRY_READ_SAVED_CONFIG.mockReturnValueOnce({
+      config: { schemaVersion: 1, provider: "anthropic", model: "claude-model" },
+      path: "/home/test/.umactually/config.json",
+      warning: null,
+    });
+
+    await runConfigFlow();
+
+    const savedConfigCall = MOCKED_NOTE.mock.calls.find((call) => call[1] === "Saved config");
+    const savedConfigBody = String(savedConfigCall?.[0] ?? "");
+    expect(savedConfigBody).toContain("effort:    provider default");
+    expect(savedConfigBody).not.toContain("medium");
+    expect(savedConfigBody).toContain("effort caveat");
   });
 
   it("CFG-B: when no saved config, the display contains the 'no saved config' hint", async () => {
