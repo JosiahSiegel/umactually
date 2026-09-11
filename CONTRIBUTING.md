@@ -121,7 +121,7 @@ The package name `umactually` was claimed on 2026-08-01 via `npm publish --no-pr
 
 #### Subsequent releases
 
-Use the GitHub Actions workflow exclusively. Push the version tag and `release.yml` runs the `publish-npm` job automatically. The job exchanges the OIDC token for a short-lived session token at publish time; nothing is stored in repo secrets, nothing needs rotation, nothing has a 90-day expiry. The `Verify npm publication` step in the same job runs a two-phase probe: Phase 1 polls the package-level `dist-tags.latest` field on `registry.npmjs.org` for up to 12 retries spaced 5 seconds apart (60s budget), and Phase 2 cross-validates by polling the per-version URL's `attestations` field for up to 60 retries spaced 10 seconds apart (600s budget). The two-phase shape replaced a single-probe 50s budget after the 0.10.x release series, where `npm` reported success but registry propagation lagged past the timeout and falsely failed the canary; Phase 1 catches the common case fast while Phase 2 backs it up with the long-tail budget.
+Use the GitHub Actions workflow exclusively. Push the version tag and `release.yml` runs the `publish-npm` job automatically. The job exchanges the OIDC token for a short-lived session token at publish time; nothing is stored in repo secrets, nothing needs rotation, nothing has a 90-day expiry. The `Verify npm publication` step in the same job runs a two-phase probe: Phase 1 is a best-effort fast-path that polls the package-level `dist-tags.latest` field on `registry.npmjs.org` for up to 6 retries spaced 5 seconds apart (30s budget) and, on a miss, warns and falls through rather than failing the step; Phase 2 is the authoritative check, polling the per-version URL for the Sigstore provenance attestation at `dist.attestations` (npm stores it under `dist`, not at the version document root) for up to 60 retries spaced 10 seconds apart (600s budget). The two-phase shape replaced a single-probe 50s budget after the 0.10.x release series, where `npm` reported success but registry propagation lagged past the timeout and falsely failed the canary; Phase 1 only short-circuits the happy path, and Phase 2's long budget guards the long tail.
 
 #### Manual re-publish (release engineer)
 
@@ -130,6 +130,8 @@ If the automated path fails and a maintainer needs to push a version directly, t
 ```bash
 npm publish --provenance=false --tag latest --registry https://registry.npmjs.org/
 ```
+
+> **This path publishes with no provenance.** `--provenance=false` means the version has no `dist.attestations`. The workflow's `Verify npm publication` step requires that attestation, so treat this as a break-glass escape for the package itself — it is not a way to turn a red `publish-npm` run green.
 
 The CLI prints a fresh `https://www.npmjs.com/auth/cli/<id>` URL; open it, complete the GitHub-backed sign-in, and the publish proceeds. No token to mint, no `--otp` to type, no 90-day clock.
 
