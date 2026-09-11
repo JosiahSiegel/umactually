@@ -428,10 +428,13 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
   });
 
   it("Task 6 boundary: provider config serialization is byte-identical and rejects policy keys", () => {
-    // The SavedConfig type excludes every policy field. Even if a future
-    // change tries to inject policy keys via a cast, the serializer MUST
-    // NOT emit them (security boundary: provider config is separate from
-    // the committed review policy). Byte-identical means two consecutive
+    // The SavedConfig type excludes every review-policy field (pathRules,
+    // triggers, reReviewCap, gateMode, minimumSeverity, …). Even if a future
+    // change tries to inject policy keys via a cast, the serializer MUST NOT
+    // emit them (security boundary: provider config is separate from the
+    // committed review policy). `effort` is the one key that legitimately
+    // exists in BOTH shapes — it is an optional SavedConfig field and MUST
+    // serialize when present. Byte-identical means two consecutive
     // serializeSavedConfig calls produce the exact same string.
     const baseConfig = {
       schemaVersion: 1 as const,
@@ -443,15 +446,24 @@ describe("saved-config safe-write contract (symlinks, mode, dir, prompt)", () =>
     const b = serializeSavedConfig(baseConfig);
     expect(a).toBe(b);
 
-    // Belt-and-suspenders: assert no policy key ever leaks through the
-    // serialization even via a cast.
+    // `effort` is an intentionally supported SavedConfig field, not a leak:
+    // a valid level serializes verbatim.
+    const withEffort = serializeSavedConfig({ ...baseConfig, effort: "high" });
+    expect(withEffort).toContain('"effort": "high"');
+
+    // Belt-and-suspenders: policy keys cast-injected into the object are never
+    // emitted — including keys (triggers, reReviewCap) that SavedConfig does
+    // not model at all.
     const evil = baseConfig as unknown as Record<string, unknown>;
     evil["pathRules"] = [{ pattern: "src/**/*.ts" }];
+    evil["triggers"] = ["opened"];
+    evil["reReviewCap"] = 1;
     evil["gateMode"] = "block";
     evil["minimumSeverity"] = "warning";
     const serialized = serializeSavedConfig(baseConfig);
-    expect(serialized).not.toContain("effort");
     expect(serialized).not.toContain("pathRules");
+    expect(serialized).not.toContain("triggers");
+    expect(serialized).not.toContain("reReviewCap");
     expect(serialized).not.toContain("gateMode");
     expect(serialized).not.toContain("minimumSeverity");
   });
