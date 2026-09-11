@@ -13,7 +13,18 @@ env:
 
 This is the only unavoidable Azure-specific plumbing: Azure provides `$(System.AccessToken)` but does not export it under the name the CLI consumes. Without the setting and mapping, the CLI cannot read PR metadata, fetch the diff, post threads, or update status. A secret `AZURE_DEVOPS_TOKEN` PAT remains an alternative when the build service cannot receive the required permissions.
 
-Store `UMACTUALLY_API_URL` and `UMACTUALLY_API_KEY` as secret pipeline variables or in a protected variable group. The CLI consumes them natively — no Bash or PowerShell argument arrays are needed.
+Store `UMACTUALLY_API_URL` and `UMACTUALLY_API_KEY` as secret pipeline variables or in a protected variable group. The CLI consumes them natively — no Bash or PowerShell argument arrays are needed. `UMACTUALLY_EFFORT` is optional and non-secret; map it on the CLI task/script step when you want to select a level, for example:
+
+```yaml
+- script: umactually review --platform azure
+  env:
+    SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+    UMACTUALLY_API_URL: $(UMACTUALLY_API_URL)
+    UMACTUALLY_API_KEY: $(UMACTUALLY_API_KEY)
+    UMACTUALLY_EFFORT: low
+```
+
+Azure makes ordinary pipeline variables available to task processes as environment variables; secret variables still require explicit `env:` mapping. Effort must be understood by the installed CLI, and is not a parameter of the pinned task reference.
 
 ## Branch policy build validation
 

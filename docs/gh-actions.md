@@ -18,7 +18,7 @@ The canonical workflow uses a concurrency group keyed on `github.workflow + pull
 
 Store `UMACTUALLY_API_URL` and `UMACTUALLY_API_KEY` as repository or organization Actions secrets. Never place credentials in YAML literals or command arguments.
 
-Every documented `UMACTUALLY_*` env var is honored natively by the CLI, so optional behavior needs no shell forwarding. The full reference lives in [`docs/configuration.md`](configuration.md#review-options).
+Every documented `UMACTUALLY_*` env var is honored natively by the CLI, so optional behavior needs no shell forwarding. `UMACTUALLY_EFFORT` is optional; set it in the caller job or review step when the installed CLI supports the feature, or omit it for the provider/model default. The full reference lives in [`docs/configuration.md`](configuration.md#review-options).
 
 ## GitHub Enterprise Server
 
