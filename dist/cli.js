@@ -8486,14 +8486,21 @@ function applyEnvDefaults(state, env, errors) {
             state.provider = envProvider;
         }
     }
-    if (state.effort === undefined && typeof env["UMACTUALLY_EFFORT"] === "string") {
-        const rawEffort = env["UMACTUALLY_EFFORT"];
-        if (rawEffort.trim().length > 0 && (0,config_effort/* parseEffort */.k)(rawEffort) === undefined) {
-            errors.push("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
-        }
-        else {
-            state.effort = (0,config_effort/* parseEffort */.k)(rawEffort);
-        }
+    applyEffortEnvDefault(state, env, errors);
+}
+/**
+ * UMACTUALLY_EFFORT backfill — nonblank invalid values are rejected
+ * without echoing the raw value; blank values are treated as absent.
+ */
+function applyEffortEnvDefault(state, env, errors) {
+    if (state.effort !== undefined || typeof env["UMACTUALLY_EFFORT"] !== "string")
+        return;
+    const rawEffort = env["UMACTUALLY_EFFORT"];
+    if (rawEffort.trim().length > 0 && (0,config_effort/* parseEffort */.k)(rawEffort) === undefined) {
+        errors.push("invalid UMACTUALLY_EFFORT value; expected one of none|minimal|low|medium|high|xhigh|max");
+    }
+    else {
+        state.effort = (0,config_effort/* parseEffort */.k)(rawEffort);
     }
 }
 /**
@@ -13169,6 +13176,13 @@ function replaceSecretsLiterally(value, secrets) {
 
 
 const GUIDANCE = "Choose a supported effort for this provider/model or omit --effort to use the provider default.";
+function effortRejectionDetail(envelope, raw) {
+    if (json_guards_isRecord(envelope))
+        return json_guards_readStringField(envelope, "message") ?? raw;
+    if (typeof envelope === "string")
+        return envelope;
+    return raw;
+}
 function assertAnthropicEffort(effort) {
     if (effort === "none" || effort === "minimal") {
         throw new ProviderError("provider_error", "anthropic", null, "", `Anthropic does not accept effort '${effort}'. ${GUIDANCE}`, { providerErrorDetails: { kind: "effort-rejection", message: GUIDANCE } });
@@ -13190,11 +13204,11 @@ async function checkEffortRejection(response, context) {
     const envelope = json_guards_isRecord(parsed) ? parsed["error"] : undefined;
     if (response.ok && envelope === undefined)
         return;
-    const detail = json_guards_isRecord(envelope) ? json_guards_readStringField(envelope, "message") ?? raw : typeof envelope === "string" ? envelope : raw;
+    const detail = effortRejectionDetail(envelope, raw);
     if (!/\beffort\b|reasoning_effort/iu.test(raw))
         return;
     const safe = replaceSecretsLiterally(detail, context.secrets)
-        .replace(/\b(?:sk-[\w-]+|gh[pousr]_[\w]+)\b/gu, "[REDACTED]")
+        .replace(/\b(?:sk-[\w-]+|gh[pousr]_\w+)\b/gu, "[REDACTED]")
         .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
         .replace(/[\u0000-\u001f\u007f]+/gu, " ").trim().slice(0, 600);
     const message = `Provider ${context.endpoint} rejected effort '${context.reasoningEffort}' (HTTP ${response.status}): ${safe} ${GUIDANCE}`;
