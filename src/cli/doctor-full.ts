@@ -484,11 +484,13 @@ function checkCredentials(env: FullDoctorDeps["env"]): DoctorCheckResult {
       },
     );
   }
-  if (!requiresApiKey && !apiKeyPresent) {
+  if (!requiresApiKey) {
+    const tokenPresent = [env["GITHUB_TOKEN"], env["GH_TOKEN"]].some((token) => token !== undefined && token.trim().length > 0);
     return makeResult(
       "credentials",
-      "ok",
-      `provider "${provider}" does not require UMACTUALLY_API_KEY; GITHUB_TOKEN is the credential`,
+      tokenPresent ? "ok" : "fail",
+      tokenPresent ? "GitHub token present (value redacted)" : "Copilot requires GITHUB_TOKEN or GH_TOKEN",
+      tokenPresent ? {} : { remediation: "Export GITHUB_TOKEN or GH_TOKEN with Copilot access; --github-token is also accepted by review." },
     );
   }
   // apiKey present — disclose presence only.
