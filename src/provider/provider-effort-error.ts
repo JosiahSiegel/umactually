@@ -38,7 +38,7 @@ export async function checkEffortRejection(response: Response, context: {
   const detail = effortRejectionDetail(envelope, raw);
   if (!/\beffort\b|reasoning_effort/iu.test(raw)) return;
   const safe = replaceSecretsLiterally(detail, context.secrets)
-    .replace(/\b(?:sk-[\w-]+|gh[pousr]_[\w]+)\b/gu, "[REDACTED]")
+    .replace(/\b(?:sk-[\w-]+|gh[pousr]_\w+)\b/gu, "[REDACTED]")
     .replace(/Bearer\s+\S+/giu, "Bearer [REDACTED]")
     .replace(/[\u0000-\u001f\u007f]+/gu, " ").trim().slice(0, 600);
   const message = `Provider ${context.endpoint} rejected effort '${context.reasoningEffort}' (HTTP ${response.status}): ${safe} ${GUIDANCE}`;
