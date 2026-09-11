@@ -13196,7 +13196,14 @@ async function checkEffortRejection(response, context) {
         raw = await response.clone().text();
     }
     catch (error) {
-        if (error instanceof Error)
+        // The body stream was unreadable. A successful response has no
+        // rejection to mask, so a 2xx response can still short-circuit
+        // (callers rely on no-throw on success). A non-OK response might
+        // carry an effort-shaped rejection that we cannot inspect — do
+        // NOT classify it as "no rejection"; let the read failure surface
+        // so upstream callers (which catch ProviderError or the raw error)
+        // can decide. Review 5180365033 finding A.
+        if (response.ok)
             return;
         throw error;
     }
@@ -28021,7 +28028,11 @@ async function createGithubReview(input) {
     if (response.status === 422 && input.comments.length > 0) {
         writeBrandedAnnotation("warning", `GitHub create review rejected ${input.comments.length} inline comment(s) with HTTP 422 (anchor outside the diff); retrying body-only — ${input.comments.length} inline comment(s) dropped, findings remain in the review body.`);
         const retryResponse = await postReview([]);
-        ensureHttpOk(retryResponse, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event.");
+        // Review 5180365033 finding B: the retry-also-422 escalation uses a
+        // distinct typed code (GITHUB_CREATE_REVIEW_ANCHOR_REJECTED) so
+        // downstream observers can attribute the failure to the anchor
+        // rejection path rather than a generic create-review error.
+        ensureHttpOk(retryResponse, "GITHUB_CREATE_REVIEW_ANCHOR_REJECTED", "GitHub create review", "The body-only retry after a 422 also failed, so the cause is not an inline-comment anchor. Check (1) GITHUB_TOKEN has `pull_requests: write` scope and (2) the commit SHA matches the head of the PR; rerun on a fresh `pull_request` event.");
         return readResponseId(await readJsonResponse(retryResponse));
     }
     ensureHttpOk(response, "GITHUB_CREATE_REVIEW_FAILED", "GitHub create review", "Check (1) GITHUB_TOKEN has `pull_requests: write` scope, (2) the commit SHA matches the head of the PR, and (3) every comment path+line exists in the diff. The most common cause is a stale SHA; rerun on a fresh `pull_request` event.");
