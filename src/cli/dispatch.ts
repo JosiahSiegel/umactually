@@ -434,7 +434,8 @@ function renderEffectiveField(
 ): void {
   const rendered =
     value === undefined || value === null || value === "" ? emptyLabel : String(value);
-  lines.push(`  ${`${label}:`.padEnd(9)} ${rendered} (${formatFieldProvenance(provenance)})`);
+  const paddedLabel = `${label}:`.padEnd(9);
+  lines.push(`  ${paddedLabel} ${rendered} (${formatFieldProvenance(provenance)})`);
 }
 
 /**

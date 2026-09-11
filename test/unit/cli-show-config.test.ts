@@ -286,4 +286,36 @@ describe("CLI --show-config (v0.6.26)", () => {
     expect(text).toContain("provider: copilot");
     expect(text).toContain("provider: anthropic");
   });
+
+  it("CLI-SHOW-6: effective field lines keep the 9-char padded label gutter (byte-exact)", async () => {
+    // Pins the rendered bytes of `renderEffectiveField` so the S4624
+    // refactor (compute the padded label in a separate statement instead
+    // of a nested template literal) cannot drift the column alignment.
+    mkdirSync(join(tempHome!, ".umactually"), { recursive: true });
+    writeFileSync(
+      join(tempHome!, ".umactually", "config.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        provider: "copilot",
+        apiUrl: "https://saved.example.com/v1",
+        model: "saved-model",
+      }),
+    );
+
+    const { dispatch } = await import(dispatchModule);
+    const capture = captureStdoutStderr();
+    let result: Awaited<ReturnType<typeof dispatch>>;
+    try {
+      result = await dispatch(["--show-config", "--effort", "xhigh"]);
+    } finally {
+      capture.restore();
+    }
+
+    expect(result.exitCode).toBe(0);
+    const text = capture.stdout.text;
+    expect(text).toContain("  provider: copilot (source: savedConfig)");
+    expect(text).toContain("  apiUrl:   https://saved.example.com/v1 (source: savedConfig)");
+    expect(text).toContain("  model:    saved-model (source: savedConfig)");
+    expect(text).toContain("  effort:   xhigh (source: flag)");
+  });
 });
