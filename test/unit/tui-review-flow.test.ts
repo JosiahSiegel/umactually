@@ -18,6 +18,7 @@ import { parseCliArgs } from "../../src/cli/parse-args.js";
 import { runReviewFlow } from "../../src/cli/tui/flows/review.js";
 
 const MOCKED_TRY_READ_SAVED_CONFIG = vi.mocked(tryReadSavedConfig);
+let promptSequence: string[] = [];
 
 // Throws when production code makes more select/text/password calls than
 // the test provided answers for. The previous helper used `answers[0]`
@@ -26,6 +27,7 @@ const MOCKED_TRY_READ_SAVED_CONFIG = vi.mocked(tryReadSavedConfig);
 // `isCancel` directly so they stop consuming answers at the right call.
 const setAnswers = (answers: readonly (string | symbol)[]): void => {
   let index = 0;
+  promptSequence = [];
   const nextAnswer = (): string | symbol => {
     const current = answers[index];
     if (current === undefined) {
@@ -36,28 +38,51 @@ const setAnswers = (answers: readonly (string | symbol)[]): void => {
     index += 1;
     return current;
   };
-  vi.mocked(select).mockImplementation(async () => nextAnswer());
-  vi.mocked(text).mockImplementation(async () => nextAnswer());
-  vi.mocked(password).mockImplementation(async () => nextAnswer());
+  vi.mocked(select).mockImplementation(async () => {
+    promptSequence.push("select");
+    return nextAnswer();
+  });
+  vi.mocked(text).mockImplementation(async () => {
+    promptSequence.push("text");
+    return nextAnswer();
+  });
+  vi.mocked(password).mockImplementation(async () => {
+    promptSequence.push("password");
+    return nextAnswer();
+  });
   vi.mocked(isCancel).mockReturnValue(false);
 };
 
 describe("Run Review wizard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    promptSequence = [];
     delete process.env["UMACTUALLY_API_KEY"];
     delete process.env["UMACTUALLY_EFFORT"];
     delete process.env["GITHUB_TOKEN"];
     delete process.env["GH_TOKEN"];
   });
-  it("A: completes with parsed provider, model, URL, diff, and key", async () => {
+  it("A: maps Anthropic answers to provider, URL, model, API key, and diff source", async () => {
     setAnswers(["anthropic", "https://api.example", "model-x", "secret", "diff"]);
     vi.mocked(runStandalone).mockResolvedValue({ kind: "ok-no-diff", artifactPath: "x", note: "done" });
+
     await expect(runReviewFlow()).resolves.toEqual({ exitCode: 0 });
-    expect(runStandalone).toHaveBeenCalledWith(expect.objectContaining({ parsed: expect.objectContaining({ provider: "anthropic", model: "model-x", apiKey: "secret" }) }));
+
+    const captured = vi.mocked(runStandalone).mock.calls[0]?.[0];
+    expect(captured?.parsed).toMatchObject({
+      provider: "anthropic",
+      apiUrl: "https://api.example",
+      model: "model-x",
+      effort: null,
+      apiKey: "secret",
+      files: null,
+    });
+    expect(captured?.parsed.diffPath).toMatch(/^\.\/\.umactually-tui-diff-/u);
+    expect(captured?.env?.["UMACTUALLY_API_KEY"]).toBe("secret");
+    expect(promptSequence).toEqual(["select", "text", "text", "password", "select"]);
   });
 
-  it("B0: carries saved effort into the captured standalone request", async () => {
+  it("B0: maps Copilot answers to provider, saved model, GitHub token, and diff source", async () => {
     MOCKED_TRY_READ_SAVED_CONFIG.mockReturnValueOnce({
       config: {
         schemaVersion: 1,
@@ -73,9 +98,21 @@ describe("Run Review wizard", () => {
 
     await runReviewFlow();
 
-    expect(runStandalone).toHaveBeenCalledWith(expect.objectContaining({
-      parsed: expect.objectContaining({ provider: "copilot", model: "saved-model", effort: "high" }),
-    }));
+    const captured = vi.mocked(runStandalone).mock.calls[0]?.[0];
+    expect(captured?.parsed).toMatchObject({
+      provider: "copilot",
+      apiUrl: null,
+      model: "saved-model",
+      effort: "high",
+      apiKey: null,
+      githubToken: "secret",
+      files: null,
+    });
+    expect(captured?.env?.["GITHUB_TOKEN"]).toBe("secret");
+
+    expect(promptSequence).toEqual(["select", "text", "password", "select"]);
+    expect(vi.mocked(select).mock.calls[0]?.[0]).toMatchObject({ initialValue: "copilot" });
+    expect(vi.mocked(text).mock.calls[0]?.[0]).toMatchObject({ initialValue: "saved-model" });
   });
 
   it("B: uses a Copilot GITHUB_TOKEN alias without prompting for a generic API key", async () => {
@@ -87,7 +124,15 @@ describe("Run Review wizard", () => {
 
     expect(password).not.toHaveBeenCalled();
     const captured = vi.mocked(runStandalone).mock.calls[0]?.[0];
-    expect(captured?.parsed.apiKey).toBeNull();
+    expect(captured?.parsed).toMatchObject({
+      provider: "copilot",
+      apiUrl: null,
+      model: "model-x",
+      apiKey: null,
+      files: null,
+    });
+    expect(captured?.parsed.diffPath).toMatch(/^\.\/\.umactually-tui-diff-/u);
+    expect(promptSequence).toEqual(["select", "text", "select"]);
     expect(resolveProviderCredential(captured?.parsed ?? { ...parseCliArgs([]), provider: "copilot" }, captured?.env ?? {})).toBe("github-env-token");
   });
 
@@ -99,8 +144,17 @@ describe("Run Review wizard", () => {
 
     expect(password).toHaveBeenCalledTimes(1);
     const captured = vi.mocked(runStandalone).mock.calls[0]?.[0];
-    expect(captured?.parsed.apiKey).toBeNull();
-    expect(captured?.parsed.githubToken).toBe("prompted-github-token");
+    expect(captured?.parsed).toMatchObject({
+      provider: "copilot",
+      apiUrl: null,
+      model: "model-x",
+      apiKey: null,
+      githubToken: "prompted-github-token",
+      files: null,
+    });
+    expect(captured?.parsed.diffPath).toMatch(/^\.\/\.umactually-tui-diff-/u);
+    expect(captured?.env?.["GITHUB_TOKEN"]).toBe("prompted-github-token");
+    expect(promptSequence).toEqual(["select", "text", "password", "select"]);
     expect(resolveProviderCredential(captured?.parsed ?? parseCliArgs([]), captured?.env ?? {})).toBe("prompted-github-token");
   });
 
