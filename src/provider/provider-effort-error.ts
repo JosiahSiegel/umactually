@@ -29,7 +29,14 @@ export async function checkEffortRejection(response: Response, context: {
   try {
     raw = await response.clone().text();
   } catch (error) {
-    if (error instanceof Error) return;
+    // The body stream was unreadable. A successful response has no
+    // rejection to mask, so a 2xx response can still short-circuit
+    // (callers rely on no-throw on success). A non-OK response might
+    // carry an effort-shaped rejection that we cannot inspect — do
+    // NOT classify it as "no rejection"; let the read failure surface
+    // so upstream callers (which catch ProviderError or the raw error)
+    // can decide. Review 5180365033 finding A.
+    if (response.ok) return;
     throw error;
   }
   const parsed = tryParseJson(raw);

@@ -110,6 +110,47 @@ describe("checkEffortRejection", () => {
     // Given / When
     const message = await rejectionMessage(JSON.stringify({ error: { message: "effort badtrailing junk" } }));
     // Then
-    expect(message).not.toMatch(/[]/u);
+    expect(message).not.toMatch(/[-]/u);
+  });
+
+  it("rethrows when an unreadable body masks a non-OK effort rejection", async () => {
+    // Regression for review 5180365033 finding A: when the response is not OK
+    // and `response.text()` itself throws, `checkEffortRejection` must NOT
+    // silently classify the response as "no effort rejection" — that would
+    // mask a real effort-shaped rejection behind an unreadable stream.
+    // The safe contract is: surface the read failure (don't swallow it) so
+    // the caller can decide; on success path the body is irrelevant and the
+    // function still returns silently.
+    const failingResponse = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error("stream closed unexpectedly"));
+        },
+      }),
+      { status: 400 },
+    );
+
+    await expect(
+      checkEffortRejection(failingResponse, { ...CONTEXT, secrets: [] }),
+    ).rejects.toThrow("stream closed unexpectedly");
+  });
+
+  it("returns silently on success when the body read throws", async () => {
+    // Counterpart lock: a successful response is allowed to skip the
+    // effort-rejection classification entirely even when the body is
+    // unreadable — there is no rejection to mask. Callers do not need
+    // a ProviderError for a 2xx response.
+    const okFailingResponse = new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(new Error("stream closed unexpectedly"));
+        },
+      }),
+      { status: 200 },
+    );
+
+    await expect(
+      checkEffortRejection(okFailingResponse, { ...CONTEXT, secrets: [] }),
+    ).resolves.toBeUndefined();
   });
 });
