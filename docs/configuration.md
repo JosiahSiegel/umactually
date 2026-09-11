@@ -4,22 +4,24 @@ UmActually accepts configuration through CLI flags, environment variables, and p
 
 ## Precedence
 
-The runtime resolves configurable review options through a four-tier precedence chain (highest priority first):
+The runtime resolves configurable review options through a four-tier precedence chain, from highest to lowest:
 
 | Tier | Source | Notes |
 | --- | --- | --- |
-| 1 | `--provider`, `--api-url`, `--model`, `--api-key`, `--github-token` flags | Always wins; lets a one-off run override saved config. |
-| 2 | `UMACTUALLY_*` env vars | First non-empty var wins. The five public `UMACTUALLY_*` config env vars are `UMACTUALLY_API_URL`, `UMACTUALLY_API_KEY`, `UMACTUALLY_MODEL`, `UMACTUALLY_PROVIDER`, and `UMACTUALLY_GITHUB_API_BASE`. `GITHUB_TOKEN` / `GH_TOKEN` are the equivalent env for `--github-token`. |
-| 3 | Saved user config (`~/.umactually/config.json`) | Holds `provider` (always), optional `apiUrl`, optional `model`. Written by `umactually init`. Override with `--force` to overwrite. |
-| 4 | Built-in CLI default | Last resort; the schema default per `src/config/field-schema.ts`. |
+| 1 | CLI flags, including `--provider`, `--api-url`, `--model`, `--api-key`, `--github-token`, and `--effort` | Always wins, so a one-off run can override saved settings. |
+| 2 | `UMACTUALLY_*` env vars | First non-empty var wins. Public config vars include `UMACTUALLY_API_URL`, `UMACTUALLY_API_KEY`, `UMACTUALLY_MODEL`, `UMACTUALLY_EFFORT`, `UMACTUALLY_PROVIDER`, and `UMACTUALLY_GITHUB_API_BASE`. `GITHUB_TOKEN` and `GH_TOKEN` are the equivalent env vars for `--github-token`. |
+| 3 | Saved user config, such as `~/.umactually/config.json` | Holds `provider`, plus optional `apiUrl`, `model`, and `effort`. A saved effort is used only when the flag and environment variable are absent. |
+| 4 | Provider or model default | Effort has no CLI-inserted fallback. When no effort is configured, the provider receives no effort field and chooses its own default. |
 
-The `apiKey` field is deliberately omitted from tiers 3 and 4 — the [S6 contract](#api-key-handling) bans persisting secrets to disk. It always comes from tier 1 (`--api-key`) or tier 2 (`UMACTUALLY_API_KEY`); if both are missing the CLI surfaces a `cli: --api-key is required` validation error with an S6-compliant remediation hint, never writes the key to disk. The saved config is loaded via `readSavedConfig()` in `src/config/saved-config.ts` and overlaid on the resolved schema via `applySavedConfig()` (`src/cli/apply-saved-config.ts`). Empty-string env is treated as missing so operators can `unset` a setting without deleting the file. See [docs/security.md#trust-model-init](security.md#trust-model-init) for what is and isn't persisted.
+For effort, the effective order is exactly `--effort` > `UMACTUALLY_EFFORT` > saved `effort` > provider or model default. Effort is optional. Omitting it is different from selecting `medium`, and the CLI does not silently convert an unset value to `medium`.
+
+The `apiKey` field is deliberately omitted from tiers 3 and 4, because the [S6 contract](#api-key-handling) bans persisting secrets to disk. It always comes from tier 1 (`--api-key`) or tier 2 (`UMACTUALLY_API_KEY`); if both are missing the CLI surfaces a `cli: --api-key is required` validation error with an S6-compliant remediation hint, never writes the key to disk. The saved config is loaded via `readSavedConfig()` in `src/config/saved-config.ts` and overlaid on the resolved schema via `applySavedConfig()` (`src/cli/apply-saved-config.ts`). Empty-string env is treated as missing so operators can `unset` a setting without deleting the file. See [docs/security.md#trust-model-init](security.md#trust-model-init) for what is and isn't persisted.
 
 ## Committed review policy (separate surface)
 
 `umactually.review.json` is the committed team-policy surface, **separate from** `umactually.config.json`. The two files are a security boundary: `umactually.config.json` is for non-secret provider connection defaults; `umactually.review.json` is for non-secret review-behavior rules committed alongside the rest of the team's source.
 
-Fields accepted: `schemaVersion` (must be `1`), `pathRules` (array of `{ pattern, effort? }`), `excludes`, `effort` (`low|medium|high`), `triggers` (`opened|synchronize|reopened`), `reReviewCap`, `budgets` (`{ contextTokens, maxOutputTokens, latencyMs }`), `minimumSeverity` (`info|warning|error`), `suggestionMode` (`off|validated`), `gateMode` (`off|warn|block`).
+Fields accepted: `schemaVersion` (must be `1`), `pathRules` (array of `{ pattern, effort? }`), `excludes`, `effort` (`low|medium|high`), `triggers` (`opened|synchronize|reopened`), `reReviewCap`, `budgets` (`{ contextTokens, maxOutputTokens, latencyMs }`), `minimumSeverity` (`info|warning|error`), `suggestionMode` (`off|validated`), `gateMode` (`off|warn|block`). The committed policy's `effort` is currently metadata and policy input only. It does not drive provider requests; use `--effort`, `UMACTUALLY_EFFORT`, or saved user config when you want to set request effort.
 
 Validation runs BEFORE any provider or platform call and refuses:
 
@@ -48,9 +50,9 @@ umactually --show-config
 
 Prints `provider`, optional `apiUrl?`, optional `model?`, the file path the loader used, and the schema version. Field-by-field rendered (not JSON) so adding a future secret field to `SavedConfig` would not silently leak it through `--show-config`. Read-only; never opens a network connection; never prompts; exits 0 (or 1 with a stderr warning if the file is corrupt). Matches the convention of `kubectl config view`, `aws configure get`, and `git config --list --show-origin`.
 
-When `umactually.review.json` is present, the output also prints the policy path, `schemaVersion`, and a `sha256` hash of the canonical serialized bytes so you can verify which committed policy was in effect for the run.
+When `umactually.review.json` is present, the output also prints the policy path, `schemaVersion`, and a `sha256` hash of the canonical serialized bytes so you can verify which committed policy was in effect for the run. The policy's effort is not currently applied to provider request bodies; it is retained for policy metadata and future policy wiring.
 
-The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Invalid values fail configuration with a redacted error: secret values are never echoed.
+The CLI natively honors every documented `UMACTUALLY_*` env var. In CI, set them as GitHub Actions env/secrets or Azure pipeline variables and they flow through without shell translation. Boolean env vars accept `true|false|1|0|yes|no|on|off|y|n`, case-insensitively after trimming. Effort values are normalized case-insensitively and must be one of the seven generic levels in the review-options table. Invalid values fail configuration with a redacted error: secret values are never echoed.
 
 With `review --json`, the `resolvedConfig.sources` object reports exactly which surface supplied each resolved field (`flag`, `env`, `savedConfig`, or `default`, plus the non-secret env name when applicable). The `savedConfig` source entry carries the file path the loader read from so you can audit which config supplied a value without exposing credentials.
 
@@ -71,7 +73,7 @@ CLI flag names are the kebab-case form of the option column (for example, `api-u
 | `api-url` | `UMACTUALLY_API_URL` | `""` | HTTPS URL | Review API base URL. Required for hosted review API use. Prefer env/secret over a literal input. |
 | `api-key` | `UMACTUALLY_API_KEY` | `""` | Secret string | Review API key. Must come from a secret store. Never log or echo it. |
 | `model` | `UMACTUALLY_MODEL` | `""` (resolved at review time) | Any opaque model id, or `review-model-synthetic` for fixtures and deterministic tests | `review-model-synthetic` is intended for fixtures and deterministic tests. When omitted, Copilot uses its provider-native `auto` sentinel; OpenAI-compatible and Anthropic perform authenticated `GET /v1/models` discovery and select the single valid opaque model id, or fail with a `--model` remediation hint when the catalog is empty/ambiguous/unauthorized — see [`docs/providers.md`](providers.md#model-resolution). Set a literal model name to override. |
-| `effort` | `UMACTUALLY_EFFORT` | `medium` | `low`, `medium`, `high` | Reasoning effort hint. Forwarded as `reasoning.effort` to providers that support it. |
+| `effort` | `UMACTUALLY_EFFORT` | unset | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | Optional reasoning effort hint. This is not a token or time budget and does not enable a separate thinking mode. When set, it is forwarded using the provider's native field where this CLI has a documented mapping. When unset, no effort field is sent and the provider or model chooses its own default. |
 | `provider` | `UMACTUALLY_PROVIDER` | `openai-compatible` | `openai-compatible`, `copilot`, `anthropic` | Provider family. See [`docs/providers.md`](providers.md) for the wire-shape contract per family and the cross-protocol dispatcher that handles dual-protocol gateways. |
 | `github-api-base` | `UMACTUALLY_GITHUB_API_BASE` | `""` | HTTPS URL | GitHub API base URL for the `--provider copilot` token-exchange flow. Set to `https://<tenant>.ghe.com[/api/v3]` for GitHub Enterprise Server. The runner-provided `GITHUB_API_URL` is honored for the review-platform REST + GraphQL endpoints independently of this flag — see [`docs/gh-actions.md`](gh-actions.md#github-enterprise-server). |
 | `github-token` | `GITHUB_TOKEN` (or `GH_TOKEN` runner alias) | `""` | Secret string | GitHub token used by the `--provider copilot` token-exchange flow and by live GitHub posting in CI. The CLI accepts `--github-token=<value>` or `--github-token <value>` (single-token equals form); when reading from an env var (`GITHUB_TOKEN` / `GH_TOKEN`) the CLI never logs or echoes the value. Always source the secret from a secret store (GitHub Actions secret, Azure Pipelines variable group, or shell `export`) — never paste it into workflow YAML literals or commit history. |

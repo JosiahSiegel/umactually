@@ -16,6 +16,26 @@ The action supports three wire-shape families:
 
 Operators point `--api-url` (or `UMACTUALLY_API_URL`) at a base URL. The action appends the appropriate endpoint path internally.
 
+## Effort is optional, not a thinking mode
+
+`--effort` and `UMACTUALLY_EFFORT` are optional hints about how much reasoning effort the selected provider or model should spend. They are not a request to enable a separate `thinking` mode, and they are not token, latency, or output budgets. A provider may combine effort with its own thinking or adaptive-thinking mode; this CLI does not set `thinking`, `budget_tokens`, or an equivalent mode. The CLI never derives a budget from effort, never auto-allocates one, and never promises that a provider will honor the hint.
+
+The effective order is `--effort` > `UMACTUALLY_EFFORT` > saved `effort` in `~/.umactually/config.json` > provider or model default. If none is supplied, the request omits the effort field entirely. That lets the provider or model choose its own default. The seven generic CLI values are `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max`. They are a CLI vocabulary, not a guarantee that every provider, model, gateway, or account supports every value.
+
+When an effort is supplied, the request uses the native field for the wire shape:
+
+| Request family | Native request field | Example |
+| --- | --- | --- |
+| OpenAI Responses | `reasoning.effort` | `"reasoning": { "effort": "high" }` |
+| OpenAI Chat Completions and this CLI's GitHub Copilot Chat transport | `reasoning_effort` | `"reasoning_effort": "high"` |
+| Anthropic Messages | `output_config.effort` | `"output_config": { "effort": "high" }` |
+
+The native fields are protocol contracts, not universal model capabilities. OpenAI-compatible gateways may support only a subset, and a gateway can reject an otherwise well-formed value. Anthropic's documented effort vocabulary is the five-level set `low`, `medium`, `high`, `xhigh`, and `max`, so `none` and `minimal` are rejected before an Anthropic request is sent. GitHub Copilot's official CLI/SDK surface documents `low`, `medium`, `high`, `xhigh`, and `max`; this CLI's Copilot transport uses the Chat field, while Copilot's own SDK/CLI may expose a different session-level surface. Routes also vary by model and account. There is no universal support matrix, and this CLI makes no private GitHub Copilot model or plan guarantee.
+
+Model identifiers remain opaque. The CLI does not infer effort support from a model name, silently translate levels, or invent a fallback budget. A gateway may remap a model or effort internally after receiving the request, and that private remapping cannot be known from the client. The result and provider attribution identify the protocol request that succeeded, not every internal hop inside an opaque gateway.
+
+For the authoritative provider field definitions, see the [OpenAI Responses reasoning guide](https://developers.openai.com/api/docs/guides/reasoning), [Responses reference](https://developers.openai.com/api/reference/resources/responses/methods/create), and [Chat Completions reference](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create); the [GitHub Copilot CLI effort reference](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-command-reference); and the [Anthropic effort guide](https://platform.claude.com/docs/en/build-with-claude/effort) and [Messages API reference](https://platform.claude.com/docs/en/api/messages).
+
 ## Setup wizard
 
 `umactually init` walks an operator through provider and CI setup end-to-end. Bare `umactually init` opens an interactive TTY flow; `--non-interactive` drives the same flow from flags for CI provisioners and dotfiles bootstrap.
